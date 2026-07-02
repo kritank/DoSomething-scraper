@@ -1,0 +1,20 @@
+# ── Worker service ────────────────────────────────────────────────────────────
+# Processes scrape jobs from the queue.
+# Multiple replicas can run simultaneously (MAX_SCRAPER_WORKERS controls concurrency
+# within each process).
+FROM python:3.13-slim
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock* ./
+RUN uv sync --frozen --no-install-project --no-dev
+
+COPY . .
+RUN uv sync --frozen --no-dev
+
+# Playwright browsers (installed separately so the layer is cached)
+RUN uv run playwright install chromium --with-deps
+
+CMD ["uv", "run", "python", "-m", "app.workers.worker_runner"]

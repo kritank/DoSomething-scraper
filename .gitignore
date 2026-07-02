@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# uv
+uv.lock  # commit this — uncomment to ignore for libraries
+
+# Environment files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# Alembic (keep versions tracked)
+alembic/versions/__pycache__/
+
+# Playwright browsers
+playwright/
+.playwright/
+
+# Logs
+*.log
+logs/
+
+# Docker
+docker-compose.override.yml
