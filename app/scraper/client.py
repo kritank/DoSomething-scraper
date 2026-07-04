@@ -40,9 +40,52 @@ class InstagramClient:
             raise ScraperTimeoutError(handle=handle)
 
     async def get_user_info(self, username: str) -> dict[str, Any]:
-        """Fetch user profile via mobile API endpoint."""
-        endpoint = f"/users/{username}/usernameinfo/"
-        return await self._request(endpoint, handle=username)
+        """Fetch user profile via the public web endpoint.
+
+        The mobile private API (i.instagram.com) rejects browser-extracted
+        session cookies with a checkpoint_required error since it expects a
+        signed mobile app session. web_profile_info accepts the same web
+        cookies (plus X-IG-App-ID) and returns equivalent profile fields.
+        """
+        response = await self.client.get(
+            "https://www.instagram.com/api/v1/users/web_profile_info/",
+            params={"username": username},
+            headers={"X-IG-App-ID": "936619743392459"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        user = payload.get("data", {}).get("user") or {}
+        return {
+            "user": {
+                "pk": user.get("id", ""),
+                "username": user.get("username", ""),
+                "full_name": user.get("full_name", ""),
+                "is_private": user.get("is_private", False),
+                "profile_pic_url": user.get("profile_pic_url", ""),
+                "follower_count": user.get("edge_followed_by", {}).get("count", 0),
+                "following_count": user.get("edge_follow", {}).get("count", 0),
+                "media_count": user.get("edge_owner_to_timeline_media", {}).get("count", 0),
+                "biography": user.get("biography", ""),
+                "biography_with_entities": user.get("biography_with_entities"),
+                "bio_links": user.get("bio_links", []),
+                "pronouns": user.get("pronouns", []),
+                "external_url": user.get("external_url"),
+                "is_verified": user.get("is_verified", False),
+                "is_business_account": user.get("is_business_account", False),
+                "is_professional_account": user.get("is_professional_account", False),
+                "category_name": user.get("category_name"),
+                "category_enum": user.get("category_enum"),
+                "overall_category_name": user.get("overall_category_name"),
+                "business_contact_method": user.get("business_contact_method"),
+                "business_email": user.get("business_email"),
+                "business_phone_number": user.get("business_phone_number"),
+                "highlight_reel_count": user.get("highlight_reel_count", 0),
+                "has_clips": user.get("has_clips", False),
+                "has_guides": user.get("has_guides", False),
+                "has_channel": user.get("has_channel", False),
+                "mutual_followers_count": user.get("edge_mutual_followed_by", {}).get("count", 0),
+            }
+        }
 
     async def get_user_feed(self, user_id: str, max_id: str = "") -> dict[str, Any]:
         """Fetch paginated posts for a user."""

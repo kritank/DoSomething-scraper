@@ -64,13 +64,40 @@ class JobProcessor:
             followers=parsed_user.follower_count,
             following=parsed_user.following_count,
             posts=parsed_user.media_count,
+            biography=parsed_user.biography,
+            biography_with_entities=parsed_user.biography_with_entities,
+            bio_links=parsed_user.bio_links,
+            pronouns=parsed_user.pronouns,
+            external_url=parsed_user.external_url,
+            is_verified=parsed_user.is_verified,
+            is_business_account=parsed_user.is_business_account,
+            is_professional_account=parsed_user.is_professional_account,
+            category_name=parsed_user.category_name,
+            category_enum=parsed_user.category_enum,
+            overall_category_name=parsed_user.overall_category_name,
+            business_contact_method=parsed_user.business_contact_method,
+            business_email=parsed_user.business_email,
+            business_phone_number=parsed_user.business_phone_number,
+            highlight_reel_count=parsed_user.highlight_reel_count,
+            has_clips=parsed_user.has_clips,
+            has_guides=parsed_user.has_guides,
+            has_channel=parsed_user.has_channel,
+            mutual_followers_count=parsed_user.mutual_followers_count,
         )
         session.add(snapshot)
         await session.commit()
         
         # 2. Fetch User Feed
-        raw_feed = await self.client.get_user_feed(str(parsed_user.pk))
-        items, _ = InstagramParser.parse_feed(raw_feed)
+        # The mobile private API used here requires a signed app session; browser
+        # session cookies get checkpoint-blocked. Post-level scraping is a known
+        # gap, so don't fail the whole job when only this step is unavailable.
+        try:
+            raw_feed = await self.client.get_user_feed(str(parsed_user.pk))
+            items, _ = InstagramParser.parse_feed(raw_feed)
+        except Exception as e:
+            logger.warning("Feed fetch unavailable", handle=handle, error=str(e))
+            job.posts_processed = 0
+            return
         
         # 3. Save Posts and Metrics
         posts_processed = 0

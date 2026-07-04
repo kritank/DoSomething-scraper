@@ -2,8 +2,8 @@ import uuid
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -30,6 +30,30 @@ class ProfileSnapshot(Base):
     followers: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     following: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     posts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    biography: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    biography_with_entities: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    bio_links: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    pronouns: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    external_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+
+    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_business_account: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_professional_account: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    category_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    category_enum: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    overall_category_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    business_contact_method: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    business_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    business_phone_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    highlight_reel_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    has_clips: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    has_guides: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    has_channel: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    mutual_followers_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
