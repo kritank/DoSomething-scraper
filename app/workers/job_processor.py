@@ -87,26 +87,45 @@ class JobProcessor:
         session.add(snapshot)
         await session.commit()
         
-        # 2. Fetch User Feed
-        # Kept defensive: private accounts or an intermittent Instagram block
-        # shouldn't fail a scrape that already captured valid profile data.
-        try:
-            raw_feed = await self.client.get_user_feed(handle)
-            items, _ = InstagramParser.parse_feed(raw_feed)
-        except Exception as e:
-            logger.warning("Feed fetch unavailable", handle=handle, error=str(e))
-            job.posts_processed = 0
-            return
-        
-        # 3. Save Posts and Metrics
+        # 2 & 3. Fetch and save posts, paginating over the user's feed.
+        #
+        # First scrape for an influencer (no posts saved yet): backfill full
+        # history by paginating until Instagram runs out of pages.
+        # Every scrape after that: page only until we hit a shortcode we've
+        # already saved. The feed is newest-first, so once we see a known
+        # post everything beyond it is already captured -- stop there
+        # instead of re-walking the whole history every day.
+        stmt = select(Post.id).where(Post.influencer_id == self.message.influencer_id).limit(1)
+        result = await session.execute(stmt)
+        is_first_scrape = result.scalar_one_or_none() is None
+
         posts_processed = 0
-        for item in items:
-            # Check if post exists
-            stmt = select(Post).where(Post.shortcode == item.code)
-            result = await session.execute(stmt)
-            post = result.scalar_one_or_none()
-            
-            if not post:
+        max_id = ""
+        MAX_PAGES = 100  # safety cap against runaway backfill pagination
+
+        for _ in range(MAX_PAGES):
+            try:
+                raw_feed = await self.client.get_user_feed(handle, max_id)
+            except Exception as e:
+                logger.warning("Feed fetch unavailable", handle=handle, error=str(e))
+                break
+
+            items, next_max_id = InstagramParser.parse_feed(raw_feed)
+            if not items:
+                break
+
+            reached_known_post = False
+            for item in items:
+                stmt = select(Post).where(Post.shortcode == item.code)
+                result = await session.execute(stmt)
+                post = result.scalar_one_or_none()
+
+                if post:
+                    if is_first_scrape:
+                        continue  # duplicate within this backfill pass
+                    reached_known_post = True
+                    break
+
                 caption_text = item.caption.get("text", "") if item.caption else ""
                 post = Post(
                     influencer_id=self.message.influencer_id,
@@ -116,21 +135,26 @@ class JobProcessor:
                 )
                 session.add(post)
                 await session.commit()
-                
-            # Create metrics snapshot
-            metrics = PostMetricsSnapshot(
-                post_id=post.id,
-                likes=item.like_count,
-                comments=item.comment_count,
-                views=item.view_count,
-            )
-            session.add(metrics)
-            
-            # Extract features
-            features = FeatureExtractor.extract_features(post)
-            session.add(features)
-            
-            posts_processed += 1
-            
+
+                metrics = PostMetricsSnapshot(
+                    post_id=post.id,
+                    likes=item.like_count,
+                    comments=item.comment_count,
+                    views=item.view_count,
+                )
+                session.add(metrics)
+
+                features = FeatureExtractor.extract_features(post)
+                session.add(features)
+
+                posts_processed += 1
+
+            await session.commit()
+
+            if reached_known_post or not raw_feed.get("more_available") or not next_max_id:
+                break
+            max_id = next_max_id
+            await asyncio.sleep(1)  # be polite between page requests
+
         job.posts_processed = posts_processed
         await session.commit()
