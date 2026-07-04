@@ -7,9 +7,9 @@ from app.feature_extraction.nlp_utils import (
 
 class FeatureExtractor:
     @staticmethod
-    def extract_features(post: Post) -> FeatureStore:
+    def extract_features(post: Post, media_type: str = "unknown") -> FeatureStore:
         caption = post.caption or ""
-        
+
         return FeatureStore(
             post_id=post.id,
             caption_length=len(caption),
@@ -23,5 +23,5 @@ class FeatureExtractor:
             detected_language=detect_language(caption),
             posting_hour=post.posted_at.hour,
             posting_weekday=post.posted_at.weekday(),
-            media_type="image", # Should be parsed from InstagramMediaItem
+            media_type=media_type,
         )

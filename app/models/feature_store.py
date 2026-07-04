@@ -44,6 +44,13 @@ class FeatureStore(Base):
     media_type: Mapped[str] = mapped_column(String(32), nullable=False)
     reel_duration_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
+    # Engagement-timing signals, derived from already-scraped comment data
+    # (no extra API calls) once comments are synced for a post.
+    first_comment_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    time_to_first_comment_s: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    creator_reply_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    time_to_first_creator_reply_s: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

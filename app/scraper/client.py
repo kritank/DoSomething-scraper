@@ -84,6 +84,10 @@ class InstagramClient:
                 "has_guides": user.get("has_guides", False),
                 "has_channel": user.get("has_channel", False),
                 "mutual_followers_count": user.get("edge_mutual_followed_by", {}).get("count", 0),
+                "is_verified_by_mv4b": user.get("is_verified_by_mv4b", False),
+                "hide_like_and_view_counts": user.get("hide_like_and_view_counts", False),
+                "has_ar_effects": user.get("has_ar_effects", False),
+                "business_category_name": user.get("business_category_name"),
             }
         }
 
@@ -101,6 +105,37 @@ class InstagramClient:
             params["max_id"] = max_id
         response = await self.client.get(
             f"https://www.instagram.com/api/v1/feed/user/{username}/username/",
+            params=params,
+            headers={"X-IG-App-ID": "936619743392459"},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def get_media_comments(self, media_pk: str, min_id: str = "") -> dict[str, Any]:
+        """Fetch a page of top-level comments for a post via the web endpoint.
+
+        can_support_threading=true is required -- without it Instagram
+        silently returns child_comment_count as null on every comment,
+        hiding the fact that reply threads exist at all.
+        """
+        params: dict[str, Any] = {"can_support_threading": "true"}
+        if min_id:
+            params["min_id"] = min_id
+        response = await self.client.get(
+            f"https://www.instagram.com/api/v1/media/{media_pk}/comments/",
+            params=params,
+            headers={"X-IG-App-ID": "936619743392459"},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def get_comment_replies(self, media_pk: str, comment_pk: str, min_child_cursor: str = "") -> dict[str, Any]:
+        """Fetch a page of replies to a single top-level comment."""
+        params: dict[str, Any] = {}
+        if min_child_cursor:
+            params["min_child_cursor"] = min_child_cursor
+        response = await self.client.get(
+            f"https://www.instagram.com/api/v1/media/{media_pk}/comments/{comment_pk}/child_comments/",
             params=params,
             headers={"X-IG-App-ID": "936619743392459"},
         )

@@ -2,8 +2,8 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -27,13 +27,25 @@ class Post(Base):
         nullable=False,
     )
     shortcode: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    
+    media_pk: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     caption: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     hashtags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     mentions: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     
     posted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     permalink: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    accessibility_caption: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_paid_partnership: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    product_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    music_metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    original_height: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    original_width: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    locations: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    coauthor_producers: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    tagged_usernames: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    counts_disabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

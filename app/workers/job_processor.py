@@ -12,13 +12,22 @@ from app.models.scrape_job import ScrapeJob
 from app.models.influencer import Influencer
 from app.models.snapshot import ProfileSnapshot, PostMetricsSnapshot
 from app.models.post import Post
+from app.models.comment import Comment
+from app.models.feature_store import FeatureStore
 from app.scraper.client import InstagramClient
 from app.scraper.parser import InstagramParser
+from app.schemas.instagram import InstagramComment
 from app.queue.base import ScrapeJobMessage
 from app.feature_extraction.extractor import FeatureExtractor
 
 
 logger = get_logger(__name__)
+
+MEDIA_TYPE_LABELS = {1: "image", 2: "video", 8: "carousel"}
+
+COMMENT_PAGE_SLEEP = 0.5
+MAX_COMMENT_PAGES = 50   # per post, safety cap (~750 top-level comments/post)
+MAX_REPLY_PAGES = 20     # per comment thread, safety cap
 
 
 class JobProcessor:
@@ -83,6 +92,10 @@ class JobProcessor:
             has_guides=parsed_user.has_guides,
             has_channel=parsed_user.has_channel,
             mutual_followers_count=parsed_user.mutual_followers_count,
+            is_meta_verified=parsed_user.is_verified_by_mv4b,
+            hides_like_view_counts=parsed_user.hide_like_and_view_counts,
+            has_ar_effects=parsed_user.has_ar_effects,
+            business_category_name=parsed_user.business_category_name,
         )
         session.add(snapshot)
         await session.commit()
@@ -130,8 +143,20 @@ class JobProcessor:
                 post = Post(
                     influencer_id=self.message.influencer_id,
                     shortcode=item.code,
+                    media_pk=str(item.pk),
+                    permalink=f"https://www.instagram.com/p/{item.code}/",
                     caption=caption_text,
                     posted_at=datetime.fromtimestamp(item.taken_at),
+                    accessibility_caption=item.accessibility_caption,
+                    is_paid_partnership=item.is_paid_partnership,
+                    product_type=item.product_type,
+                    music_metadata=item.music_metadata,
+                    original_height=item.original_height,
+                    original_width=item.original_width,
+                    locations=item.locations,
+                    coauthor_producers=item.coauthor_producers,
+                    tagged_usernames=item.tagged_usernames,
+                    counts_disabled=item.counts_disabled,
                 )
                 session.add(post)
                 await session.commit()
@@ -140,11 +165,15 @@ class JobProcessor:
                     post_id=post.id,
                     likes=item.like_count,
                     comments=item.comment_count,
-                    views=item.view_count,
+                    # Reels/videos report their view count in play_count;
+                    # view_count is 0 for those and only meaningful for
+                    # media types that don't have a play_count at all.
+                    views=item.view_count or item.play_count,
                 )
                 session.add(metrics)
 
-                features = FeatureExtractor.extract_features(post)
+                media_type_label = MEDIA_TYPE_LABELS.get(item.media_type, "unknown")
+                features = FeatureExtractor.extract_features(post, media_type=media_type_label)
                 session.add(features)
 
                 posts_processed += 1
@@ -157,4 +186,135 @@ class JobProcessor:
             await asyncio.sleep(1)  # be polite between page requests
 
         job.posts_processed = posts_processed
+        await session.commit()
+
+        # 4. Sync comments (including nested reply threads) for every saved
+        # post, not just the ones discovered this run. Comments can land on
+        # a post at any time, so old posts need re-checking too, not only
+        # newly discovered ones.
+        stmt = select(Post).where(
+            Post.influencer_id == self.message.influencer_id,
+            Post.media_pk.isnot(None),
+        )
+        result = await session.execute(stmt)
+        all_posts = result.scalars().all()
+
+        for post in all_posts:
+            try:
+                await self._sync_comments_for_post(session, post)
+                await self._update_engagement_timing_features(session, post)
+            except Exception as e:
+                logger.warning("Comment sync failed", shortcode=post.shortcode, error=str(e))
+            await asyncio.sleep(COMMENT_PAGE_SLEEP)
+
+    async def _sync_comments_for_post(self, session: AsyncSession, post: Post) -> None:
+        min_id = ""
+        for _ in range(MAX_COMMENT_PAGES):
+            raw = await self.client.get_media_comments(post.media_pk, min_id)
+            comments, next_min_id, has_more = InstagramParser.parse_comments(raw)
+            if not comments:
+                break
+
+            for comment in comments:
+                await self._upsert_comment(session, post.id, comment)
+                if comment.child_comment_count > 0:
+                    await self._sync_replies(session, post, comment)
+            await session.commit()
+
+            if not has_more or not next_min_id:
+                break
+            min_id = next_min_id
+            await asyncio.sleep(COMMENT_PAGE_SLEEP)
+
+    async def _sync_replies(self, session: AsyncSession, post: Post, parent: InstagramComment) -> None:
+        cursor = ""
+        for _ in range(MAX_REPLY_PAGES):
+            raw = await self.client.get_comment_replies(post.media_pk, parent.comment_id, cursor)
+            replies, next_cursor, has_more = InstagramParser.parse_replies(raw, parent.comment_id)
+            if not replies:
+                break
+
+            for reply in replies:
+                await self._upsert_comment(session, post.id, reply)
+            await session.commit()
+
+            if not has_more or not next_cursor:
+                break
+            cursor = next_cursor
+            await asyncio.sleep(COMMENT_PAGE_SLEEP)
+
+    async def _upsert_comment(self, session: AsyncSession, post_id: UUID, comment: InstagramComment) -> None:
+        if not comment.comment_id:
+            return
+
+        stmt = select(Comment).where(Comment.comment_id == comment.comment_id)
+        result = await session.execute(stmt)
+        existing = result.scalar_one_or_none()
+
+        is_from_creator = comment.username.lower() == self.message.handle.lower()
+
+        if existing:
+            existing.like_count = comment.like_count
+            existing.child_comment_count = comment.child_comment_count
+            existing.text = comment.text
+            existing.liked_by_creator = comment.liked_by_creator
+            existing.is_edited = comment.is_edited
+            existing.reported_as_spam = comment.reported_as_spam
+            existing.is_from_creator = is_from_creator
+            existing.author_profile_pic_url = comment.author_profile_pic_url
+            existing.author_is_private = comment.author_is_private
+            return
+
+        session.add(
+            Comment(
+                post_id=post_id,
+                comment_id=comment.comment_id,
+                parent_comment_id=comment.parent_comment_id,
+                username=comment.username,
+                full_name=comment.full_name,
+                is_verified=comment.is_verified,
+                is_from_creator=is_from_creator,
+                author_profile_pic_url=comment.author_profile_pic_url,
+                author_is_private=comment.author_is_private,
+                text=comment.text,
+                like_count=comment.like_count,
+                child_comment_count=comment.child_comment_count,
+                liked_by_creator=comment.liked_by_creator,
+                is_edited=comment.is_edited,
+                reported_as_spam=comment.reported_as_spam,
+                commented_at=datetime.fromtimestamp(comment.created_at) if comment.created_at else datetime.utcnow(),
+            )
+        )
+
+    async def _update_engagement_timing_features(self, session: AsyncSession, post: Post) -> None:
+        """Derive engagement-timing signals from comments already saved for
+        this post -- no extra API calls, just better use of scraped data.
+        """
+        stmt = select(Comment).where(Comment.post_id == post.id)
+        result = await session.execute(stmt)
+        all_comments = result.scalars().all()
+        if not all_comments:
+            return
+
+        top_level = [c for c in all_comments if c.parent_comment_id is None]
+        creator_comments = [c for c in all_comments if c.is_from_creator]
+
+        first_comment_at = min((c.commented_at for c in top_level), default=None)
+        first_creator_reply_at = min((c.commented_at for c in creator_comments), default=None)
+
+        stmt = select(FeatureStore).where(FeatureStore.post_id == post.id)
+        result = await session.execute(stmt)
+        features = result.scalar_one_or_none()
+        if not features:
+            return
+
+        posted_at = post.posted_at
+        features.first_comment_at = first_comment_at
+        features.time_to_first_comment_s = (
+            int((first_comment_at - posted_at).total_seconds()) if first_comment_at else None
+        )
+        features.creator_reply_count = len(creator_comments)
+        features.time_to_first_creator_reply_s = (
+            int((first_creator_reply_at - posted_at).total_seconds()) if first_creator_reply_at else None
+        )
         await session.commit()

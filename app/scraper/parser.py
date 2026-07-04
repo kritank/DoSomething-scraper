@@ -1,5 +1,5 @@
 from typing import Any
-from app.schemas.instagram import InstagramUser, InstagramMediaItem
+from app.schemas.instagram import InstagramUser, InstagramMediaItem, InstagramComment
 
 
 class InstagramParser:
@@ -34,6 +34,10 @@ class InstagramParser:
             has_guides=user_data.get("has_guides", False),
             has_channel=user_data.get("has_channel", False),
             mutual_followers_count=user_data.get("mutual_followers_count", 0),
+            is_verified_by_mv4b=user_data.get("is_verified_by_mv4b", False),
+            hide_like_and_view_counts=user_data.get("hide_like_and_view_counts", False),
+            has_ar_effects=user_data.get("has_ar_effects", False),
+            business_category_name=user_data.get("business_category_name"),
         )
         
     @staticmethod
@@ -52,6 +56,16 @@ class InstagramParser:
                 play_count=item.get("play_count", 0),
                 media_type=item.get("media_type", 1),
                 taken_at=item.get("taken_at", 0),
+                accessibility_caption=item.get("accessibility_caption"),
+                is_paid_partnership=item.get("is_paid_partnership", False),
+                product_type=item.get("product_type"),
+                music_metadata=item.get("music_metadata"),
+                original_height=item.get("original_height"),
+                original_width=item.get("original_width"),
+                locations=item.get("locations") or [],
+                coauthor_producers=item.get("coauthor_producers") or [],
+                tagged_usernames=(item.get("fb_user_tags") or {}).get("in") or [],
+                counts_disabled=item.get("like_and_view_counts_disabled", False),
             )
             parsed_items.append(parsed)
             
@@ -59,3 +73,50 @@ class InstagramParser:
         if next_max_id is None:
             next_max_id = ""
         return parsed_items, str(next_max_id)
+
+    @staticmethod
+    def _parse_comment_item(raw_comment: dict[str, Any], parent_comment_id: str | None = None) -> InstagramComment:
+        user = raw_comment.get("user") or {}
+        return InstagramComment(
+            comment_id=str(raw_comment.get("pk", "")),
+            parent_comment_id=parent_comment_id,
+            username=user.get("username", ""),
+            full_name=user.get("full_name", ""),
+            is_verified=user.get("is_verified", False),
+            text=raw_comment.get("text", ""),
+            like_count=raw_comment.get("comment_like_count", 0) or 0,
+            child_comment_count=raw_comment.get("child_comment_count") or 0,
+            created_at=raw_comment.get("created_at", 0) or 0,
+            liked_by_creator=bool(raw_comment.get("liked_by_media_coauthors")),
+            is_edited=raw_comment.get("is_edited", False),
+            reported_as_spam=raw_comment.get("did_report_as_spam", False),
+            author_profile_pic_url=user.get("profile_pic_url"),
+            author_is_private=user.get("is_private", False),
+        )
+
+    @staticmethod
+    def parse_comments(raw_data: dict[str, Any]) -> tuple[list[InstagramComment], str, bool]:
+        """Parse a page of top-level comments.
+
+        Returns (comments, next_min_id, has_more).
+        """
+        comments = [
+            InstagramParser._parse_comment_item(c) for c in raw_data.get("comments", [])
+        ]
+        next_min_id = raw_data.get("next_min_id") or ""
+        has_more = bool(raw_data.get("has_more_headload_comments"))
+        return comments, next_min_id, has_more
+
+    @staticmethod
+    def parse_replies(raw_data: dict[str, Any], parent_comment_id: str) -> tuple[list[InstagramComment], str, bool]:
+        """Parse a page of replies to a single comment.
+
+        Returns (replies, next_min_child_cursor, has_more).
+        """
+        replies = [
+            InstagramParser._parse_comment_item(c, parent_comment_id=parent_comment_id)
+            for c in raw_data.get("child_comments", [])
+        ]
+        next_cursor = raw_data.get("next_min_child_cursor") or ""
+        has_more = bool(raw_data.get("has_more_tail_child_comments"))
+        return replies, next_cursor, has_more

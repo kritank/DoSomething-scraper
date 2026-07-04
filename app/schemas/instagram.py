@@ -36,6 +36,11 @@ class InstagramUser(BaseModel):
     has_channel: bool = False
     mutual_followers_count: int = 0
 
+    is_verified_by_mv4b: bool = False
+    hide_like_and_view_counts: bool = False
+    has_ar_effects: bool = False
+    business_category_name: Optional[str] = None
+
 
 class InstagramMediaItem(BaseModel):
     id: str
@@ -48,3 +53,32 @@ class InstagramMediaItem(BaseModel):
     play_count: int = 0
     media_type: int
     taken_at: int
+
+    accessibility_caption: Optional[str] = None
+    is_paid_partnership: bool = False
+    product_type: Optional[str] = None
+    music_metadata: Optional[dict[str, Any]] = None
+    original_height: Optional[int] = None
+    original_width: Optional[int] = None
+    locations: list[dict[str, Any]] = []
+    coauthor_producers: list[dict[str, Any]] = []
+    tagged_usernames: list[dict[str, Any]] = []
+    counts_disabled: bool = False
+
+
+class InstagramComment(BaseModel):
+    comment_id: str
+    parent_comment_id: Optional[str] = None
+    username: str = ""
+    full_name: str = ""
+    is_verified: bool = False
+    text: str = ""
+    like_count: int = 0
+    child_comment_count: int = 0
+    created_at: int = 0
+
+    liked_by_creator: bool = False
+    is_edited: bool = False
+    reported_as_spam: bool = False
+    author_profile_pic_url: Optional[str] = None
+    author_is_private: bool = False

@@ -3,6 +3,7 @@ from app.models.analytics_cache import AnalyticsCache
 from app.models.audit_log import AuditLog
 from app.models.benchmark import CategoryBenchmark
 from app.models.category import Category
+from app.models.comment import Comment
 from app.models.feature_store import FeatureStore
 from app.models.influencer import Influencer
 from app.models.post import Post
@@ -18,6 +19,7 @@ __all__ = [
     "Base",
     "Category",
     "CategoryBenchmark",
+    "Comment",
     "FeatureStore",
     "Influencer",
     "Post",

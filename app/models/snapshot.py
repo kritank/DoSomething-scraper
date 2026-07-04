@@ -55,6 +55,11 @@ class ProfileSnapshot(Base):
     has_channel: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     mutual_followers_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    is_meta_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    hides_like_view_counts: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    has_ar_effects: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    business_category_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
