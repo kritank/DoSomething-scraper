@@ -88,11 +88,10 @@ class JobProcessor:
         await session.commit()
         
         # 2. Fetch User Feed
-        # The mobile private API used here requires a signed app session; browser
-        # session cookies get checkpoint-blocked. Post-level scraping is a known
-        # gap, so don't fail the whole job when only this step is unavailable.
+        # Kept defensive: private accounts or an intermittent Instagram block
+        # shouldn't fail a scrape that already captured valid profile data.
         try:
-            raw_feed = await self.client.get_user_feed(str(parsed_user.pk))
+            raw_feed = await self.client.get_user_feed(handle)
             items, _ = InstagramParser.parse_feed(raw_feed)
         except Exception as e:
             logger.warning("Feed fetch unavailable", handle=handle, error=str(e))

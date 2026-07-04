@@ -87,12 +87,25 @@ class InstagramClient:
             }
         }
 
-    async def get_user_feed(self, user_id: str, max_id: str = "") -> dict[str, Any]:
-        """Fetch paginated posts for a user."""
-        endpoint = f"/feed/user/{user_id}/?count=12"
+    async def get_user_feed(self, username: str, max_id: str = "") -> dict[str, Any]:
+        """Fetch paginated posts for a user via the public web endpoint.
+
+        Same reasoning as get_user_info: the mobile private API
+        (i.instagram.com/api/v1/feed/user/{pk}/) requires a signed app
+        session and checkpoint-blocks browser cookies. The web-hosted,
+        username-keyed equivalent accepts the same session cookies and
+        returns items in the same shape.
+        """
+        params: dict[str, Any] = {"count": 12}
         if max_id:
-            endpoint += f"&max_id={max_id}"
-        return await self._request(endpoint, handle=user_id)
+            params["max_id"] = max_id
+        response = await self.client.get(
+            f"https://www.instagram.com/api/v1/feed/user/{username}/username/",
+            params=params,
+            headers={"X-IG-App-ID": "936619743392459"},
+        )
+        response.raise_for_status()
+        return response.json()
 
     async def close(self):
         await self.client.aclose()
