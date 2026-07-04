@@ -80,7 +80,16 @@ docker compose up --build
 ```
 Alternatively, to run the API locally with hot-reloading:
 ```bash
-uv run uvicorn main:app --reload
+./scripts/dev.sh
+```
+
+To seed sample categories and influencers, then scrape them immediately:
+```bash
+PYTHONPATH=.venv/lib/python3.13/site-packages /Users/kritank/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none/bin/python3.13 scripts/seed_and_scrape.py
+```
+To seed records only, skip scraping:
+```bash
+PYTHONPATH=.venv/lib/python3.13/site-packages /Users/kritank/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none/bin/python3.13 scripts/seed_and_scrape.py --seed-only
 ```
 
 ---
@@ -106,7 +115,7 @@ Interactive Swagger documentation is available at `http://localhost:8000/docs`.
 Viralytics uses `pytest` for unit and integration testing. Tests can be run via `uv`:
 
 ```bash
-uv run pytest tests/
+UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/
 ```
 
 ---

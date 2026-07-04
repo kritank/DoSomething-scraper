@@ -994,6 +994,7 @@ version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
+    { name = "annotated-types" },
     { name = "apscheduler" },
     { name = "asyncpg" },
     { name = "boto3" },
@@ -1027,6 +1028,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
+    { name = "annotated-types", specifier = ">=0.7.0" },
     { name = "apscheduler", specifier = ">=3.10" },
     { name = "asyncpg", specifier = ">=0.29" },
     { name = "boto3", specifier = ">=1.34" },

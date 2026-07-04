@@ -10,6 +10,7 @@ Architecture:
 
 import time
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,22 +22,11 @@ from app.core.exceptions import ViralyticBaseError
 from app.core.logging import configure_logging, get_logger, set_request_id
 from app.api.v1 import health, admin, benchmarks, recommendations
 
-# ... (rest of the imports) ...
-
-app.include_router(health.router, tags=["Health"])
-app.include_router(admin.router, prefix=settings.API_V1_PREFIX, tags=["Admin"])
-app.include_router(benchmarks.router, prefix=settings.API_V1_PREFIX, tags=["Benchmarks"])
-app.include_router(recommendations.router, prefix=settings.API_V1_PREFIX, tags=["Recommendations"])
-
 configure_logging(log_level=settings.LOG_LEVEL, json_logs=not settings.DEBUG)
 logger = get_logger(__name__)
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Lifespan
 # ─────────────────────────────────────────────────────────────────────────────
-
-from contextlib import asynccontextmanager
 
 
 @asynccontextmanager
