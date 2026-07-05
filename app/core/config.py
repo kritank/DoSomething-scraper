@@ -52,15 +52,20 @@ class Settings(BaseSettings):
     SCRAPER_TIMEOUT_S: int = 30
     SCRAPER_MAX_RETRIES: int = 3
     MAX_POSTS_PER_SCRAPE: int = 50
+    # Comment/reply sync is the expensive phase (paced 2-6s per request) --
+    # this many posts' comment sync run concurrently, each in its own DB
+    # session. Higher = faster wall-clock time but a proportionally higher
+    # request rate hitting Instagram from one account/session.
+    COMMENT_SYNC_CONCURRENCY: int = 6
     SCRAPER_HEADLESS: bool = True
 
-    # ── Instagram Session Credentials ─────────────────────────────────────────
-    # Extract from browser DevTools → Application → Cookies → instagram.com
-    # after logging into the dedicated scraper account.
-    INSTAGRAM_SESSION_ID: str = ""
-    INSTAGRAM_CSRF_TOKEN: str = ""
-    INSTAGRAM_DS_USER_ID: str = ""
-    INSTAGRAM_IG_DID: str = ""
+    # ── Instagram Account Pool ─────────────────────────────────────────────────
+    # Accounts are logged in via scripts/register_instagram_account.py (Playwright
+    # automation) and stored in the instagram_accounts table -- no more manually
+    # pasting session cookies into .env.
+    ACCOUNT_ENCRYPTION_KEY: str = ""  # required — Fernet key for cookies at rest
+    ACCOUNT_LEASE_TIMEOUT_S: int = 1800
+    ACCOUNT_MAX_CONSECUTIVE_FAILURES: int = 5
 
     # ── Scheduler ─────────────────────────────────────────────────────────────
     SCHEDULER_TIMEZONE: str = "UTC"
@@ -92,25 +97,6 @@ class Settings(BaseSettings):
     @property
     def is_sqs_queue(self) -> bool:
         return self.QUEUE_BACKEND.lower() == "sqs"
-
-    @property
-    def instagram_cookies(self) -> dict[str, str]:
-        """Return Instagram session cookies as a dict for use in httpx headers."""
-        return {
-            "sessionid": self.INSTAGRAM_SESSION_ID,
-            "csrftoken": self.INSTAGRAM_CSRF_TOKEN,
-            "ds_user_id": self.INSTAGRAM_DS_USER_ID,
-            "ig_did": self.INSTAGRAM_IG_DID,
-        }
-
-    @property
-    def has_instagram_session(self) -> bool:
-        """True when all required Instagram cookies are configured."""
-        return bool(
-            self.INSTAGRAM_SESSION_ID
-            and self.INSTAGRAM_CSRF_TOKEN
-            and self.INSTAGRAM_DS_USER_ID
-        )
 
 
 settings = Settings()

@@ -17,6 +17,7 @@ services:
     environment:
       - QUEUE_BACKEND=redis
       - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/viralytics
     volumes:
       - .:/app                           # hot reload in dev
     command: >
@@ -40,6 +41,7 @@ services:
     environment:
       - QUEUE_BACKEND=redis
       - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/viralytics
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,6 +58,7 @@ services:
     environment:
       - QUEUE_BACKEND=redis
       - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/viralytics
     depends_on:
       postgres:
         condition: service_healthy

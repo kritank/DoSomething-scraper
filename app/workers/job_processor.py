@@ -1,19 +1,25 @@
+import os
+import socket
 import time
 from uuid import UUID
 from datetime import datetime
 import asyncio
+import random
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.database import get_session
+from app.core.exceptions import ScraperBlockedError, ScraperRateLimitError
 from app.models.scrape_job import ScrapeJob
 from app.models.influencer import Influencer
 from app.models.snapshot import ProfileSnapshot, PostMetricsSnapshot
 from app.models.post import Post
 from app.models.comment import Comment
 from app.models.feature_store import FeatureStore
+from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.scraper.client import InstagramClient
 from app.scraper.parser import InstagramParser
 from app.schemas.instagram import InstagramComment
@@ -25,15 +31,23 @@ logger = get_logger(__name__)
 
 MEDIA_TYPE_LABELS = {1: "image", 2: "video", 8: "carousel"}
 
-COMMENT_PAGE_SLEEP = 0.5
 MAX_COMMENT_PAGES = 50   # per post, safety cap (~750 top-level comments/post)
 MAX_REPLY_PAGES = 20     # per comment thread, safety cap
+
+WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
+
+
+async def _polite_delay() -> None:
+    """Jittered pacing between requests -- looks less like a bot than a
+    fixed sleep, and spreads load if multiple workers run concurrently."""
+    await asyncio.sleep(random.uniform(settings.SCRAPE_DELAY_MIN_S, settings.SCRAPE_DELAY_MAX_S))
 
 
 class JobProcessor:
     def __init__(self, message: ScrapeJobMessage):
         self.message = message
-        self.client = InstagramClient()
+        self.client: InstagramClient | None = None
+        self._account = None
 
     async def process(self):
         start_time = time.perf_counter()
@@ -42,22 +56,55 @@ class JobProcessor:
             if not job:
                 logger.error("Job not found", job_id=self.message.job_id)
                 return
-            
+
             job.status = "running"
             job.started_at = datetime.utcnow()
             await session.commit()
-            
-            try:
-                await self._run_scrape(session, job)
-                job.status = "completed"
-            except Exception as e:
-                logger.exception("Scrape failed", exc_info=e)
+
+            account_repo = InstagramAccountRepo(session)
+            self._account = await account_repo.acquire_healthy_account(worker_id=WORKER_ID)
+            if self._account is None:
+                logger.critical("No healthy Instagram accounts available -- pool exhausted")
                 job.status = "failed"
-                job.error_message = str(e)
-            finally:
+                job.error_message = "no healthy Instagram accounts available"
                 job.finished_at = datetime.utcnow()
                 job.duration_s = time.perf_counter() - start_time
                 await session.commit()
+                return
+
+            self.client = InstagramClient(
+                cookies=account_repo.decrypt_cookies(self._account),
+                user_agent=self._account.user_agent,
+            )
+
+            outcome = "success"
+            retry_after: int | None = None
+            try:
+                await self._run_scrape(session, job)
+                job.status = "completed"
+            except ScraperBlockedError as e:
+                logger.exception("Scrape blocked", exc_info=e)
+                outcome = "blocked"
+                job.error_message = str(e)
+            except ScraperRateLimitError as e:
+                logger.exception("Scrape rate limited", exc_info=e)
+                outcome = "rate_limited"
+                retry_after = e.context.get("retry_after")
+                job.error_message = str(e)
+            except Exception as e:
+                logger.exception("Scrape failed", exc_info=e)
+                outcome = "error"
+                job.error_message = str(e)
+            finally:
+                if outcome != "success":
+                    job.retry_count += 1
+                    job.status = (
+                        "retry_pending" if job.retry_count < settings.SCRAPER_MAX_RETRIES else "failed"
+                    )
+                job.finished_at = datetime.utcnow()
+                job.duration_s = time.perf_counter() - start_time
+                await session.commit()
+                await account_repo.release(self._account.id, outcome, retry_after=retry_after)
                 await self.client.close()
 
     async def _run_scrape(self, session: AsyncSession, job: ScrapeJob):
@@ -114,9 +161,8 @@ class JobProcessor:
 
         posts_processed = 0
         max_id = ""
-        MAX_PAGES = 100  # safety cap against runaway backfill pagination
 
-        for _ in range(MAX_PAGES):
+        while True:
             try:
                 raw_feed = await self.client.get_user_feed(handle, max_id)
             except Exception as e:
@@ -183,35 +229,55 @@ class JobProcessor:
             if reached_known_post or not raw_feed.get("more_available") or not next_max_id:
                 break
             max_id = next_max_id
-            await asyncio.sleep(1)  # be polite between page requests
+            await _polite_delay()
 
         job.posts_processed = posts_processed
         await session.commit()
 
-        # 4. Sync comments (including nested reply threads) for every saved
-        # post, not just the ones discovered this run. Comments can land on
-        # a post at any time, so old posts need re-checking too, not only
-        # newly discovered ones.
-        stmt = select(Post).where(
-            Post.influencer_id == self.message.influencer_id,
-            Post.media_pk.isnot(None),
+        # 4. Sync comments (including nested reply threads) for the most
+        # recent posts. Comments can land on a post at any time, so this
+        # re-checks older posts too, not just newly discovered ones -- but
+        # full historical backfill of comments (thousands of posts, each
+        # with its own paginated comment/reply tree) doesn't fit any
+        # reasonable time budget at a safe request pace, and old posts'
+        # comment counts change the least anyway. MAX_POSTS_PER_SCRAPE
+        # bounds the worst case regardless of how large the account's total
+        # post history is.
+        stmt = (
+            select(Post)
+            .where(
+                Post.influencer_id == self.message.influencer_id,
+                Post.media_pk.isnot(None),
+            )
+            .order_by(Post.posted_at.desc())
+            .limit(settings.MAX_POSTS_PER_SCRAPE)
         )
         result = await session.execute(stmt)
-        all_posts = result.scalars().all()
+        posts_to_sync = result.scalars().all()
 
-        for post in all_posts:
-            try:
-                await self._sync_comments_for_post(session, post)
-                await self._update_engagement_timing_features(session, post)
-            except Exception as e:
-                logger.warning("Comment sync failed", shortcode=post.shortcode, error=str(e))
-            await asyncio.sleep(COMMENT_PAGE_SLEEP)
+        # Posts are synced concurrently (bounded by COMMENT_SYNC_CONCURRENCY),
+        # each in its own DB session -- AsyncSession isn't safe for concurrent
+        # use, and this is the main lever for fitting comment sync into a
+        # reasonable wall-clock budget instead of running one post at a time.
+        semaphore = asyncio.Semaphore(settings.COMMENT_SYNC_CONCURRENCY)
+
+        async def _sync_one(post: Post) -> None:
+            async with semaphore:
+                try:
+                    async with get_session() as post_session:
+                        await self._sync_comments_for_post(post_session, post)
+                        await self._update_engagement_timing_features(post_session, post)
+                except Exception as e:
+                    logger.warning("Comment sync failed", shortcode=post.shortcode, error=str(e))
+                await _polite_delay()
+
+        await asyncio.gather(*(_sync_one(post) for post in posts_to_sync))
 
     async def _sync_comments_for_post(self, session: AsyncSession, post: Post) -> None:
-        min_id = ""
+        after: str | None = None
         for _ in range(MAX_COMMENT_PAGES):
-            raw = await self.client.get_media_comments(post.media_pk, min_id)
-            comments, next_min_id, has_more = InstagramParser.parse_comments(raw)
+            connection = await self.client.get_media_comments(post.media_pk, post.permalink, after)
+            comments, next_after, has_more = InstagramParser.parse_comments(connection)
             if not comments:
                 break
 
@@ -221,16 +287,16 @@ class JobProcessor:
                     await self._sync_replies(session, post, comment)
             await session.commit()
 
-            if not has_more or not next_min_id:
+            if not has_more or not next_after:
                 break
-            min_id = next_min_id
-            await asyncio.sleep(COMMENT_PAGE_SLEEP)
+            after = next_after
+            await _polite_delay()
 
     async def _sync_replies(self, session: AsyncSession, post: Post, parent: InstagramComment) -> None:
-        cursor = ""
+        after: str | None = None
         for _ in range(MAX_REPLY_PAGES):
-            raw = await self.client.get_comment_replies(post.media_pk, parent.comment_id, cursor)
-            replies, next_cursor, has_more = InstagramParser.parse_replies(raw, parent.comment_id)
+            connection = await self.client.get_comment_replies(post.media_pk, parent.comment_id, post.permalink, after)
+            replies, next_after, has_more = InstagramParser.parse_replies(connection, parent.comment_id)
             if not replies:
                 break
 
@@ -238,10 +304,10 @@ class JobProcessor:
                 await self._upsert_comment(session, post.id, reply)
             await session.commit()
 
-            if not has_more or not next_cursor:
+            if not has_more or not next_after:
                 break
-            cursor = next_cursor
-            await asyncio.sleep(COMMENT_PAGE_SLEEP)
+            after = next_after
+            await _polite_delay()
 
     async def _upsert_comment(self, session: AsyncSession, post_id: UUID, comment: InstagramComment) -> None:
         if not comment.comment_id:

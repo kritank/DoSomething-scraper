@@ -27,3 +27,9 @@ class ScrapeJobRepo:
         if not job:
             raise ScrapeJobNotFoundError(str(job_id))
         return job
+
+    async def get_retry_pending(self) -> Sequence[ScrapeJob]:
+        result = await self.session.execute(
+            select(ScrapeJob).where(ScrapeJob.status == "retry_pending")
+        )
+        return result.scalars().all()

@@ -85,35 +85,25 @@ class TestQueueProperties:
         assert s.is_sqs_queue is True
 
 
-class TestInstagramSessionProperty:
-    """instagram_cookies and has_instagram_session properties."""
+class TestInstagramAccountPoolDefaults:
+    """Instagram accounts now live in the instagram_accounts table
+    (see app.repositories.instagram_account_repo), provisioned via
+    scripts/register_instagram_account.py -- these are just the pool's
+    tunable defaults."""
 
     def _make(self, **overrides) -> Settings:
         base = {"DATABASE_URL": "postgresql+asyncpg://u:p@localhost/db"}
         base.update(overrides)
         return Settings.model_validate(base)
 
-    def test_has_session_false_when_empty(self):
+    def test_account_encryption_key_empty_by_default(self):
         s = self._make()
-        assert s.has_instagram_session is False
+        assert s.ACCOUNT_ENCRYPTION_KEY == ""
 
-    def test_has_session_true_when_populated(self):
-        s = self._make(
-            INSTAGRAM_SESSION_ID="abc",
-            INSTAGRAM_CSRF_TOKEN="def",
-            INSTAGRAM_DS_USER_ID="123",
-        )
-        assert s.has_instagram_session is True
+    def test_account_lease_timeout_default(self):
+        s = self._make()
+        assert s.ACCOUNT_LEASE_TIMEOUT_S == 1800
 
-    def test_instagram_cookies_returns_dict(self):
-        s = self._make(
-            INSTAGRAM_SESSION_ID="sid",
-            INSTAGRAM_CSRF_TOKEN="csrf",
-            INSTAGRAM_DS_USER_ID="uid",
-            INSTAGRAM_IG_DID="did",
-        )
-        cookies = s.instagram_cookies
-        assert cookies["sessionid"] == "sid"
-        assert cookies["csrftoken"] == "csrf"
-        assert cookies["ds_user_id"] == "uid"
-        assert cookies["ig_did"] == "did"
+    def test_account_max_consecutive_failures_default(self):
+        s = self._make()
+        assert s.ACCOUNT_MAX_CONSECUTIVE_FAILURES == 5

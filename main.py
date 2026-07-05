@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 """
 Viralytics — FastAPI application entry point.

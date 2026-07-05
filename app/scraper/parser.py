@@ -95,28 +95,34 @@ class InstagramParser:
         )
 
     @staticmethod
-    def parse_comments(raw_data: dict[str, Any]) -> tuple[list[InstagramComment], str, bool]:
-        """Parse a page of top-level comments.
+    def parse_comments(connection: dict[str, Any]) -> tuple[list[InstagramComment], str, bool]:
+        """Parse a page of top-level comments from the GraphQL Relay
+        connection shape ({edges: [{node: ...}], page_info: {...}}) returned
+        by InstagramClient.get_media_comments.
 
-        Returns (comments, next_min_id, has_more).
+        Returns (comments, next_after_cursor, has_more).
         """
         comments = [
-            InstagramParser._parse_comment_item(c) for c in raw_data.get("comments", [])
+            InstagramParser._parse_comment_item(edge.get("node", {}))
+            for edge in connection.get("edges", [])
         ]
-        next_min_id = raw_data.get("next_min_id") or ""
-        has_more = bool(raw_data.get("has_more_headload_comments"))
-        return comments, next_min_id, has_more
+        page_info = connection.get("page_info") or {}
+        has_more = bool(page_info.get("has_next_page"))
+        next_cursor = (page_info.get("end_cursor") or "") if has_more else ""
+        return comments, next_cursor, has_more
 
     @staticmethod
-    def parse_replies(raw_data: dict[str, Any], parent_comment_id: str) -> tuple[list[InstagramComment], str, bool]:
-        """Parse a page of replies to a single comment.
+    def parse_replies(connection: dict[str, Any], parent_comment_id: str) -> tuple[list[InstagramComment], str, bool]:
+        """Parse a page of replies to a single comment from the GraphQL
+        Relay connection shape returned by InstagramClient.get_comment_replies.
 
-        Returns (replies, next_min_child_cursor, has_more).
+        Returns (replies, next_after_cursor, has_more).
         """
         replies = [
-            InstagramParser._parse_comment_item(c, parent_comment_id=parent_comment_id)
-            for c in raw_data.get("child_comments", [])
+            InstagramParser._parse_comment_item(edge.get("node", {}), parent_comment_id=parent_comment_id)
+            for edge in connection.get("edges", [])
         ]
-        next_cursor = raw_data.get("next_min_child_cursor") or ""
-        has_more = bool(raw_data.get("has_more_tail_child_comments"))
+        page_info = connection.get("page_info") or {}
+        has_more = bool(page_info.get("has_next_page"))
+        next_cursor = (page_info.get("end_cursor") or "") if has_more else ""
         return replies, next_cursor, has_more

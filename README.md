@@ -46,11 +46,11 @@ Copy the `.env.example` file to `.env`:
 ```bash
 cp .env.example .env
 ```
-Open `.env` and fill in your Instagram session cookies. You must extract these from an active, logged-in Instagram session in your browser:
-- `INSTAGRAM_SESSION_ID` (`sessionid`)
-- `INSTAGRAM_CSRF_TOKEN` (`csrftoken`)
-- `INSTAGRAM_DS_USER_ID` (`ds_user_id`)
-- `INSTAGRAM_IG_DID` (`ig_did` - optional but recommended)
+Set `ACCOUNT_ENCRYPTION_KEY` (used to encrypt Instagram session cookies at rest):
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+Instagram accounts themselves are no longer pasted into `.env` -- see "Registering Instagram Accounts" below.
 
 ### 3. Start Infrastructure
 Start the database and Redis queue:
@@ -73,7 +73,20 @@ alembic revision --autogenerate -m "initial_schema"
 alembic upgrade head
 ```
 
-### 5. Run the Application
+### 5. Register Instagram Accounts
+The scraper draws from a pool of Instagram accounts stored in the `instagram_accounts`
+table instead of a single hardcoded session in `.env`. Register at least one before
+running any scrape -- workers will fail fast with "no healthy Instagram accounts
+available" otherwise. This drives a real (Playwright) login, so it can hit a 2FA/
+"suspicious login" checkpoint that has to be cleared manually in a real browser first:
+```bash
+uv run python scripts/register_instagram_account.py --username your_scraper_account
+```
+You'll be prompted for the password (prefer this over `--password` on the command line,
+which lands in shell history). Register more than one account to spread load across the
+pool -- each gets its own persistent user-agent and locale/timezone pairing.
+
+### 6. Run the Application
 You can run the entire stack (API, Worker, Scheduler, DB, Queue, Nginx) via Docker Compose:
 ```bash
 docker compose up --build

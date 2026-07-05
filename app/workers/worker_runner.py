@@ -17,19 +17,32 @@ def handle_sigterm(*args):
     shutdown_event.set()
 
 
+async def _run_one(receipt: str, msg, queue) -> None:
+    logger.info("Processing job", job_id=msg.job_id)
+    try:
+        await JobProcessor(msg).process()
+    except Exception as e:
+        logger.error("Job raised unhandled error", job_id=msg.job_id, error=str(e))
+    else:
+        logger.info("Completed job", job_id=msg.job_id)
+    finally:
+        await queue.delete(receipt)
+
+
 async def worker_loop():
-    logger.info("Starting worker loop", backend=settings.QUEUE_BACKEND)
+    logger.info("Starting worker loop", backend=settings.QUEUE_BACKEND, concurrency=settings.MAX_SCRAPER_WORKERS)
     queue = get_queue()
-    
+
     while not shutdown_event.is_set():
         try:
-            messages = await queue.dequeue(batch_size=1)
-            for receipt, msg in messages:
-                logger.info("Processing job", job_id=msg.job_id)
-                processor = JobProcessor(msg)
-                await processor.process()
-                await queue.delete(receipt)
-                logger.info("Completed job", job_id=msg.job_id)
+            # Concurrency is still capped in practice by how many Instagram
+            # accounts are healthy in the pool -- acquire_healthy_account()
+            # hands out one account per concurrent job, so batch_size beyond
+            # the account pool size just means extra jobs block waiting for
+            # an account rather than truly running in parallel.
+            messages = await queue.dequeue(batch_size=settings.MAX_SCRAPER_WORKERS)
+            if messages:
+                await asyncio.gather(*(_run_one(receipt, msg, queue) for receipt, msg in messages))
         except Exception as e:
             logger.error("Error in worker loop", error=str(e))
             await asyncio.sleep(5)

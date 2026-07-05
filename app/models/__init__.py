@@ -6,6 +6,7 @@ from app.models.category import Category
 from app.models.comment import Comment
 from app.models.feature_store import FeatureStore
 from app.models.influencer import Influencer
+from app.models.instagram_account import InstagramAccount
 from app.models.post import Post
 from app.models.raw_response import RawResponse
 from app.models.recommendation import Recommendation
@@ -22,6 +23,7 @@ __all__ = [
     "Comment",
     "FeatureStore",
     "Influencer",
+    "InstagramAccount",
     "Post",
     "PostMetricsSnapshot",
     "ProfileSnapshot",
