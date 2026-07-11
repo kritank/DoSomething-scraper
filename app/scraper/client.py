@@ -3,7 +3,6 @@ import json
 import random
 import re
 import time
-import httpx
 from typing import Any
 
 from curl_cffi.requests import AsyncSession as CurlAsyncSession
@@ -64,8 +63,6 @@ _REPLIES_DOC_ID = "27130774429946606"
 
 
 class InstagramClient:
-    BASE_URL = "https://i.instagram.com/api/v1"
-
     def __init__(self, cookies: dict[str, str], user_agent: str):
         self.headers = {
             "User-Agent": user_agent,
@@ -74,21 +71,15 @@ class InstagramClient:
         }
         self.cookies = cookies
 
-        self.client = httpx.AsyncClient(
-            base_url=self.BASE_URL,
-            headers=self.headers,
-            cookies=self.cookies,
-            timeout=15.0,
-            follow_redirects=True,
-        )
-
-        # Instagram's GraphQL endpoint (used for comments/replies) fingerprints
-        # the TLS handshake itself (JA3/JA4) and silently routes anything that
-        # doesn't match a real browser to the SPA shell instead of an error --
-        # httpx's TLS stack fails this regardless of how correct the request
-        # fields are. curl_cffi reproduces Chrome's exact fingerprint via
-        # curl-impersonate, which is far cheaper than driving a real browser
-        # per request and is what makes comment sync viable at scale.
+        # Every Instagram request goes through this Chrome-impersonating client.
+        # Instagram fingerprints the TLS handshake itself (JA3/JA4) on both the
+        # GraphQL endpoint (comments/replies) and the web_profile_info/feed
+        # endpoints, silently 429ing or routing anything that doesn't match a
+        # real browser. A plain httpx/OpenSSL TLS stack fails this gate --
+        # crucially, only from datacenter IPs: residential IPs (e.g. a laptop)
+        # are not gated, so httpx appears to work locally but is blocked from
+        # EC2. curl_cffi reproduces Chrome's exact fingerprint via
+        # curl-impersonate, far cheaper than driving a real browser per request.
         self._curl = CurlAsyncSession(impersonate="chrome124")
         self._fb_dtsg: str | None = None
         self._lsd: str | None = None
@@ -114,7 +105,12 @@ class InstagramClient:
         """
         async with self._token_lock:
             if force or self._fb_dtsg is None or self._lsd is None:
-                response = await self.client.get("https://www.instagram.com/")
+                response = await self._curl.get(
+                    "https://www.instagram.com/",
+                    headers=self.headers,
+                    cookies=self.cookies,
+                    timeout=15.0,
+                )
                 html = response.text
                 dtsg_match = _FB_DTSG_RE.search(html)
                 lsd_match = _LSD_RE.search(html)
@@ -212,38 +208,52 @@ class InstagramClient:
         headers: dict[str, str] | None = None,
         handle: str = "",
     ) -> dict[str, Any]:
-        """GET with 429/timeout backoff. 401/403 surface immediately (never
-        retried in-loop -- a blocked session retrying itself is pointless,
-        and the caller needs it to surface right away so the account pool
-        can mark the account for review)."""
+        """GET with 429/timeout backoff, issued through the Chrome-impersonating
+        curl_cffi client so it clears Instagram's TLS-fingerprint gate on these
+        web endpoints (see __init__ -- plain httpx passes locally but is 429'd
+        from datacenter IPs). 401/403 surface immediately (never retried
+        in-loop -- a blocked session retrying itself is pointless, and the
+        caller needs it to surface right away so the account pool can mark the
+        account for review)."""
+        merged_headers = {**self.headers, **(headers or {})}
         last_retry_after: int | None = None
         for attempt in range(settings.SCRAPER_MAX_RETRIES + 1):
             await self._rate_limiter.acquire()
             try:
-                response = await self.client.get(url, params=params, headers=headers)
-                if response.status_code == 429:
-                    retry_after_header = response.headers.get("Retry-After")
-                    last_retry_after = int(retry_after_header) if retry_after_header else None
-                    if attempt < settings.SCRAPER_MAX_RETRIES:
-                        wait_s = last_retry_after if last_retry_after else min(
-                            _BACKOFF_BASE_S * (2 ** attempt), _BACKOFF_MAX_S
-                        )
-                        wait_s += random.uniform(0, wait_s * 0.2)  # jitter
-                        await asyncio.sleep(wait_s)
-                        continue
-                    raise ScraperRateLimitError(handle=handle, retry_after=last_retry_after)
-                elif response.status_code in (401, 403):
-                    raise ScraperBlockedError(handle=handle)
-
-                response.raise_for_status()
-                return response.json()
-            except httpx.TimeoutException:
+                response = await self._curl.get(
+                    url,
+                    params=params,
+                    headers=merged_headers,
+                    cookies=self.cookies,
+                    timeout=15.0,
+                )
+            except Exception:
+                # curl_cffi surfaces timeouts/network blips as generic errors
+                # and has no implicit timeout guard -- treat like a retryable
+                # stall, mirroring _graphql_post.
                 if attempt < settings.SCRAPER_MAX_RETRIES:
                     wait_s = min(_BACKOFF_BASE_S * (2 ** attempt), _BACKOFF_MAX_S)
                     wait_s += random.uniform(0, wait_s * 0.2)
                     await asyncio.sleep(wait_s)
                     continue
                 raise ScraperTimeoutError(handle=handle)
+
+            if response.status_code == 429:
+                retry_after_header = response.headers.get("Retry-After")
+                last_retry_after = int(retry_after_header) if retry_after_header else None
+                if attempt < settings.SCRAPER_MAX_RETRIES:
+                    wait_s = last_retry_after if last_retry_after else min(
+                        _BACKOFF_BASE_S * (2 ** attempt), _BACKOFF_MAX_S
+                    )
+                    wait_s += random.uniform(0, wait_s * 0.2)  # jitter
+                    await asyncio.sleep(wait_s)
+                    continue
+                raise ScraperRateLimitError(handle=handle, retry_after=last_retry_after)
+            elif response.status_code in (401, 403):
+                raise ScraperBlockedError(handle=handle)
+
+            response.raise_for_status()
+            return response.json()
         raise ScraperTimeoutError(handle=handle)
 
     async def get_user_info(self, username: str) -> dict[str, Any]:
@@ -374,5 +384,4 @@ class InstagramClient:
         return connection
 
     async def close(self):
-        await self.client.aclose()
         await self._curl.close()
