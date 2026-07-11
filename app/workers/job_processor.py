@@ -59,16 +59,21 @@ class JobProcessor:
             account_repo = InstagramAccountRepo(session)
             self._account = await account_repo.acquire_healthy_account(worker_id=WORKER_ID)
             if self._account is None:
-                logger.critical("No healthy Instagram accounts available -- pool exhausted")
-                # Transient, not terminal -- the pool recovers on its own
-                # (cooldowns expire, stale leases get reaped), so this
-                # should retry rather than die permanently like a real
-                # scrape failure. Same retry_count/SCRAPER_MAX_RETRIES
-                # bound as every other failure path below.
-                job.retry_count += 1
-                job.status = (
-                    "retry_pending" if job.retry_count < settings.SCRAPER_MAX_RETRIES else "failed"
-                )
+                # Pool contention, not a scrape failure -- this job never got
+                # to attempt anything, so it shouldn't spend retry_count the
+                # same way a real failure does. retry_failed_scrapes()
+                # re-dispatches *every* retry_pending job on each tick, so
+                # with N queued influencers and 1 account, N-1 of them hit
+                # this branch every single tick; counting those against
+                # SCRAPER_MAX_RETRIES would burn the budget in a few ticks
+                # regardless of how deep the backlog actually is. Always
+                # retry_pending, uncounted -- it naturally stops once the
+                # pool has spare capacity (or stays queued forever if it
+                # truly never does, which is the correct outcome: that's an
+                # operator problem -- register more accounts -- not a
+                # per-job one).
+                logger.warning("No healthy Instagram accounts available -- will retry")
+                job.status = "retry_pending"
                 job.error_message = "no healthy Instagram accounts available"
                 job.finished_at = datetime.now(timezone.utc)
                 job.duration_s = time.perf_counter() - start_time
