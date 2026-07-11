@@ -9,8 +9,8 @@ output "ec2_instance_id" {
 }
 
 output "rds_endpoint" {
-  description = "RDS instance endpoint (host:port)"
-  value       = aws_db_instance.scraper.endpoint
+  description = "RDS instance endpoint (host:port) — existing viralytics-db instance, not created by this stack"
+  value       = data.aws_db_instance.existing.endpoint
 }
 
 output "sqs_queue_url" {
@@ -31,8 +31,9 @@ output "api_url" {
 output "next_steps" {
   description = "What to do after provisioning"
   value       = <<-EOT
-    ✅ EC2, RDS, and SQS are provisioned. Bootstrap ran automatically on first boot
-    (migrations applied, containers started).
+    ✅ EC2 and SQS are provisioned (RDS reuses the existing viralytics-db
+    instance). Bootstrap ran automatically on first boot (migrations applied,
+    containers started).
 
     STEP 1 — Verify:
       curl http://${aws_instance.app.public_ip}:8000/health

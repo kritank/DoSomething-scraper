@@ -68,7 +68,12 @@ resource "aws_instance" "app" {
     ghcr_username = var.ghcr_username
     ghcr_token    = var.ghcr_token
 
-    database_url           = "postgresql+asyncpg://${var.db_username}:${var.db_password}@${aws_db_instance.scraper.address}:5432/${var.db_name}"
+    database_url = "postgresql+asyncpg://${var.db_username}:${var.db_password}@${data.aws_db_instance.existing.address}:5432/${var.db_name}"
+    db_host      = data.aws_db_instance.existing.address
+    db_username  = var.db_username
+    db_password  = var.db_password
+    db_name      = var.db_name
+
     aws_region             = var.aws_region
     aws_sqs_queue_url      = aws_sqs_queue.scrape_jobs.url
     account_encryption_key = var.account_encryption_key
@@ -92,7 +97,9 @@ resource "aws_instance" "app" {
     Project = "DoSomething-scraper"
   }
 
-  depends_on = [aws_db_instance.scraper]
+  # user_data creates the app database over this SG rule on first boot —
+  # make sure the rule exists before the instance launches, not just app_sg itself.
+  depends_on = [aws_security_group_rule.rds_from_app]
 }
 
 # ── Public IP output note ──────────────────────────────────────────────────────

@@ -1,67 +1,22 @@
 # ── RDS PostgreSQL ─────────────────────────────────────────────────────────────
+# Reuses the existing "viralytics-db" instance rather than creating a new one —
+# it was already provisioned for this project. We only add a security-group
+# rule granting the new app EC2 instance access to it.
 
-resource "aws_db_subnet_group" "scraper" {
-  name       = "dosomething-scraper-db-subnet-group"
-  subnet_ids = data.aws_subnets.default.ids
-
-  tags = {
-    Name    = "dosomething-scraper-db-subnet-group"
-    Project = "DoSomething-scraper"
-  }
+data "aws_db_instance" "existing" {
+  db_instance_identifier = "viralytics-db"
 }
 
-# Ingress only from the app's own security group — never opened to the internet.
-resource "aws_security_group" "rds_sg" {
-  name        = "dosomething-scraper-rds-sg"
-  description = "DoSomething-scraper: allow Postgres only from the app EC2 instance"
-  vpc_id      = data.aws_vpc.default.id
-
-  ingress {
-    description     = "Postgres from app EC2"
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.app_sg.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name    = "dosomething-scraper-rds-sg"
-    Project = "DoSomething-scraper"
-  }
-}
-
-resource "aws_db_instance" "scraper" {
-  identifier     = "dosomething-scraper-db"
-  engine         = "postgres"
-  engine_version = "16"
-  instance_class = var.db_instance_class
-
-  allocated_storage     = var.db_allocated_storage
-  max_allocated_storage = var.db_allocated_storage * 2 # allow modest storage autoscaling
-  storage_type          = "gp3"
-
-  db_name  = var.db_name
-  username = var.db_username
-  password = var.db_password
-
-  db_subnet_group_name   = aws_db_subnet_group.scraper.name
-  vpc_security_group_ids = [aws_security_group.rds_sg.id]
-  publicly_accessible    = false
-
-  backup_retention_period   = 7
-  skip_final_snapshot       = false
-  final_snapshot_identifier = "dosomething-scraper-db-final"
-  deletion_protection       = true
-
-  tags = {
-    Name    = "dosomething-scraper-db"
-    Project = "DoSomething-scraper"
-  }
+# The existing instance's own security group (viralytics-rds-sg) already has
+# ingress from another SG (its original app instance, if any). We add ours
+# alongside it rather than replacing/managing the whole security group, since
+# that SG isn't owned by this Terraform state.
+resource "aws_security_group_rule" "rds_from_app" {
+  type                     = "ingress"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  security_group_id        = "sg-013c2c72999a34b34" # viralytics-rds-sg
+  source_security_group_id = aws_security_group.app_sg.id
+  description              = "Postgres from dosomething-scraper app EC2"
 }

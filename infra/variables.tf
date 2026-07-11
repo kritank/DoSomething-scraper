@@ -7,9 +7,9 @@ variable "aws_region" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type. t3.small (2 GB RAM) — api+worker+scheduler+Playwright/Chromium together need more headroom than t3.micro."
+  description = "EC2 instance type. NOTE: t3.micro (1 GB RAM) risks OOM running api+worker+scheduler+Playwright/Chromium together on one box — t3.small (2 GB) is the safer default if cost allows."
   type        = string
-  default     = "t3.small"
+  default     = "t3.micro"
 }
 
 variable "key_pair_name" {
@@ -37,33 +37,24 @@ variable "ghcr_token" {
 }
 
 # ── RDS (PostgreSQL) ───────────────────────────────────────────────────────────
-
-variable "db_instance_class" {
-  description = "RDS instance class"
-  type        = string
-  default     = "db.t3.micro"
-}
-
-variable "db_allocated_storage" {
-  description = "RDS allocated storage in GB"
-  type        = number
-  default     = 20
-}
+# This stack does NOT create an RDS instance — it connects to the existing
+# "viralytics-db" instance (see rds.tf). These are that instance's actual
+# credentials, not values used to provision anything.
 
 variable "db_name" {
-  description = "Database name"
+  description = "Database name on the existing viralytics-db instance — created manually via psql before first apply, Terraform does not create it"
   type        = string
-  default     = "viralytics"
+  default     = "viralytics_scrapper"
 }
 
 variable "db_username" {
-  description = "Master DB username"
+  description = "Username on the existing viralytics-db instance"
   type        = string
   default     = "viralytics_admin"
 }
 
 variable "db_password" {
-  description = "Master DB password"
+  description = "Password for db_username on the existing viralytics-db instance"
   type        = string
   sensitive   = true
 }

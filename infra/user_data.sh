@@ -14,7 +14,7 @@ echo "=== DoSomething-scraper Bootstrap: $(date) ==="
 
 # ── 1. System packages ─────────────────────────────────────────────────────────
 apt-get update -y
-apt-get install -y docker.io docker-compose curl
+apt-get install -y docker.io docker-compose curl postgresql-client
 
 systemctl enable docker
 systemctl start docker
@@ -40,6 +40,17 @@ LOG_LEVEL=INFO
 ENVEOF
 
 chmod 600 /opt/app/.env.production
+
+# ── 3b. Create the app database on the existing RDS instance if it doesn't
+# exist yet ─────────────────────────────────────────────────────────────────────
+# viralytics-db is a shared, pre-existing instance (not created by this stack) —
+# this only creates the one database this app uses, idempotently, so re-running
+# bootstrap (or a second EC2) never fails on "database already exists."
+if ! PGPASSWORD='${db_password}' psql -h '${db_host}' -U '${db_username}' -d postgres -tAc \
+     "SELECT 1 FROM pg_database WHERE datname = '${db_name}'" | grep -q 1; then
+  PGPASSWORD='${db_password}' psql -h '${db_host}' -U '${db_username}' -d postgres -c \
+    "CREATE DATABASE ${db_name}"
+fi
 
 # ── 4. Write docker-compose.prod.yml ──────────────────────────────────────────
 cat > /opt/app/docker-compose.prod.yml << 'COMPOSEEOF'
