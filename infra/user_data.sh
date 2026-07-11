@@ -45,7 +45,7 @@ chmod 600 /opt/app/.env.production
 cat > /opt/app/docker-compose.prod.yml << 'COMPOSEEOF'
 services:
   migrate:
-    image: ghcr.io/ambujalpha/dosomething-scraper-api:latest
+    image: ghcr.io/${ghcr_username}/dosomething-scraper-api:latest
     container_name: dosomething_scraper_migrate
     env_file:
       - /opt/app/.env.production
@@ -53,7 +53,7 @@ services:
     restart: "no"
 
   api:
-    image: ghcr.io/ambujalpha/dosomething-scraper-api:latest
+    image: ghcr.io/${ghcr_username}/dosomething-scraper-api:latest
     container_name: dosomething_scraper_api
     restart: unless-stopped
     env_file:
@@ -71,7 +71,7 @@ services:
       start_period: 20s
 
   worker:
-    image: ghcr.io/ambujalpha/dosomething-scraper-worker:latest
+    image: ghcr.io/${ghcr_username}/dosomething-scraper-worker:latest
     container_name: dosomething_scraper_worker
     restart: unless-stopped
     env_file:
@@ -81,7 +81,7 @@ services:
         condition: service_completed_successfully
 
   scheduler:
-    image: ghcr.io/ambujalpha/dosomething-scraper-scheduler:latest
+    image: ghcr.io/${ghcr_username}/dosomething-scraper-scheduler:latest
     container_name: dosomething_scraper_scheduler
     restart: unless-stopped
     env_file:
@@ -111,9 +111,9 @@ echo "${ghcr_token}" | docker login ghcr.io -u "${ghcr_username}" --password-std
 
 # ── 6. Pull images and start ───────────────────────────────────────────────────
 cd /opt/app
-docker pull ghcr.io/ambujalpha/dosomething-scraper-api:latest
-docker pull ghcr.io/ambujalpha/dosomething-scraper-worker:latest
-docker pull ghcr.io/ambujalpha/dosomething-scraper-scheduler:latest
+docker pull ghcr.io/${ghcr_username}/dosomething-scraper-api:latest
+docker pull ghcr.io/${ghcr_username}/dosomething-scraper-worker:latest
+docker pull ghcr.io/${ghcr_username}/dosomething-scraper-scheduler:latest
 
 docker-compose -f docker-compose.prod.yml up -d
 

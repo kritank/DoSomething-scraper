@@ -27,7 +27,7 @@ jobs:
             dockerfile: Dockerfile.scheduler
 
     env:
-      IMAGE: ghcr.io/ambujalpha/dosomething-scraper-${{ matrix.service }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/dosomething-scraper-${{ matrix.service }}
 
     steps:
       - name: Checkout code

@@ -138,7 +138,7 @@ UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/
 Deployment is fully automated, matching the DoSomething-be/DoSomething-Meta pattern:
 
 1. **`.github/workflows/build-push.yml`** builds the `api`/`worker`/`scheduler` images
-   and pushes them to GHCR (`ghcr.io/ambujalpha/dosomething-scraper-{api,worker,scheduler}`)
+   and pushes them to GHCR (`ghcr.io/<your-github-username>/dosomething-scraper-{api,worker,scheduler}`)
    on every push to `main` — i.e. every PR merge. Only a `main` push produces the
    `:latest` tag that production actually tracks.
 2. **`infra/`** is a Terraform stack (own EC2 + RDS Postgres + SQS + IAM — a
