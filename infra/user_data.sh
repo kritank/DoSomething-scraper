@@ -19,6 +19,19 @@ apt-get install -y docker.io docker-compose curl postgresql-client
 systemctl enable docker
 systemctl start docker
 
+# ── 1b. Swap ────────────────────────────────────────────────────────────────────
+# t3.micro has only 1 GB RAM and no swap by default -- api+worker+scheduler
+# containers alone leave very little headroom, and a Playwright/Chromium
+# instance (for account registration/login) can tip it into OOM. 1 GB swap
+# gives breathing room without resizing the instance.
+if [ ! -f /swapfile ]; then
+  fallocate -l 1G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
 # ── 2. Directory structure ─────────────────────────────────────────────────────
 mkdir -p /opt/app
 
@@ -80,6 +93,11 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+    # This VPC has no IPv6 route -- without this, Chromium/httpx resolve
+    # Instagram's AAAA record, try to connect over IPv6, and hang until timeout.
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
 
   worker:
     image: ghcr.io/${ghcr_username}/dosomething-scraper-worker:latest
@@ -90,6 +108,9 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
 
   scheduler:
     image: ghcr.io/${ghcr_username}/dosomething-scraper-scheduler:latest
@@ -100,6 +121,9 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
 
   watchtower:
     image: containrrr/watchtower:latest
