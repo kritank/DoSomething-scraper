@@ -89,6 +89,20 @@ async def reap_stale_account_leases():
             logger.info(f"Released {released} stale Instagram account lease(s)")
 
 
+async def reap_stale_jobs():
+    """Crash-recovery valve for the ScrapeJob row itself -- see
+    reap_stale_account_leases. Uses the same timeout as the account lease
+    (ACCOUNT_LEASE_TIMEOUT_S): a job outliving its account's lease means the
+    worker that held both is presumed dead."""
+    async with get_session() as session:
+        reaped = await ScrapeJobRepo(session).reap_stale_running(
+            timeout_s=settings.ACCOUNT_LEASE_TIMEOUT_S,
+            max_retries=settings.SCRAPER_MAX_RETRIES,
+        )
+        if reaped:
+            logger.info(f"Reaped {reaped} stale running scrape job(s)")
+
+
 async def main():
     await init_db()
 
@@ -100,6 +114,10 @@ async def main():
     )
     scheduler.add_job(
         reap_stale_account_leases,
+        CronTrigger.from_crontab(settings.CRON_RETRY_FAILED, timezone=settings.SCHEDULER_TIMEZONE),
+    )
+    scheduler.add_job(
+        reap_stale_jobs,
         CronTrigger.from_crontab(settings.CRON_RETRY_FAILED, timezone=settings.SCHEDULER_TIMEZONE),
     )
     scheduler.start()

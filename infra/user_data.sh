@@ -14,10 +14,23 @@ echo "=== DoSomething-scraper Bootstrap: $(date) ==="
 
 # ── 1. System packages ─────────────────────────────────────────────────────────
 apt-get update -y
-apt-get install -y docker.io docker-compose curl postgresql-client
+apt-get install -y docker.io curl postgresql-client
 
 systemctl enable docker
 systemctl start docker
+
+# Ubuntu's `docker-compose` apt package is the unmaintained v1.29.2 Python
+# CLI, pinned forever at that version. Its container-recreate path inspects
+# image metadata for a legacy 'ContainerConfig' field that BuildKit-built
+# images (everything this repo's CI produces) don't have, so any
+# `docker-compose up` that needs to recreate an existing container dies with
+# `KeyError: 'ContainerConfig'`. Install the actively-maintained Compose v2
+# static binary instead -- same CLI surface, none of the legacy-metadata
+# assumptions. Installed ahead of /usr/bin on PATH so it wins even if
+# something later apt-installs the v1 package as a dependency.
+curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 \
+  -o /usr/local/bin/docker-compose
+chmod +x /usr/local/bin/docker-compose
 
 # ── 1b. Swap ────────────────────────────────────────────────────────────────────
 # t3.micro has only 1 GB RAM and no swap by default -- api+worker+scheduler
@@ -88,7 +101,11 @@ services:
       migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # curl isn't installed in the python:3.13-slim image the api is built
+      # from -- this silently 100%-failed forever (FailingStreak growing
+      # unbounded, "unhealthy" status) until noticed. python is always
+      # present, so use it directly instead of adding a curl layer.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -137,6 +154,11 @@ services:
       - WATCHTOWER_POLL_INTERVAL=60
       - WATCHTOWER_CLEANUP=true
       - WATCHTOWER_ROLLING_RESTART=true
+      # containrrr/watchtower:latest bundles an old Docker client that
+      # defaults to API version 1.25 when it can't auto-negotiate. Modern
+      # Docker Engine (this host runs 29.x / API 1.52) refuses anything
+      # below 1.44, so watchtower crash-loops on every poll until pinned.
+      - DOCKER_API_VERSION=1.44
     command: dosomething_scraper_api dosomething_scraper_worker dosomething_scraper_scheduler
 COMPOSEEOF
 
