@@ -50,14 +50,20 @@ class InstagramParser:
                 pk=item.get("pk", ""),
                 code=item.get("code", ""),
                 caption=item.get("caption"),
-                like_count=item.get("like_count", 0),
-                comment_count=item.get("comment_count", 0),
-                view_count=item.get("view_count", 0),
-                play_count=item.get("play_count", 0),
-                media_type=item.get("media_type", 1),
-                taken_at=item.get("taken_at", 0),
+                # Instagram sometimes sends these keys with an explicit JSON
+                # null rather than omitting them (seen on older posts) --
+                # `.get(key, default)` only falls back to default when the
+                # key is *missing*, so an explicit null sails through as
+                # None and fails Pydantic's int validation. `or default`
+                # catches both cases.
+                like_count=item.get("like_count") or 0,
+                comment_count=item.get("comment_count") or 0,
+                view_count=item.get("view_count") or 0,
+                play_count=item.get("play_count") or 0,
+                media_type=item.get("media_type") or 1,
+                taken_at=item.get("taken_at") or 0,
                 accessibility_caption=item.get("accessibility_caption"),
-                is_paid_partnership=item.get("is_paid_partnership", False),
+                is_paid_partnership=item.get("is_paid_partnership") or False,
                 product_type=item.get("product_type"),
                 music_metadata=item.get("music_metadata"),
                 original_height=item.get("original_height"),
@@ -65,7 +71,8 @@ class InstagramParser:
                 locations=item.get("locations") or [],
                 coauthor_producers=item.get("coauthor_producers") or [],
                 tagged_usernames=(item.get("fb_user_tags") or {}).get("in") or [],
-                counts_disabled=item.get("like_and_view_counts_disabled", False),
+                counts_disabled=item.get("like_and_view_counts_disabled") or False,
+                is_pinned=bool(item.get("timeline_pinned_user_ids")),
             )
             parsed_items.append(parsed)
             

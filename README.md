@@ -135,9 +135,39 @@ UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/
 
 ## 📦 Deployment
 
-A `docker-compose.prod.yml` is provided for production environments (e.g., AWS EC2). 
-The production configuration:
-- Disables the local Postgres and Redis containers.
-- Expects `DATABASE_URL` to point to a managed database (like Amazon RDS).
-- Expects `QUEUE_BACKEND=sqs` and valid AWS credentials for Amazon SQS.
-- Configures Nginx with TLS/SSL certificate mounting points.
+Deployment is fully automated, matching the DoSomething-be/DoSomething-Meta pattern:
+
+1. **`.github/workflows/build-push.yml`** builds the `api`/`worker`/`scheduler` images
+   and pushes them to GHCR (`ghcr.io/ambujalpha/dosomething-scraper-{api,worker,scheduler}`)
+   on every push to `main` — i.e. every PR merge. Only a `main` push produces the
+   `:latest` tag that production actually tracks.
+2. **`infra/`** is a Terraform stack (own EC2 + RDS Postgres + SQS + IAM — a
+   separate box from DoSomething-be, since this service has its own schema,
+   its own long-running worker/scheduler processes, and no public frontend).
+   Provision it via the **`infra.yml`** workflow (`workflow_dispatch`, choose
+   `plan`/`apply`/`destroy`) — see `infra/variables.tf` for the GitHub secrets
+   it needs (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`,
+   `TF_STATE_BUCKET`, `EC2_KEY_PAIR_NAME`, `ADMIN_CIDR_BLOCK`, `GHCR_TOKEN`,
+   `DB_PASSWORD`, `ACCOUNT_ENCRYPTION_KEY`, `API_KEY`).
+3. On the box, **Watchtower** polls GHCR every 60s and auto-restarts any of
+   the three containers once a new `:latest` image lands — so a merged PR is
+   live within roughly a minute of the build finishing.
+
+There's no public domain/nginx in front of this box (it's an internal
+API + background worker, not a public-facing app) — the API port (8000) and
+SSH are both restricted at the security-group level to `admin_cidr_block`.
+
+`docker-compose.prod.yml` at the repo root mirrors what Terraform's
+`infra/user_data.sh` deploys (SQS instead of Redis, RDS instead of local
+Postgres, a one-shot `migrate` service that runs `alembic upgrade head`
+before `api`/`worker`/`scheduler` start) — the deployed version on EC2 pulls
+prebuilt GHCR images; this local copy builds from source, useful for testing
+the prod configuration before merging.
+
+After the first `terraform apply`, register at least one Instagram account —
+workers fail fast with "no healthy Instagram accounts available" otherwise:
+```bash
+ssh -i <key>.pem ubuntu@<ec2-ip>
+docker exec -it dosomething_scraper_worker uv run python scripts/register_instagram_account.py --username <handle>
+```
+(Must run in the `worker` container — it's the one with Playwright/Chromium installed.)

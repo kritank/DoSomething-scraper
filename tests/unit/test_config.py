@@ -48,13 +48,18 @@ class TestSettingsDefaults:
         s = self._make_settings()
         assert s.MAX_SCRAPER_WORKERS == 3
 
-    def test_scrape_delay_bounds(self):
+    def test_account_rate_limit_positive(self):
         s = self._make_settings()
-        assert s.SCRAPE_DELAY_MIN_S < s.SCRAPE_DELAY_MAX_S
+        assert s.ACCOUNT_RATE_LIMIT_RPS > 0
+        assert s.ACCOUNT_RATE_LIMIT_BURST > 0
 
     def test_max_posts_per_scrape_positive(self):
         s = self._make_settings()
         assert s.MAX_POSTS_PER_SCRAPE > 0
+
+    def test_comment_sync_window_default(self):
+        s = self._make_settings()
+        assert s.COMMENT_SYNC_WINDOW_DAYS == 30
 
     def test_api_v1_prefix(self):
         s = self._make_settings()

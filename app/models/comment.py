@@ -23,6 +23,7 @@ class Comment(Base):
         UUID(as_uuid=True),
         ForeignKey("posts.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
     )
     comment_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     # Null for top-level comments; set to the parent's comment_id for a reply.

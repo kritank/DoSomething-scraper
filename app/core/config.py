@@ -47,17 +47,37 @@ class Settings(BaseSettings):
 
     # ── Scraper ───────────────────────────────────────────────────────────────
     MAX_SCRAPER_WORKERS: int = 3
-    SCRAPE_DELAY_MIN_S: float = 2.0
-    SCRAPE_DELAY_MAX_S: float = 6.0
     SCRAPER_TIMEOUT_S: int = 30
     SCRAPER_MAX_RETRIES: int = 3
     MAX_POSTS_PER_SCRAPE: int = 50
-    # Comment/reply sync is the expensive phase (paced 2-6s per request) --
-    # this many posts' comment sync run concurrently, each in its own DB
-    # session. Higher = faster wall-clock time but a proportionally higher
-    # request rate hitting Instagram from one account/session.
+    # Comment/reply sync is the expensive phase -- this many posts' comment
+    # sync run concurrently, each in its own DB session. Higher = faster
+    # wall-clock time but a proportionally higher request rate hitting
+    # Instagram from one account/session (bounded overall by the per-account
+    # rate limiter below, since all concurrent tasks share one InstagramClient).
     COMMENT_SYNC_CONCURRENCY: int = 6
     SCRAPER_HEADLESS: bool = True
+
+    # Only re-sync comments/replies for posts newer than this many days.
+    # Comments trickle in slowly on old posts, so re-walking the full
+    # comment/reply tree of every post in MAX_POSTS_PER_SCRAPE on every run
+    # is mostly wasted request budget. 0 disables the window (sync every
+    # selected post regardless of age).
+    COMMENT_SYNC_WINDOW_DAYS: int = 30
+
+    # Per-Instagram-account request pacing, as a token bucket: ACCOUNT_RATE_LIMIT_RPS
+    # steady-state requests/sec with a small burst allowance. This is the
+    # single source of request pacing (replaces ad-hoc per-coroutine sleeps),
+    # so it correctly throttles the *aggregate* request rate against one
+    # account even when several comment-sync tasks share that account's
+    # InstagramClient concurrently (see COMMENT_SYNC_CONCURRENCY).
+    ACCOUNT_RATE_LIMIT_RPS: float = 0.3
+    ACCOUNT_RATE_LIMIT_BURST: int = 2
+
+    # Spread the midnight dispatch of all active influencers across this
+    # many seconds instead of enqueuing every job at once. 0 disables
+    # staggering (dispatch everything immediately).
+    DAILY_SCRAPE_STAGGER_WINDOW_S: int = 20 * 3600
 
     # ── Instagram Account Pool ─────────────────────────────────────────────────
     # Accounts are logged in via scripts/register_instagram_account.py (Playwright

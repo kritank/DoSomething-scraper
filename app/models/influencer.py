@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import date, datetime
+from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -27,7 +27,22 @@ class Influencer(Base):
         nullable=False,
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
-    
+
+    # Don't pull posts older than this date (null = full history). Bounds
+    # the one-time backfill's request count for accounts with years of posts.
+    scrape_posts_since: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+
+    # Backfill state: the initial full-history pull can take many runs to
+    # finish (rate limits, crashes, worker restarts). backfill_completed
+    # distinguishes "still backfilling" from steady-state incremental
+    # scraping; backfill_cursor is the feed's next_max_id so a resumed
+    # backfill continues near where it left off instead of re-walking
+    # already-fetched pages.
+    backfill_completed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    backfill_cursor: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

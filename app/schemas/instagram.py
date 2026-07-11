@@ -64,6 +64,10 @@ class InstagramMediaItem(BaseModel):
     coauthor_producers: list[dict[str, Any]] = []
     tagged_usernames: list[dict[str, Any]] = []
     counts_disabled: bool = False
+    # Pinned-to-profile posts stay pinned to the top of the feed regardless
+    # of taken_at, so a backfill age cutoff must not stop on (or be
+    # confused by) one of these -- skip them in that specific check instead.
+    is_pinned: bool = False
 
 
 class InstagramComment(BaseModel):

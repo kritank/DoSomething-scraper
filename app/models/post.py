@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -17,6 +17,11 @@ if TYPE_CHECKING:
 
 class Post(Base):
     __tablename__ = "posts"
+    __table_args__ = (
+        # Backs the feed-pagination cutoff scan and the comment-sync
+        # window query, both filtered/ordered by (influencer_id, posted_at).
+        Index("ix_posts_influencer_id_posted_at", "influencer_id", "posted_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4

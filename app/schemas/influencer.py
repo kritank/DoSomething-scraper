@@ -1,3 +1,5 @@
+from datetime import date
+from typing import Optional
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
@@ -5,6 +7,12 @@ from pydantic import BaseModel, ConfigDict
 class InfluencerCreate(BaseModel):
     handle: str
     category_id: UUID
+    # Don't pull posts older than this date (omit/null = full history).
+    scrape_posts_since: Optional[date] = None
+
+
+class InfluencerScrapeSettingsUpdate(BaseModel):
+    scrape_posts_since: Optional[date] = None
 
 
 class InfluencerOut(BaseModel):
@@ -12,5 +20,7 @@ class InfluencerOut(BaseModel):
     handle: str
     category_id: UUID
     is_active: bool
+    scrape_posts_since: Optional[date] = None
+    backfill_completed: bool
 
     model_config = ConfigDict(from_attributes=True)

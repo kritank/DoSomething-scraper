@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -17,17 +18,38 @@ from app.queue.factory import get_queue
 logger = logging.getLogger(__name__)
 
 async def run_daily_scrapes():
-    async with get_session() as session:
-        dispatch_service = DispatchService(session)
-        influencer_repo = InfluencerRepo(session)
+    """Dispatch a scrape job for every active influencer.
 
-        influencers = await influencer_repo.get_all()
-        count = 0
-        for influencer in influencers:
-            if influencer.is_active:
-                await dispatch_service.dispatch_scrape_job(influencer.id)
-                count += 1
-        logger.info(f"Dispatched scrapes for {count} influencers")
+    Spread across DAILY_SCRAPE_STAGGER_WINDOW_S instead of enqueuing all of
+    them in one instant burst at midnight -- a smoother arrival rate is
+    easier on the queue and on the Instagram account pool (jobs still
+    queue up if there are fewer accounts than influencers, but they arrive
+    over hours instead of all at once). Each dispatch uses its own
+    short-lived session rather than holding one connection open for the
+    whole (potentially hours-long) stagger window.
+    """
+    async with get_session() as session:
+        influencer_repo = InfluencerRepo(session)
+        influencers = [i for i in await influencer_repo.get_all() if i.is_active]
+
+    if not influencers:
+        logger.info("No active influencers to dispatch")
+        return
+
+    stagger_window_s = settings.DAILY_SCRAPE_STAGGER_WINDOW_S
+    interval_s = stagger_window_s / len(influencers) if stagger_window_s > 0 else 0
+
+    count = 0
+    for influencer in influencers:
+        async with get_session() as session:
+            dispatch_service = DispatchService(session)
+            await dispatch_service.dispatch_scrape_job(influencer.id)
+        count += 1
+
+        if interval_s > 0 and count < len(influencers):
+            await asyncio.sleep(interval_s * random.uniform(0.5, 1.5))
+
+    logger.info(f"Dispatched scrapes for {count} influencers")
 
 
 async def retry_failed_scrapes():

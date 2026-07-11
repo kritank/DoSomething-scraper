@@ -1,0 +1,101 @@
+name: Provision AWS Infrastructure (Terraform)
+
+# Manual trigger only — run once to create the EC2/RDS/SQS resources.
+# Re-run to update infra (e.g., security group changes).
+# The EC2 instance itself is protected from replacement via lifecycle.ignore_changes,
+# and the RDS instance has deletion_protection enabled.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Terraform action to run"
+        required: true
+        default: "apply"
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+jobs:
+  terraform:
+    name: Terraform ${{ github.event.inputs.action }}
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ./infra
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.8"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init (S3 backend)
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ secrets.AWS_REGION }}"
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION }}
+          TF_VAR_key_pair_name: ${{ secrets.EC2_KEY_PAIR_NAME }}
+          TF_VAR_admin_cidr_block: ${{ secrets.ADMIN_CIDR_BLOCK }}
+          # GHCR credentials (for Watchtower to pull images from EC2)
+          TF_VAR_ghcr_username: ${{ github.actor }}
+          TF_VAR_ghcr_token: ${{ secrets.GHCR_TOKEN }}
+          # RDS
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+          # App secrets → written to /opt/app/.env.production on EC2
+          TF_VAR_account_encryption_key: ${{ secrets.ACCOUNT_ENCRYPTION_KEY }}
+          TF_VAR_api_key: ${{ secrets.API_KEY }}
+
+      - name: Terraform Apply
+        if: github.event.inputs.action == 'apply'
+        run: terraform apply -auto-approve tfplan
+
+      - name: Terraform Destroy
+        if: github.event.inputs.action == 'destroy'
+        run: terraform destroy -auto-approve
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION }}
+          TF_VAR_key_pair_name: ${{ secrets.EC2_KEY_PAIR_NAME }}
+          TF_VAR_admin_cidr_block: ${{ secrets.ADMIN_CIDR_BLOCK }}
+          TF_VAR_ghcr_username: ${{ github.actor }}
+          TF_VAR_ghcr_token: ${{ secrets.GHCR_TOKEN }}
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+          TF_VAR_account_encryption_key: ${{ secrets.ACCOUNT_ENCRYPTION_KEY }}
+          TF_VAR_api_key: ${{ secrets.API_KEY }}
+
+      - name: Show Outputs
+        if: github.event.inputs.action == 'apply'
+        run: terraform output
+
+      - name: Post Apply Summary
+        if: github.event.inputs.action == 'apply'
+        run: |
+          EC2_IP=$(terraform output -raw ec2_public_ip 2>/dev/null || echo "check outputs tab")
+          echo "## Infrastructure Provisioned ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| EC2 Public IP | \`$EC2_IP\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| API URL | http://$EC2_IP:8000 |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Next:** register an Instagram account (see infra/outputs.tf next_steps or terraform output next_steps)." >> $GITHUB_STEP_SUMMARY

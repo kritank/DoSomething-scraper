@@ -1,13 +1,14 @@
 import os
 import socket
 import time
+import uuid
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import asyncio
-import random
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -22,7 +23,7 @@ from app.models.feature_store import FeatureStore
 from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.scraper.client import InstagramClient
 from app.scraper.parser import InstagramParser
-from app.schemas.instagram import InstagramComment
+from app.schemas.instagram import InstagramComment, InstagramMediaItem
 from app.queue.base import ScrapeJobMessage
 from app.feature_extraction.extractor import FeatureExtractor
 
@@ -35,12 +36,6 @@ MAX_COMMENT_PAGES = 50   # per post, safety cap (~750 top-level comments/post)
 MAX_REPLY_PAGES = 20     # per comment thread, safety cap
 
 WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
-
-
-async def _polite_delay() -> None:
-    """Jittered pacing between requests -- looks less like a bot than a
-    fixed sleep, and spreads load if multiple workers run concurrently."""
-    await asyncio.sleep(random.uniform(settings.SCRAPE_DELAY_MIN_S, settings.SCRAPE_DELAY_MAX_S))
 
 
 class JobProcessor:
@@ -58,7 +53,7 @@ class JobProcessor:
                 return
 
             job.status = "running"
-            job.started_at = datetime.utcnow()
+            job.started_at = datetime.now(timezone.utc)
             await session.commit()
 
             account_repo = InstagramAccountRepo(session)
@@ -67,7 +62,7 @@ class JobProcessor:
                 logger.critical("No healthy Instagram accounts available -- pool exhausted")
                 job.status = "failed"
                 job.error_message = "no healthy Instagram accounts available"
-                job.finished_at = datetime.utcnow()
+                job.finished_at = datetime.now(timezone.utc)
                 job.duration_s = time.perf_counter() - start_time
                 await session.commit()
                 return
@@ -101,7 +96,7 @@ class JobProcessor:
                     job.status = (
                         "retry_pending" if job.retry_count < settings.SCRAPER_MAX_RETRIES else "failed"
                     )
-                job.finished_at = datetime.utcnow()
+                job.finished_at = datetime.now(timezone.utc)
                 job.duration_s = time.perf_counter() - start_time
                 await session.commit()
                 await account_repo.release(self._account.id, outcome, retry_after=retry_after)
@@ -109,11 +104,12 @@ class JobProcessor:
 
     async def _run_scrape(self, session: AsyncSession, job: ScrapeJob):
         handle = self.message.handle
-        
+        influencer = await session.get(Influencer, self.message.influencer_id)
+
         # 1. Fetch User Info
         raw_user = await self.client.get_user_info(handle)
         parsed_user = InstagramParser.parse_user_info(raw_user)
-        
+
         # Create profile snapshot
         snapshot = ProfileSnapshot(
             influencer_id=self.message.influencer_id,
@@ -146,21 +142,45 @@ class JobProcessor:
         )
         session.add(snapshot)
         await session.commit()
-        
+
         # 2 & 3. Fetch and save posts, paginating over the user's feed.
         #
-        # First scrape for an influencer (no posts saved yet): backfill full
-        # history by paginating until Instagram runs out of pages.
-        # Every scrape after that: page only until we hit a shortcode we've
-        # already saved. The feed is newest-first, so once we see a known
-        # post everything beyond it is already captured -- stop there
-        # instead of re-walking the whole history every day.
-        stmt = select(Post.id).where(Post.influencer_id == self.message.influencer_id).limit(1)
-        result = await session.execute(stmt)
-        is_first_scrape = result.scalar_one_or_none() is None
+        # Two independent knobs bound this pass:
+        #  - scrape_posts_since (per-influencer): how far back post discovery
+        #    goes at all. Pinned posts are exempt from this check -- they
+        #    sit at the top of the feed regardless of age and would
+        #    otherwise falsely look like "we've reached the cutoff".
+        #  - COMMENT_SYNC_WINDOW_DAYS (global): which posts -- new or
+        #    already known -- are worth re-fetching comments/metrics for
+        #    this run. A backfill still walks the full history bounded by
+        #    scrape_posts_since, but only posts inside the comment window
+        #    get their comment threads (re-)synced.
+        #
+        # Until scrape_posts_since is reached (or the feed runs out),
+        # backfill_completed stays False and pagination doesn't stop at the
+        # first already-known post -- it keeps going, so an interrupted
+        # backfill (crash, rate limit) resumes from backfill_cursor next run
+        # instead of silently treating the influencer as fully backfilled.
+        # Once backfill_completed is True, steady-state runs stop as soon as
+        # they reach a known post that's also outside the comment window --
+        # older posts are both already saved and not worth re-syncing.
+        posts_since_cutoff: datetime | None = None
+        if influencer.scrape_posts_since is not None:
+            posts_since_cutoff = datetime.combine(
+                influencer.scrape_posts_since, datetime.min.time()
+            ).replace(tzinfo=timezone.utc)
+
+        comment_sync_cutoff: datetime | None = None
+        if settings.COMMENT_SYNC_WINDOW_DAYS > 0:
+            comment_sync_cutoff = datetime.now(timezone.utc) - timedelta(
+                days=settings.COMMENT_SYNC_WINDOW_DAYS
+            )
+
+        is_backfilling = not influencer.backfill_completed
 
         posts_processed = 0
-        max_id = ""
+        max_id = (influencer.backfill_cursor or "") if is_backfilling else ""
+        sync_candidates: dict[UUID, Post] = {}
 
         while True:
             try:
@@ -173,26 +193,61 @@ class JobProcessor:
             if not items:
                 break
 
-            reached_known_post = False
-            for item in items:
-                stmt = select(Post).where(Post.shortcode == item.code)
-                result = await session.execute(stmt)
-                post = result.scalar_one_or_none()
+            # One bulk lookup per page instead of one SELECT per feed item.
+            stmt = select(Post).where(Post.shortcode.in_([item.code for item in items]))
+            result = await session.execute(stmt)
+            existing_by_code = {p.shortcode: p for p in result.scalars().all()}
 
-                if post:
-                    if is_first_scrape:
-                        continue  # duplicate within this backfill pass
-                    reached_known_post = True
+            stop_pagination = False
+            for item in items:
+                item_posted_at = datetime.fromtimestamp(item.taken_at, tz=timezone.utc)
+
+                if (
+                    posts_since_cutoff is not None
+                    and item_posted_at < posts_since_cutoff
+                    and not item.is_pinned
+                ):
+                    stop_pagination = True
                     break
 
+                within_comment_window = (
+                    comment_sync_cutoff is None or item_posted_at >= comment_sync_cutoff
+                )
+
+                post = existing_by_code.get(item.code)
+                if post is not None:
+                    if is_backfilling:
+                        continue  # duplicate within a resumed/overlapping backfill page
+
+                    if comment_sync_cutoff is None or not within_comment_window:
+                        # No window configured (old "cap at MAX_POSTS_PER_SCRAPE"
+                        # behavior) or this known post is already outside the
+                        # window -- everything further back in this
+                        # newest-first feed is too. Nothing left to gain.
+                        stop_pagination = True
+                        break
+
+                    prev_count = await self._last_comment_count(session, post.id)
+                    await self._record_metrics_snapshot(session, post, item)
+                    if prev_count is None or prev_count != item.comment_count:
+                        sync_candidates[post.id] = post
+                    continue
+
+                # New post.
+                #
+                # id is set explicitly (rather than relying on the column's
+                # default=uuid.uuid4) so it's available immediately below,
+                # without a flush -- commits happen once per page, not once
+                # per post.
                 caption_text = item.caption.get("text", "") if item.caption else ""
                 post = Post(
+                    id=uuid.uuid4(),
                     influencer_id=self.message.influencer_id,
                     shortcode=item.code,
                     media_pk=str(item.pk),
                     permalink=f"https://www.instagram.com/p/{item.code}/",
                     caption=caption_text,
-                    posted_at=datetime.fromtimestamp(item.taken_at),
+                    posted_at=item_posted_at,
                     accessibility_caption=item.accessibility_caption,
                     is_paid_partnership=item.is_paid_partnership,
                     product_type=item.product_type,
@@ -205,60 +260,45 @@ class JobProcessor:
                     counts_disabled=item.counts_disabled,
                 )
                 session.add(post)
-                await session.commit()
 
-                metrics = PostMetricsSnapshot(
-                    post_id=post.id,
-                    likes=item.like_count,
-                    comments=item.comment_count,
-                    # Reels/videos report their view count in play_count;
-                    # view_count is 0 for those and only meaningful for
-                    # media types that don't have a play_count at all.
-                    views=item.view_count or item.play_count,
-                )
-                session.add(metrics)
+                await self._record_metrics_snapshot(session, post, item)
 
                 media_type_label = MEDIA_TYPE_LABELS.get(item.media_type, "unknown")
                 features = FeatureExtractor.extract_features(post, media_type=media_type_label)
                 session.add(features)
 
                 posts_processed += 1
+                if within_comment_window:
+                    sync_candidates[post.id] = post
 
             await session.commit()
 
-            if reached_known_post or not raw_feed.get("more_available") or not next_max_id:
+            if stop_pagination or not raw_feed.get("more_available") or not next_max_id:
+                if is_backfilling:
+                    influencer.backfill_completed = True
+                    influencer.backfill_cursor = None
+                    await session.commit()
                 break
+
             max_id = next_max_id
-            await _polite_delay()
+            if is_backfilling:
+                influencer.backfill_cursor = max_id
+                await session.commit()
 
         job.posts_processed = posts_processed
         await session.commit()
 
-        # 4. Sync comments (including nested reply threads) for the most
-        # recent posts. Comments can land on a post at any time, so this
-        # re-checks older posts too, not just newly discovered ones -- but
-        # full historical backfill of comments (thousands of posts, each
-        # with its own paginated comment/reply tree) doesn't fit any
-        # reasonable time budget at a safe request pace, and old posts'
-        # comment counts change the least anyway. MAX_POSTS_PER_SCRAPE
-        # bounds the worst case regardless of how large the account's total
-        # post history is.
-        stmt = (
-            select(Post)
-            .where(
-                Post.influencer_id == self.message.influencer_id,
-                Post.media_pk.isnot(None),
-            )
-            .order_by(Post.posted_at.desc())
-            .limit(settings.MAX_POSTS_PER_SCRAPE)
-        )
-        result = await session.execute(stmt)
-        posts_to_sync = result.scalars().all()
+        # 4. Sync comments (including nested reply threads) for posts whose
+        # comment count changed since we last looked, capped at
+        # MAX_POSTS_PER_SCRAPE as a safety net regardless of window size.
+        posts_to_sync = list(sync_candidates.values())[: settings.MAX_POSTS_PER_SCRAPE]
 
         # Posts are synced concurrently (bounded by COMMENT_SYNC_CONCURRENCY),
         # each in its own DB session -- AsyncSession isn't safe for concurrent
         # use, and this is the main lever for fitting comment sync into a
-        # reasonable wall-clock budget instead of running one post at a time.
+        # reasonable wall-clock budget. Request pacing across all of these
+        # tasks is handled by self.client's shared rate limiter, not by
+        # sleeping here.
         semaphore = asyncio.Semaphore(settings.COMMENT_SYNC_CONCURRENCY)
 
         async def _sync_one(post: Post) -> None:
@@ -269,9 +309,33 @@ class JobProcessor:
                         await self._update_engagement_timing_features(post_session, post)
                 except Exception as e:
                     logger.warning("Comment sync failed", shortcode=post.shortcode, error=str(e))
-                await _polite_delay()
 
         await asyncio.gather(*(_sync_one(post) for post in posts_to_sync))
+
+    async def _record_metrics_snapshot(
+        self, session: AsyncSession, post: Post, item: InstagramMediaItem
+    ) -> None:
+        session.add(
+            PostMetricsSnapshot(
+                post_id=post.id,
+                likes=item.like_count,
+                comments=item.comment_count,
+                # Reels/videos report their view count in play_count;
+                # view_count is 0 for those and only meaningful for
+                # media types that don't have a play_count at all.
+                views=item.view_count or item.play_count,
+            )
+        )
+
+    async def _last_comment_count(self, session: AsyncSession, post_id: UUID) -> int | None:
+        stmt = (
+            select(PostMetricsSnapshot.comments)
+            .where(PostMetricsSnapshot.post_id == post_id)
+            .order_by(PostMetricsSnapshot.created_at.desc())
+            .limit(1)
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def _sync_comments_for_post(self, session: AsyncSession, post: Post) -> None:
         after: str | None = None
@@ -281,16 +345,16 @@ class JobProcessor:
             if not comments:
                 break
 
+            await self._upsert_comments_bulk(session, post.id, comments)
+            await session.commit()
+
             for comment in comments:
-                await self._upsert_comment(session, post.id, comment)
                 if comment.child_comment_count > 0:
                     await self._sync_replies(session, post, comment)
-            await session.commit()
 
             if not has_more or not next_after:
                 break
             after = next_after
-            await _polite_delay()
 
     async def _sync_replies(self, session: AsyncSession, post: Post, parent: InstagramComment) -> None:
         after: str | None = None
@@ -300,73 +364,86 @@ class JobProcessor:
             if not replies:
                 break
 
-            for reply in replies:
-                await self._upsert_comment(session, post.id, reply)
+            await self._upsert_comments_bulk(session, post.id, replies)
             await session.commit()
 
             if not has_more or not next_after:
                 break
             after = next_after
-            await _polite_delay()
 
-    async def _upsert_comment(self, session: AsyncSession, post_id: UUID, comment: InstagramComment) -> None:
-        if not comment.comment_id:
+    async def _upsert_comments_bulk(
+        self, session: AsyncSession, post_id: UUID, comments: list[InstagramComment]
+    ) -> None:
+        rows = [self._comment_row(post_id, c) for c in comments if c.comment_id]
+        if not rows:
             return
 
-        stmt = select(Comment).where(Comment.comment_id == comment.comment_id)
-        result = await session.execute(stmt)
-        existing = result.scalar_one_or_none()
-
-        is_from_creator = comment.username.lower() == self.message.handle.lower()
-
-        if existing:
-            existing.like_count = comment.like_count
-            existing.child_comment_count = comment.child_comment_count
-            existing.text = comment.text
-            existing.liked_by_creator = comment.liked_by_creator
-            existing.is_edited = comment.is_edited
-            existing.reported_as_spam = comment.reported_as_spam
-            existing.is_from_creator = is_from_creator
-            existing.author_profile_pic_url = comment.author_profile_pic_url
-            existing.author_is_private = comment.author_is_private
-            return
-
-        session.add(
-            Comment(
-                post_id=post_id,
-                comment_id=comment.comment_id,
-                parent_comment_id=comment.parent_comment_id,
-                username=comment.username,
-                full_name=comment.full_name,
-                is_verified=comment.is_verified,
-                is_from_creator=is_from_creator,
-                author_profile_pic_url=comment.author_profile_pic_url,
-                author_is_private=comment.author_is_private,
-                text=comment.text,
-                like_count=comment.like_count,
-                child_comment_count=comment.child_comment_count,
-                liked_by_creator=comment.liked_by_creator,
-                is_edited=comment.is_edited,
-                reported_as_spam=comment.reported_as_spam,
-                commented_at=datetime.fromtimestamp(comment.created_at) if comment.created_at else datetime.utcnow(),
+        stmt = pg_insert(Comment).values(rows)
+        update_cols = {
+            col: stmt.excluded[col]
+            for col in (
+                "like_count",
+                "child_comment_count",
+                "text",
+                "liked_by_creator",
+                "is_edited",
+                "reported_as_spam",
+                "is_from_creator",
+                "author_profile_pic_url",
+                "author_is_private",
             )
+        }
+        # on_conflict_do_update's SET clause bypasses the column's onupdate=
+        # default (that only fires for plain Core/ORM UPDATE statements), so
+        # updated_at needs to be set explicitly here.
+        update_cols["updated_at"] = func.now()
+        stmt = stmt.on_conflict_do_update(index_elements=[Comment.comment_id], set_=update_cols)
+        await session.execute(stmt)
+
+    def _comment_row(self, post_id: UUID, comment: InstagramComment) -> dict:
+        is_from_creator = comment.username.lower() == self.message.handle.lower()
+        return dict(
+            id=uuid.uuid4(),
+            post_id=post_id,
+            comment_id=comment.comment_id,
+            parent_comment_id=comment.parent_comment_id,
+            username=comment.username,
+            full_name=comment.full_name,
+            is_verified=comment.is_verified,
+            is_from_creator=is_from_creator,
+            author_profile_pic_url=comment.author_profile_pic_url,
+            author_is_private=comment.author_is_private,
+            text=comment.text,
+            like_count=comment.like_count,
+            child_comment_count=comment.child_comment_count,
+            liked_by_creator=comment.liked_by_creator,
+            is_edited=comment.is_edited,
+            reported_as_spam=comment.reported_as_spam,
+            commented_at=(
+                datetime.fromtimestamp(comment.created_at, tz=timezone.utc)
+                if comment.created_at
+                else datetime.now(timezone.utc)
+            ),
         )
 
     async def _update_engagement_timing_features(self, session: AsyncSession, post: Post) -> None:
         """Derive engagement-timing signals from comments already saved for
         this post -- no extra API calls, just better use of scraped data.
         """
-        stmt = select(Comment).where(Comment.post_id == post.id)
+        stmt = select(
+            func.count().label("total"),
+            func.min(Comment.commented_at).filter(Comment.parent_comment_id.is_(None)).label(
+                "first_comment_at"
+            ),
+            func.min(Comment.commented_at).filter(Comment.is_from_creator.is_(True)).label(
+                "first_creator_reply_at"
+            ),
+            func.count().filter(Comment.is_from_creator.is_(True)).label("creator_reply_count"),
+        ).where(Comment.post_id == post.id)
         result = await session.execute(stmt)
-        all_comments = result.scalars().all()
-        if not all_comments:
+        row = result.one()
+        if not row.total:
             return
-
-        top_level = [c for c in all_comments if c.parent_comment_id is None]
-        creator_comments = [c for c in all_comments if c.is_from_creator]
-
-        first_comment_at = min((c.commented_at for c in top_level), default=None)
-        first_creator_reply_at = min((c.commented_at for c in creator_comments), default=None)
 
         stmt = select(FeatureStore).where(FeatureStore.post_id == post.id)
         result = await session.execute(stmt)
@@ -375,12 +452,14 @@ class JobProcessor:
             return
 
         posted_at = post.posted_at
-        features.first_comment_at = first_comment_at
+        features.first_comment_at = row.first_comment_at
         features.time_to_first_comment_s = (
-            int((first_comment_at - posted_at).total_seconds()) if first_comment_at else None
+            int((row.first_comment_at - posted_at).total_seconds()) if row.first_comment_at else None
         )
-        features.creator_reply_count = len(creator_comments)
+        features.creator_reply_count = row.creator_reply_count
         features.time_to_first_creator_reply_s = (
-            int((first_creator_reply_at - posted_at).total_seconds()) if first_creator_reply_at else None
+            int((row.first_creator_reply_at - posted_at).total_seconds())
+            if row.first_creator_reply_at
+            else None
         )
         await session.commit()

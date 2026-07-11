@@ -88,9 +88,10 @@ class PostMetricsSnapshot(Base):
         UUID(as_uuid=True),
         ForeignKey("posts.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
     )
     scraped_at: Mapped[date] = mapped_column(Date, nullable=False, server_default=func.current_date())
-    
+
     likes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     comments: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     views: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

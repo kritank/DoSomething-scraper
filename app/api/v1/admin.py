@@ -9,7 +9,7 @@ from app.repositories.category_repo import CategoryRepo
 from app.repositories.influencer_repo import InfluencerRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
 from app.schemas.category import CategoryCreate, CategoryOut
-from app.schemas.influencer import InfluencerCreate, InfluencerOut
+from app.schemas.influencer import InfluencerCreate, InfluencerOut, InfluencerScrapeSettingsUpdate
 from app.schemas.scrape_job import ScrapeJobOut
 from app.services.dispatch_service import DispatchService
 
@@ -42,6 +42,14 @@ async def register_influencer(data: InfluencerCreate, db: AsyncSession = Depends
 async def list_influencers(db: AsyncSession = Depends(get_db)):
     repo = InfluencerRepo(db)
     return await repo.get_all()
+
+
+@router.patch("/influencers/{influencer_id}/scrape-settings", response_model=InfluencerOut)
+async def update_influencer_scrape_settings(
+    influencer_id: UUID, data: InfluencerScrapeSettingsUpdate, db: AsyncSession = Depends(get_db)
+):
+    repo = InfluencerRepo(db)
+    return await repo.update_scrape_settings(influencer_id, data)
 
 
 @router.post("/scrape")

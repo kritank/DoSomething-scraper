@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import DuplicateInfluencerError, InfluencerNotFoundError
 from app.models.influencer import Influencer
-from app.schemas.influencer import InfluencerCreate
+from app.schemas.influencer import InfluencerCreate, InfluencerScrapeSettingsUpdate
 
 
 class InfluencerRepo:
@@ -19,7 +19,11 @@ class InfluencerRepo:
         return result.scalars().all()
 
     async def create(self, data: InfluencerCreate) -> Influencer:
-        influencer = Influencer(handle=data.handle, category_id=data.category_id)
+        influencer = Influencer(
+            handle=data.handle,
+            category_id=data.category_id,
+            scrape_posts_since=data.scrape_posts_since,
+        )
         self.session.add(influencer)
         try:
             await self.session.commit()
@@ -27,6 +31,14 @@ class InfluencerRepo:
         except IntegrityError:
             await self.session.rollback()
             raise DuplicateInfluencerError(data.handle)
+
+    async def update_scrape_settings(
+        self, influencer_id: UUID, data: InfluencerScrapeSettingsUpdate
+    ) -> Influencer:
+        influencer = await self.get_by_id(influencer_id)
+        influencer.scrape_posts_since = data.scrape_posts_since
+        await self.session.commit()
+        return influencer
 
     async def get_by_id(self, influencer_id: UUID) -> Influencer:
         influencer = await self.session.get(Influencer, influencer_id)

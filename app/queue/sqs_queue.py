@@ -20,11 +20,21 @@ class SQSQueueBackend:
             raise ImportError("boto3 is required for SQSQueueBackend")
             
         self.queue_url = settings.AWS_SQS_QUEUE_URL
+        # Only pass explicit static credentials when both are set. Passing
+        # aws_access_key_id="" (the unset default) overrides boto3's default
+        # credential chain instead of falling through it, which breaks
+        # EC2 instance-profile/IAM-role auth -- that path only works when
+        # boto3 is left to discover credentials itself.
+        credential_kwargs = {}
+        if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+            credential_kwargs = {
+                "aws_access_key_id": settings.AWS_ACCESS_KEY_ID,
+                "aws_secret_access_key": settings.AWS_SECRET_ACCESS_KEY,
+            }
         self.sqs = boto3.client(
             "sqs",
             region_name=settings.AWS_REGION,
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+            **credential_kwargs,
         )
 
     async def enqueue(self, message: ScrapeJobMessage) -> str:

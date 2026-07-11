@@ -2,6 +2,7 @@ import asyncio
 import json
 import random
 import re
+import time
 import httpx
 from typing import Any
 
@@ -12,6 +13,39 @@ from app.core.exceptions import ScraperRateLimitError, ScraperBlockedError, Scra
 
 _BACKOFF_BASE_S = 5.0
 _BACKOFF_MAX_S = 120.0
+
+
+class TokenBucketRateLimiter:
+    """Paces every outbound request against one Instagram account/session.
+
+    Replaces per-coroutine `sleep(random(min, max))` calls: those pace each
+    caller independently, so N concurrent comment-sync tasks sharing one
+    client (see JobProcessor.COMMENT_SYNC_CONCURRENCY) produce an aggregate
+    request rate N times higher than intended. A single bucket shared by the
+    client makes the *aggregate* rate against the account the thing that's
+    actually bounded, regardless of how many coroutines are drawing from it.
+    """
+
+    def __init__(self, rate_per_s: float, burst: int):
+        self.rate_per_s = rate_per_s
+        self.capacity = float(burst)
+        self._tokens = float(burst)
+        self._updated_at = time.monotonic()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            while True:
+                now = time.monotonic()
+                elapsed = now - self._updated_at
+                self._updated_at = now
+                self._tokens = min(self.capacity, self._tokens + elapsed * self.rate_per_s)
+                if self._tokens >= 1:
+                    self._tokens -= 1
+                    return
+                wait_s = (1 - self._tokens) / self.rate_per_s
+                wait_s += random.uniform(0, wait_s * 0.2)  # jitter -- looks less like a bot
+                await asyncio.sleep(wait_s)
 
 _IG_APP_ID = "936619743392459"
 _ASBD_ID = "359341"
@@ -59,6 +93,10 @@ class InstagramClient:
         self._fb_dtsg: str | None = None
         self._lsd: str | None = None
         self._token_lock = asyncio.Lock()
+        self._rate_limiter = TokenBucketRateLimiter(
+            rate_per_s=settings.ACCOUNT_RATE_LIMIT_RPS,
+            burst=settings.ACCOUNT_RATE_LIMIT_BURST,
+        )
 
     @classmethod
     def from_account(cls, account, cookies: dict[str, str]) -> "InstagramClient":
@@ -103,6 +141,7 @@ class InstagramClient:
         """
         last_retry_after: int | None = None
         for attempt in range(settings.SCRAPER_MAX_RETRIES + 1):
+            await self._rate_limiter.acquire()
             fb_dtsg, lsd = await self._ensure_csrf_tokens()
             body = {
                 "fb_dtsg": fb_dtsg,
@@ -179,6 +218,7 @@ class InstagramClient:
         can mark the account for review)."""
         last_retry_after: int | None = None
         for attempt in range(settings.SCRAPER_MAX_RETRIES + 1):
+            await self._rate_limiter.acquire()
             try:
                 response = await self.client.get(url, params=params, headers=headers)
                 if response.status_code == 429:
