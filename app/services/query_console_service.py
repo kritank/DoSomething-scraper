@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.core.exceptions import QueryExecutionError
 from app.core.query_guard import validate_readonly_sql
 from app.core.readonly_db import get_readonly_session
+from app.schemas.db_schema import SchemaColumn, SchemaTable
 from app.schemas.query_console import QueryResult
 
 
@@ -62,3 +63,26 @@ async def run_readonly_query(raw_sql: str) -> QueryResult:
         truncated=truncated,
         duration_ms=round(duration_ms, 2),
     )
+
+
+async def list_schema_tables() -> list[SchemaTable]:
+    """Table/column metadata for the query console's schema browser. Fixed,
+    server-authored SQL (not user input), so it bypasses validate_readonly_sql
+    and goes straight through the read-only connection."""
+    sql = text(
+        """
+        SELECT table_name, column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+        ORDER BY table_name, ordinal_position
+        """
+    )
+    async with get_readonly_session() as session:
+        result = await session.execute(sql)
+        rows = result.all()
+
+    tables: dict[str, list[SchemaColumn]] = {}
+    for table_name, column_name, data_type in rows:
+        tables.setdefault(table_name, []).append(SchemaColumn(name=column_name, data_type=data_type))
+
+    return [SchemaTable(name=name, columns=cols) for name, cols in tables.items()]

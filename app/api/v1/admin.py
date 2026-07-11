@@ -12,13 +12,14 @@ from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
 from app.schemas.category import CategoryCreate, CategoryOut
 from app.schemas.dashboard import DashboardMetricsOut, DashboardStatusRow
+from app.schemas.db_schema import SchemaTable
 from app.schemas.influencer import InfluencerCreate, InfluencerOut, InfluencerScrapeSettingsUpdate
 from app.schemas.instagram_account import InstagramAccountOut
 from app.schemas.query_console import QueryRequest, QueryResult
 from app.schemas.scrape_job import ScrapeJobOut
 from app.services.dashboard_service import DashboardService
 from app.services.dispatch_service import DispatchService
-from app.services.query_console_service import run_readonly_query
+from app.services.query_console_service import list_schema_tables, run_readonly_query
 
 
 router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(require_api_key)])
@@ -95,3 +96,8 @@ async def run_query(data: QueryRequest):
     # only ever touches the dedicated read-only engine, never the writable
     # pool used by every other route in this router.
     return await run_readonly_query(data.sql)
+
+
+@router.get("/schema", response_model=list[SchemaTable])
+async def get_schema():
+    return await list_schema_tables()

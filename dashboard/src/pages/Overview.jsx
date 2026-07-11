@@ -52,7 +52,7 @@ export default function Overview() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-6 min-w-0">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-semibold" style={{ color: 'var(--color-text-primary)' }}>Overview</h2>
@@ -91,14 +91,14 @@ export default function Overview() {
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="card p-5">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 min-w-0">
+        <div className="card p-5 min-w-0">
           <h3 className="text-sm font-semibold mb-4" style={{ color: 'var(--color-text-primary)' }}>
             Jobs per day (last 30 days)
           </h3>
           {loading ? <ChartSkeleton /> : <JobStatusChart buckets={metrics?.buckets ?? []} />}
         </div>
-        <div className="card p-5">
+        <div className="card p-5 min-w-0">
           <h3 className="text-sm font-semibold mb-4" style={{ color: 'var(--color-text-primary)' }}>
             Throughput &amp; duration
           </h3>

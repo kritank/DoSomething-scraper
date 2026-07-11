@@ -5,6 +5,7 @@ import DashboardLayout from './layouts/DashboardLayout';
 import Overview from './pages/Overview';
 import QueryConsole from './pages/QueryConsole';
 import Accounts from './pages/Accounts';
+import Influencers from './pages/Influencers';
 
 export default function App() {
   return (
@@ -13,6 +14,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<DashboardLayout />}>
             <Route index element={<Overview />} />
+            <Route path="influencers" element={<Influencers />} />
             <Route path="query" element={<QueryConsole />} />
             <Route path="accounts" element={<Accounts />} />
           </Route>
