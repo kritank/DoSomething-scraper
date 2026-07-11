@@ -42,15 +42,15 @@ variable "ghcr_token" {
 # credentials, not values used to provision anything.
 
 variable "db_name" {
-  description = "Database name on the existing viralytics-db instance — created manually via psql before first apply, Terraform does not create it"
+  description = "Database name on the existing viralytics-db instance — created automatically by user_data.sh on first EC2 boot if it doesn't already exist"
   type        = string
   default     = "viralytics_scrapper"
 }
 
 variable "db_username" {
-  description = "Username on the existing viralytics-db instance"
+  description = "Username on the existing viralytics-db instance (its actual master user is \"postgres\", not a custom user)"
   type        = string
-  default     = "viralytics_admin"
+  default     = "postgres"
 }
 
 variable "db_password" {
