@@ -68,11 +68,14 @@ resource "aws_instance" "app" {
     ghcr_username = var.ghcr_username
     ghcr_token    = var.ghcr_token
 
-    database_url = "postgresql+asyncpg://${var.db_username}:${var.db_password}@${data.aws_db_instance.existing.address}:5432/${var.db_name}"
-    db_host      = data.aws_db_instance.existing.address
-    db_username  = var.db_username
-    db_password  = var.db_password
-    db_name      = var.db_name
+    database_url          = "postgresql+asyncpg://${var.db_username}:${var.db_password}@${data.aws_db_instance.existing.address}:5432/${var.db_name}"
+    database_url_readonly = "postgresql+asyncpg://${var.readonly_db_username}:${var.readonly_db_password}@${data.aws_db_instance.existing.address}:5432/${var.db_name}"
+    db_host               = data.aws_db_instance.existing.address
+    db_username           = var.db_username
+    db_password           = var.db_password
+    db_name               = var.db_name
+    readonly_db_username  = var.readonly_db_username
+    readonly_db_password  = var.readonly_db_password
 
     aws_region             = var.aws_region
     aws_sqs_queue_url      = aws_sqs_queue.scrape_jobs.url

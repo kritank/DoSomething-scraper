@@ -62,6 +62,7 @@ jobs:
           TF_VAR_ghcr_token: ${{ secrets.GHCR_TOKEN }}
           # RDS
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+          TF_VAR_readonly_db_password: ${{ secrets.READONLY_DB_PASSWORD }}
           # App secrets → written to /opt/app/.env.production on EC2
           TF_VAR_account_encryption_key: ${{ secrets.ACCOUNT_ENCRYPTION_KEY }}
           TF_VAR_api_key: ${{ secrets.API_KEY }}
@@ -80,6 +81,7 @@ jobs:
           TF_VAR_ghcr_username: ${{ github.actor }}
           TF_VAR_ghcr_token: ${{ secrets.GHCR_TOKEN }}
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+          TF_VAR_readonly_db_password: ${{ secrets.READONLY_DB_PASSWORD }}
           TF_VAR_account_encryption_key: ${{ secrets.ACCOUNT_ENCRYPTION_KEY }}
           TF_VAR_api_key: ${{ secrets.API_KEY }}
 

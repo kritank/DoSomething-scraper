@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     # Format: postgresql+asyncpg://user:password@host:port/dbname
     DATABASE_URL: str  # Required — no default
 
+    # Read-only role for the SQL query console (POST /admin/query) -- a
+    # separate Postgres role with SELECT-only grants (see
+    # infra/user_data.sh), never the writable DATABASE_URL above. Empty by
+    # default; the query console 500s clearly rather than silently falling
+    # back to the writable connection if this isn't configured.
+    DATABASE_URL_READONLY: str = ""
+    QUERY_CONSOLE_STATEMENT_TIMEOUT_MS: int = 5000
+    QUERY_CONSOLE_ROW_CAP: int = 1000
+
     # ── Queue ─────────────────────────────────────────────────────────────────
     # "redis" → Redis + RQ (local dev)
     # "sqs"   → Amazon SQS (production)

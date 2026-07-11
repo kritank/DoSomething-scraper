@@ -55,6 +55,7 @@ mkdir -p /opt/app
 # app authenticates to SQS via the EC2 instance's IAM role instead.
 cat > /opt/app/.env.production << ENVEOF
 DATABASE_URL=${database_url}
+DATABASE_URL_READONLY=${database_url_readonly}
 QUEUE_BACKEND=sqs
 AWS_SQS_QUEUE_URL=${aws_sqs_queue_url}
 AWS_REGION=${aws_region}
@@ -63,6 +64,10 @@ API_KEY=${api_key}
 PROJECT_NAME=Viralytics
 DEBUG=False
 LOG_LEVEL=INFO
+# The scraper-ops dashboard (dashboard/) runs locally on an admin's Mac and
+# calls this API directly over the network -- a cross-origin request from
+# Vite's default dev port.
+CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
 ENVEOF
 
 chmod 600 /opt/app/.env.production
@@ -77,6 +82,32 @@ if ! PGPASSWORD='${db_password}' psql -h '${db_host}' -U '${db_username}' -d pos
   PGPASSWORD='${db_password}' psql -h '${db_host}' -U '${db_username}' -d postgres -c \
     "CREATE DATABASE ${db_name}"
 fi
+
+# ── 3c. Create a read-only Postgres role for the SQL query console
+# (POST /admin/query) if it doesn't exist yet ─────────────────────────────────
+# Idempotent, mirroring the CREATE DATABASE check above. Defense in depth
+# alongside the app-level statement whitelist in app/core/query_guard.py --
+# a bug in that whitelist still can't produce a write, because this role
+# has no write grants at the database level.
+if ! PGPASSWORD='${db_password}' psql -h '${db_host}' -U '${db_username}' -d postgres -tAc \
+     "SELECT 1 FROM pg_roles WHERE rolname = '${readonly_db_username}'" | grep -q 1; then
+  PGPASSWORD='${db_password}' psql -h '${db_host}' -U '${db_username}' -d postgres -c \
+    "CREATE ROLE ${readonly_db_username} WITH LOGIN PASSWORD '${readonly_db_password}'"
+fi
+
+# GRANT / ALTER DEFAULT PRIVILEGES are themselves idempotent -- safe to
+# re-run every boot, unlike CREATE ROLE/CREATE DATABASE above.
+PGPASSWORD='${db_password}' psql -h '${db_host}' -U '${db_username}' -d '${db_name}' -c \
+  "GRANT CONNECT ON DATABASE ${db_name} TO ${readonly_db_username};"
+PGPASSWORD='${db_password}' psql -h '${db_host}' -U '${db_username}' -d '${db_name}' -c \
+  "GRANT USAGE ON SCHEMA public TO ${readonly_db_username};"
+PGPASSWORD='${db_password}' psql -h '${db_host}' -U '${db_username}' -d '${db_name}' -c \
+  "GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${readonly_db_username};"
+# Tables added by future Alembic migrations (run by ${db_username}) get
+# SELECT automatically -- without this, every new table silently breaks
+# the query console for that table until someone re-runs the grant by hand.
+PGPASSWORD='${db_password}' psql -h '${db_host}' -U '${db_username}' -d '${db_name}' -c \
+  "ALTER DEFAULT PRIVILEGES FOR ROLE ${db_username} IN SCHEMA public GRANT SELECT ON TABLES TO ${readonly_db_username};"
 
 # ── 4. Write docker-compose.prod.yml ──────────────────────────────────────────
 cat > /opt/app/docker-compose.prod.yml << 'COMPOSEEOF'

@@ -27,6 +27,12 @@ class InstagramAccountRepo:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_all(self) -> list[InstagramAccount]:
+        result = await self.session.execute(
+            select(InstagramAccount).order_by(InstagramAccount.username)
+        )
+        return list(result.scalars().all())
+
     async def create(
         self,
         username: str,

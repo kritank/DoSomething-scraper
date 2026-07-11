@@ -80,6 +80,14 @@ class DuplicateCategoryError(ValidationError):
         super().__init__(f"Category already exists: {name}")
 
 
+class QueryNotAllowedError(ValidationError):
+    code = "QUERY_NOT_ALLOWED"
+
+
+class QueryExecutionError(ValidationError):
+    code = "QUERY_EXECUTION_ERROR"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 401 / 403 — Auth
 # ─────────────────────────────────────────────────────────────────────────────

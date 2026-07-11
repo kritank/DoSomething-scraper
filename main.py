@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.core.database import close_db, init_db
+from app.core.readonly_db import close_readonly_db
 from app.core.exceptions import ViralyticBaseError
 from app.core.logging import configure_logging, get_logger, set_request_id
 from app.api.v1 import health, admin, benchmarks, recommendations
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("shutdown.begin")
     await close_db()
+    await close_readonly_db()
     logger.info("shutdown.complete")
 
 

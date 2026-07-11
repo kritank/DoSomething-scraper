@@ -44,8 +44,13 @@ output "next_steps" {
 
     STEP 3 — Seed categories/influencers and trigger a scrape via the admin API
       (see README.md — POST /api/v1/admin/influencers, POST /api/v1/admin/scrape).
-      NOTE: API_KEY is written to .env.production but nothing in the app
-      currently reads/enforces it -- the admin API's only real protection
-      right now is the security group restricting :8000 to admin_cidr_block.
+      All /admin routes require an X-API-Key header matching API_KEY (see
+      app/core/security.py), on top of the security group restricting :8000
+      to admin_cidr_block.
+
+    STEP 4 — Run the ops dashboard (dashboard/) locally against this API:
+      cd dashboard && npm install && npm run dev
+      Point it at http://${aws_instance.app.public_ip}:8000/api/v1 and enter
+      your API_KEY when prompted.
   EOT
 }

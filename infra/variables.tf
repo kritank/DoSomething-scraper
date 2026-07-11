@@ -59,6 +59,18 @@ variable "db_password" {
   sensitive   = true
 }
 
+variable "readonly_db_username" {
+  description = "Username for the read-only Postgres role used exclusively by the SQL query console (POST /admin/query) -- created idempotently by user_data.sh, distinct from db_username (the master role, which can write)"
+  type        = string
+  default     = "viralytics_readonly"
+}
+
+variable "readonly_db_password" {
+  description = "Password for readonly_db_username"
+  type        = string
+  sensitive   = true
+}
+
 # ── SQS ────────────────────────────────────────────────────────────────────────
 
 variable "sqs_queue_name" {

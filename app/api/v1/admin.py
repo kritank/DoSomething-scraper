@@ -1,20 +1,27 @@
 from typing import Sequence
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.security import require_api_key
 from app.repositories.category_repo import CategoryRepo
 from app.repositories.influencer_repo import InfluencerRepo
+from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
 from app.schemas.category import CategoryCreate, CategoryOut
+from app.schemas.dashboard import DashboardMetricsOut, DashboardStatusRow
 from app.schemas.influencer import InfluencerCreate, InfluencerOut, InfluencerScrapeSettingsUpdate
+from app.schemas.instagram_account import InstagramAccountOut
+from app.schemas.query_console import QueryRequest, QueryResult
 from app.schemas.scrape_job import ScrapeJobOut
+from app.services.dashboard_service import DashboardService
 from app.services.dispatch_service import DispatchService
+from app.services.query_console_service import run_readonly_query
 
 
-router = APIRouter(prefix="/admin", tags=["Admin"])
+router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(require_api_key)])
 
 
 @router.post("/categories", response_model=CategoryOut)
@@ -63,3 +70,28 @@ async def trigger_scrape(influencer_id: UUID, db: AsyncSession = Depends(get_db)
 async def list_jobs(db: AsyncSession = Depends(get_db)):
     repo = ScrapeJobRepo(db)
     return await repo.get_all()
+
+
+@router.get("/dashboard/status", response_model=list[DashboardStatusRow])
+async def get_dashboard_status(db: AsyncSession = Depends(get_db)):
+    return await DashboardService(db).get_status_rows()
+
+
+@router.get("/dashboard/metrics", response_model=DashboardMetricsOut)
+async def get_dashboard_metrics(
+    days: int = Query(default=30, ge=1, le=90), db: AsyncSession = Depends(get_db)
+):
+    return await DashboardService(db).get_daily_metrics(days)
+
+
+@router.get("/accounts", response_model=list[InstagramAccountOut])
+async def list_accounts(db: AsyncSession = Depends(get_db)):
+    return await InstagramAccountRepo(db).get_all()
+
+
+@router.post("/query", response_model=QueryResult)
+async def run_query(data: QueryRequest):
+    # No `db: AsyncSession = Depends(get_db)` here on purpose -- this route
+    # only ever touches the dedicated read-only engine, never the writable
+    # pool used by every other route in this router.
+    return await run_readonly_query(data.sql)

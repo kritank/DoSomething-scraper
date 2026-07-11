@@ -4,6 +4,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import DuplicateInfluencerError, InfluencerNotFoundError
 from app.models.influencer import Influencer
@@ -16,6 +17,17 @@ class InfluencerRepo:
 
     async def get_all(self) -> Sequence[Influencer]:
         result = await self.session.execute(select(Influencer).order_by(Influencer.handle))
+        return result.scalars().all()
+
+    async def get_all_with_category(self) -> Sequence[Influencer]:
+        """Eager-loads Influencer.category so the dashboard can read
+        category_name without an N+1 lazy-load per influencer."""
+        stmt = (
+            select(Influencer)
+            .options(selectinload(Influencer.category))
+            .order_by(Influencer.handle)
+        )
+        result = await self.session.execute(stmt)
         return result.scalars().all()
 
     async def create(self, data: InfluencerCreate) -> Influencer:

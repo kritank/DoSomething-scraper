@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Sequence
 from uuid import UUID
 
-from sqlalchemy import case, select, update
+from sqlalchemy import Row, case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 
@@ -60,3 +60,39 @@ class ScrapeJobRepo:
         result = await self.session.execute(stmt)
         await self.session.commit()
         return result.rowcount or 0
+
+    async def get_latest_per_influencer(self) -> Sequence[ScrapeJob]:
+        """One row per influencer: its most recent scrape job (by created_at).
+
+        Postgres DISTINCT ON via SQLAlchemy Core -- a single indexed scan,
+        no derived table needed. The app is Postgres-only end to end
+        (asyncpg, RDS), so there's no portability being traded away.
+        Influencers with zero jobs simply don't appear here; the caller
+        merges this against the full influencer list separately so "never
+        scraped" stays representable.
+        """
+        stmt = (
+            select(ScrapeJob)
+            .distinct(ScrapeJob.influencer_id)
+            .order_by(ScrapeJob.influencer_id, ScrapeJob.created_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def get_daily_metrics(self, days: int) -> Sequence[Row]:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        day = func.date_trunc("day", ScrapeJob.created_at).label("day")
+        stmt = (
+            select(
+                day,
+                ScrapeJob.status,
+                func.count().label("job_count"),
+                func.avg(ScrapeJob.duration_s).label("avg_duration_s"),
+                func.coalesce(func.sum(ScrapeJob.posts_processed), 0).label("posts_processed"),
+            )
+            .where(ScrapeJob.created_at >= cutoff)
+            .group_by(day, ScrapeJob.status)
+            .order_by(day)
+        )
+        result = await self.session.execute(stmt)
+        return result.all()
