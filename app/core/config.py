@@ -105,7 +105,12 @@ class Settings(BaseSettings):
     CRON_BENCHMARK: str = "0 5 * * *"
     CRON_RECOMMENDATION: str = "0 6 * * *"
     CRON_CLEANUP: str = "0 3 * * 0"
-    CRON_RETRY_FAILED: str = "0 * * * *"
+    # Drives 3 crash-recovery jobs (retry_failed_scrapes, reap_stale_account_leases,
+    # reap_stale_jobs) -- all cheap, idempotent, low-volume queries. Hourly meant a
+    # worker/scheduler killed by a deploy (Watchtower restarts these routinely) could
+    # leave a stale account lease or orphaned job unrecovered for up to ~90 minutes
+    # (30-min lease timeout + up to 60 min to the next tick). Every 10 minutes instead.
+    CRON_RETRY_FAILED: str = "*/10 * * * *"
 
     # ── Resolve project root ───────────────────────────────────────────────────
     # parents[2] → .../DoSomething-scraper

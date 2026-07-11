@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import random
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -8,6 +7,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.core.config import settings
 from app.core.database import get_session, init_db, close_db
 from app.core.exceptions import InfluencerNotFoundError
+from app.core.logging import configure_logging, get_logger
 from app.services.dispatch_service import DispatchService
 from app.repositories.influencer_repo import InfluencerRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
@@ -15,7 +15,12 @@ from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.queue.base import ScrapeJobMessage
 from app.queue.factory import get_queue
 
-logger = logging.getLogger(__name__)
+# Unlike main.py (the API process), nothing was calling configure_logging()
+# here -- this logger was plain stdlib logging with no handler configured,
+# so every INFO log (including crash-recovery reaper output) was silently
+# dropped rather than just missing from a log tail.
+configure_logging(log_level=settings.LOG_LEVEL, json_logs=not settings.DEBUG)
+logger = get_logger(__name__)
 
 async def run_daily_scrapes():
     """Dispatch a scrape job for every active influencer.

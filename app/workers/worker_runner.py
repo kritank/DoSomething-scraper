@@ -3,12 +3,13 @@ import signal
 import sys
 
 from app.core.config import settings
-from app.core.logging import get_logger
+from app.core.logging import configure_logging, get_logger
 from app.core.database import init_db, close_db
 from app.queue.factory import get_queue
 from app.workers.job_processor import JobProcessor
 
 
+configure_logging(log_level=settings.LOG_LEVEL, json_logs=not settings.DEBUG)
 logger = get_logger(__name__)
 shutdown_event = asyncio.Event()
 

@@ -60,7 +60,15 @@ class JobProcessor:
             self._account = await account_repo.acquire_healthy_account(worker_id=WORKER_ID)
             if self._account is None:
                 logger.critical("No healthy Instagram accounts available -- pool exhausted")
-                job.status = "failed"
+                # Transient, not terminal -- the pool recovers on its own
+                # (cooldowns expire, stale leases get reaped), so this
+                # should retry rather than die permanently like a real
+                # scrape failure. Same retry_count/SCRAPER_MAX_RETRIES
+                # bound as every other failure path below.
+                job.retry_count += 1
+                job.status = (
+                    "retry_pending" if job.retry_count < settings.SCRAPER_MAX_RETRIES else "failed"
+                )
                 job.error_message = "no healthy Instagram accounts available"
                 job.finished_at = datetime.now(timezone.utc)
                 job.duration_s = time.perf_counter() - start_time
