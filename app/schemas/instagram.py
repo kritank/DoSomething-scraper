@@ -51,6 +51,11 @@ class InstagramMediaItem(BaseModel):
     comment_count: int = 0
     view_count: int = 0
     play_count: int = 0
+    # Instagram's public/private-metric split: no share_count or save_count
+    # exist anywhere in the raw response (saves are owner-only via
+    # Insights, shares aren't exposed as a number at all). This is the
+    # closest real public metric -- reposts of this content by others.
+    media_repost_count: int = 0
     media_type: int
     taken_at: int
 

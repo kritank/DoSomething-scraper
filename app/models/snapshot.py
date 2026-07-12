@@ -95,6 +95,12 @@ class PostMetricsSnapshot(Base):
     likes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     comments: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     views: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Instagram exposes no share_count or save_count for other accounts'
+    # posts (saves are fully private to the owner via Insights; shares
+    # aren't exposed as a number at all -- verified against a live raw
+    # response). media_repost_count is the closest real, public metric:
+    # how many times other accounts have reposted this content.
+    reposts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

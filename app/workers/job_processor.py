@@ -356,6 +356,7 @@ class JobProcessor:
                 # view_count is 0 for those and only meaningful for
                 # media types that don't have a play_count at all.
                 views=item.view_count or item.play_count,
+                reposts=item.media_repost_count,
             )
         )
 

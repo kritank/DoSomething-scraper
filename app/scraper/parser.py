@@ -60,6 +60,7 @@ class InstagramParser:
                 comment_count=item.get("comment_count") or 0,
                 view_count=item.get("view_count") or 0,
                 play_count=item.get("play_count") or 0,
+                media_repost_count=item.get("media_repost_count") or 0,
                 media_type=item.get("media_type") or 1,
                 taken_at=item.get("taken_at") or 0,
                 accessibility_caption=item.get("accessibility_caption"),
