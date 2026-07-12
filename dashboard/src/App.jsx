@@ -6,6 +6,8 @@ import Overview from './pages/Overview';
 import QueryConsole from './pages/QueryConsole';
 import Accounts from './pages/Accounts';
 import Influencers from './pages/Influencers';
+import Content from './pages/Content';
+import Insights from './pages/Insights';
 
 export default function App() {
   return (
@@ -15,6 +17,8 @@ export default function App() {
           <Route path="/" element={<DashboardLayout />}>
             <Route index element={<Overview />} />
             <Route path="influencers" element={<Influencers />} />
+            <Route path="content" element={<Content />} />
+            <Route path="insights" element={<Insights />} />
             <Route path="query" element={<QueryConsole />} />
             <Route path="accounts" element={<Accounts />} />
           </Route>

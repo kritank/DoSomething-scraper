@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { Users, CheckCircle2, Clock, FileText, MessageSquare, Layers, RefreshCw } from 'lucide-react';
+import { Users, CheckCircle2, Clock, FileText, MessageSquare, Layers, ListOrdered, RefreshCw } from 'lucide-react';
 import { format, subDays } from 'date-fns';
-import { getDashboardStatus, getDashboardMetrics } from '../services/dashboardService';
+import { getDashboardStatus, getDashboardMetrics, getAlerts, getQueueStatus } from '../services/dashboardService';
 import { getCategories } from '../services/influencerService';
 import KPICard from '../components/common/KPICard';
 import { SkeletonKPICard } from '../components/common/Skeleton';
@@ -11,6 +11,7 @@ import JobStatusChart from '../components/charts/JobStatusChart';
 import PerformanceChart from '../components/charts/PerformanceChart';
 import StatusTable from '../components/dashboard/StatusTable';
 import DateRangeSelector from '../components/dashboard/DateRangeSelector';
+import AlertsBanner from '../components/dashboard/AlertsBanner';
 
 function toIso(d) {
   return format(d, 'yyyy-MM-dd');
@@ -20,6 +21,8 @@ export default function Overview() {
   const [status, setStatus] = useState(null);
   const [metrics, setMetrics] = useState(null);
   const [categoryCount, setCategoryCount] = useState(null);
+  const [alerts, setAlerts] = useState([]);
+  const [queueStatus, setQueueStatus] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -30,14 +33,18 @@ export default function Overview() {
     setLoading(true);
     setError(null);
     try {
-      const [statusRows, metricsData, categories] = await Promise.all([
+      const [statusRows, metricsData, categories, alertRows, queue] = await Promise.all([
         getDashboardStatus(),
         getDashboardMetrics(startDate, endDate),
         getCategories(),
+        getAlerts(),
+        getQueueStatus(),
       ]);
       setStatus(statusRows);
       setMetrics(metricsData);
       setCategoryCount(categories.length);
+      setAlerts(alertRows);
+      setQueueStatus(queue);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -94,12 +101,14 @@ export default function Overview() {
         </Button>
       </div>
 
+      <AlertsBanner alerts={alerts} />
+
       <DateRangeSelector startDate={startDate} endDate={endDate} onChange={handleRangeChange} />
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         {loading || !kpis ? (
           <>
-            <SkeletonKPICard /><SkeletonKPICard /><SkeletonKPICard /><SkeletonKPICard />
+            <SkeletonKPICard /><SkeletonKPICard /><SkeletonKPICard /><SkeletonKPICard /><SkeletonKPICard />
           </>
         ) : (
           <>
@@ -116,6 +125,12 @@ export default function Overview() {
               value={kpis.backfilling}
               icon={<Clock className="w-4 h-4" />}
               color={kpis.backfilling > 0 ? 'var(--color-warning)' : undefined}
+            />
+            <KPICard
+              label="Queue depth"
+              value={queueStatus?.main_depth != null ? `${queueStatus.main_depth}${queueStatus.dlq_depth ? ` (+${queueStatus.dlq_depth} DLQ)` : ''}` : 'n/a'}
+              icon={<ListOrdered className="w-4 h-4" />}
+              color={queueStatus?.dlq_depth > 0 ? 'var(--color-danger)' : undefined}
             />
           </>
         )}

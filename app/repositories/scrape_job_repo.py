@@ -61,6 +61,16 @@ class ScrapeJobRepo:
         await self.session.commit()
         return result.rowcount or 0
 
+    async def get_by_influencer(self, influencer_id: UUID, limit: int = 50) -> Sequence[ScrapeJob]:
+        stmt = (
+            select(ScrapeJob)
+            .where(ScrapeJob.influencer_id == influencer_id)
+            .order_by(ScrapeJob.created_at.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
     async def get_latest_per_influencer(self) -> Sequence[ScrapeJob]:
         """One row per influencer: its most recent scrape job (by created_at).
 

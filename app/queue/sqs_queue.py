@@ -91,12 +91,31 @@ class SQSQueueBackend:
     async def queue_depth(self) -> int:
         import asyncio
         loop = asyncio.get_running_loop()
-        
+
         def _get_attrs():
             response = self.sqs.get_queue_attributes(
                 QueueUrl=self.queue_url,
                 AttributeNames=["ApproximateNumberOfMessages"]
             )
             return int(response["Attributes"].get("ApproximateNumberOfMessages", 0))
-            
+
+        return await loop.run_in_executor(None, _get_attrs)
+
+    async def dlq_depth(self) -> int:
+        """Message count on the dead-letter queue -- jobs that exceeded
+        maxReceiveCount (infra/sqs.tf) and got redriven there instead of
+        endlessly retrying. No separate DLQ URL setting exists; its name is
+        deterministic (Terraform: "${var.sqs_queue_name}-dlq"), so derive
+        the URL from the main queue's rather than adding new config."""
+        import asyncio
+        loop = asyncio.get_running_loop()
+        dlq_url = self.queue_url + "-dlq"
+
+        def _get_attrs():
+            response = self.sqs.get_queue_attributes(
+                QueueUrl=dlq_url,
+                AttributeNames=["ApproximateNumberOfMessages"]
+            )
+            return int(response["Attributes"].get("ApproximateNumberOfMessages", 0))
+
         return await loop.run_in_executor(None, _get_attrs)

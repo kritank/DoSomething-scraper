@@ -1,11 +1,13 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, TerminalSquare, Users, UserPlus, ChevronLeft, ChevronRight, Radio } from 'lucide-react';
+import { LayoutDashboard, TerminalSquare, Users, UserPlus, Image, Sparkles, ChevronLeft, ChevronRight, Radio } from 'lucide-react';
 import { useAppStore } from '../../store/useAppStore';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
   { to: '/influencers', label: 'Influencers', icon: UserPlus },
+  { to: '/content', label: 'Content', icon: Image },
+  { to: '/insights', label: 'Insights', icon: Sparkles },
   { to: '/query', label: 'Query Console', icon: TerminalSquare },
   { to: '/accounts', label: 'Accounts', icon: Users },
 ];

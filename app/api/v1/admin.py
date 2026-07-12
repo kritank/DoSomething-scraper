@@ -5,11 +5,14 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import require_api_key
+from app.queue.factory import get_queue
 from app.repositories.category_repo import CategoryRepo
 from app.repositories.influencer_repo import InfluencerRepo
 from app.repositories.instagram_account_repo import InstagramAccountRepo
+from app.repositories.post_repo import PostRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
 from app.schemas.account_registration import RegisterAccountCookiesRequest, RegisterAccountLoginRequest
 from app.schemas.category import CategoryCreate, CategoryOut, CategoryUpdate
@@ -21,9 +24,12 @@ from app.schemas.influencer import (
     InfluencerOut,
     InfluencerScrapeSettingsUpdate,
 )
+from app.schemas.alert import AlertOut
 from app.schemas.instagram_account import AccountStatusUpdate, InstagramAccountOut
+from app.schemas.post import PostListOut, PostOut
 from app.schemas.query_console import QueryRequest, QueryResult
 from app.schemas.scrape_job import ScrapeJobOut
+from app.services.alerts_service import get_alerts
 from app.services.dashboard_service import DashboardService
 from app.services.dispatch_service import DispatchService
 from app.services.query_console_service import list_schema_tables, run_readonly_query
@@ -94,6 +100,11 @@ async def delete_influencer(influencer_id: UUID, db: AsyncSession = Depends(get_
     # Irreversible; the dashboard gates this behind an explicit confirm,
     # deactivate (PATCH active) is the default/reversible action.
     await InfluencerRepo(db).delete(influencer_id)
+
+
+@router.get("/influencers/{influencer_id}/jobs", response_model=list[ScrapeJobOut])
+async def list_influencer_jobs(influencer_id: UUID, db: AsyncSession = Depends(get_db)):
+    return await ScrapeJobRepo(db).get_by_influencer(influencer_id)
 
 
 @router.post("/scrape")
@@ -172,6 +183,46 @@ async def delete_account(account_id: UUID, db: AsyncSession = Depends(get_db)):
     # Irreversible; the dashboard gates this behind an explicit confirm,
     # disabling (PATCH status) is the default/reversible action.
     await InstagramAccountRepo(db).delete(account_id)
+
+
+@router.get("/alerts", response_model=list[AlertOut])
+async def list_alerts(db: AsyncSession = Depends(get_db)):
+    return await get_alerts(db)
+
+
+@router.get("/posts", response_model=PostListOut)
+async def list_posts(
+    influencer_id: UUID | None = Query(default=None),
+    category_id: UUID | None = Query(default=None),
+    sort: str = Query(default="posted_at"),
+    sort_dir: str = Query(default="desc"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    rows, total = await PostRepo(db).list_posts(
+        influencer_id=influencer_id,
+        category_id=category_id,
+        sort=sort,
+        sort_dir=sort_dir,
+        limit=limit,
+        offset=offset,
+    )
+    return PostListOut(posts=[PostOut(**row) for row in rows], total=total)
+
+
+@router.get("/queue/status")
+async def get_queue_status():
+    if not settings.is_sqs_queue:
+        # Redis backend has no dead-letter-queue concept in this codebase --
+        # report the backend plainly rather than pretending depths exist.
+        return {"backend": settings.QUEUE_BACKEND, "main_depth": None, "dlq_depth": None}
+    queue = get_queue()
+    return {
+        "backend": "sqs",
+        "main_depth": await queue.queue_depth(),
+        "dlq_depth": await queue.dlq_depth(),
+    }
 
 
 @router.post("/query", response_model=QueryResult)

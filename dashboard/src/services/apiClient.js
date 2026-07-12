@@ -42,7 +42,11 @@ apiClient.interceptors.response.use(
       message = error.message || 'Request failed.';
     }
 
-    if (status !== undefined) {
+    // Callers can pass { suppressErrorToast: true } in the axios config for
+    // expected-and-handled error responses (e.g. a 404 that just means "not
+    // computed yet") -- those shouldn't surface as a global toast on top of
+    // whatever the calling page already renders for it.
+    if (status !== undefined && !error.config?.suppressErrorToast) {
       toast.error(message);
     }
     return Promise.reject(new Error(message));

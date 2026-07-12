@@ -11,3 +11,13 @@ export async function getDashboardMetrics(startDate, endDate) {
   });
   return data;
 }
+
+export async function getAlerts() {
+  const { data } = await apiClient.get('/admin/alerts');
+  return data;
+}
+
+export async function getQueueStatus() {
+  const { data } = await apiClient.get('/admin/queue/status');
+  return data;
+}

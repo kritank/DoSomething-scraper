@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { PlayCircle, RefreshCw, Power, Trash2 } from 'lucide-react';
+import { PlayCircle, RefreshCw, Power, Trash2, History, ChevronDown, ChevronUp } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import { getDashboardStatus } from '../services/dashboardService';
@@ -17,6 +17,7 @@ import ErrorState from '../components/common/ErrorState';
 import EmptyState from '../components/common/EmptyState';
 import AddCategoryForm from '../components/influencers/AddCategoryForm';
 import AddInfluencerForm from '../components/influencers/AddInfluencerForm';
+import JobHistoryPanel from '../components/influencers/JobHistoryPanel';
 
 const IN_FLIGHT_STATUSES = new Set(['queued', 'running']);
 
@@ -26,6 +27,15 @@ export default function Influencers() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [triggering, setTriggering] = useState(() => new Set());
+  const [expandedHistory, setExpandedHistory] = useState(() => new Set());
+
+  const toggleHistory = (influencerId) => {
+    setExpandedHistory((prev) => {
+      const next = new Set(prev);
+      next.has(influencerId) ? next.delete(influencerId) : next.add(influencerId);
+      return next;
+    });
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -192,49 +202,64 @@ export default function Influencers() {
                 <div className="flex flex-col divide-y" style={{ borderColor: 'var(--color-border-subtle)' }}>
                   {influencers.map((row) => {
                     const isInFlight = triggering.has(row.influencer_id) || IN_FLIGHT_STATUSES.has(row.last_job_status);
+                    const historyOpen = expandedHistory.has(row.influencer_id);
                     return (
-                      <div
-                        key={row.influencer_id}
-                        className="flex items-center justify-between gap-3 py-2.5 flex-wrap"
-                        style={{ borderColor: 'var(--color-border-subtle)' }}
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <span className="font-medium text-sm truncate" style={{ color: 'var(--color-text-primary)' }}>
-                            @{row.handle}
-                          </span>
-                          <StatusBadge status={row.last_job_status} />
-                          {!row.is_active && (
-                            <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>(inactive)</span>
-                          )}
+                      <div key={row.influencer_id} className="py-2.5">
+                        <div
+                          className="flex items-center justify-between gap-3 flex-wrap"
+                          style={{ borderColor: 'var(--color-border-subtle)' }}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <span className="font-medium text-sm truncate" style={{ color: 'var(--color-text-primary)' }}>
+                              @{row.handle}
+                            </span>
+                            <StatusBadge status={row.last_job_status} />
+                            {!row.is_active && (
+                              <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>(inactive)</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-4 shrink-0">
+                            <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                              {row.last_job_finished_at
+                                ? `Last scraped ${format(new Date(row.last_job_finished_at), 'MMM d, HH:mm')}`
+                                : 'Never scraped'}
+                            </span>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => handleScrapeNow(row)}
+                              loading={triggering.has(row.influencer_id)}
+                              disabled={isInFlight}
+                            >
+                              <PlayCircle className="w-3.5 h-3.5" />
+                              Scrape now
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title={historyOpen ? 'Hide run history' : 'Show run history'}
+                              onClick={() => toggleHistory(row.influencer_id)}
+                            >
+                              {historyOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <History className="w-3.5 h-3.5" />}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title={row.is_active ? 'Deactivate' : 'Activate'}
+                              onClick={() => handleToggleInfluencerActive(row)}
+                            >
+                              <Power className="w-3.5 h-3.5" style={{ color: row.is_active ? 'var(--color-warning)' : 'var(--color-success)' }} />
+                            </Button>
+                            <Button variant="ghost" size="sm" title="Delete permanently" onClick={() => handleDeleteInfluencer(row)}>
+                              <Trash2 className="w-3.5 h-3.5" style={{ color: 'var(--color-danger)' }} />
+                            </Button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-4 shrink-0">
-                          <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
-                            {row.last_job_finished_at
-                              ? `Last scraped ${format(new Date(row.last_job_finished_at), 'MMM d, HH:mm')}`
-                              : 'Never scraped'}
-                          </span>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => handleScrapeNow(row)}
-                            loading={triggering.has(row.influencer_id)}
-                            disabled={isInFlight}
-                          >
-                            <PlayCircle className="w-3.5 h-3.5" />
-                            Scrape now
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            title={row.is_active ? 'Deactivate' : 'Activate'}
-                            onClick={() => handleToggleInfluencerActive(row)}
-                          >
-                            <Power className="w-3.5 h-3.5" style={{ color: row.is_active ? 'var(--color-warning)' : 'var(--color-success)' }} />
-                          </Button>
-                          <Button variant="ghost" size="sm" title="Delete permanently" onClick={() => handleDeleteInfluencer(row)}>
-                            <Trash2 className="w-3.5 h-3.5" style={{ color: 'var(--color-danger)' }} />
-                          </Button>
-                        </div>
+                        {historyOpen && (
+                          <div className="mt-2">
+                            <JobHistoryPanel influencerId={row.influencer_id} />
+                          </div>
+                        )}
                       </div>
                     );
                   })}
