@@ -90,6 +90,11 @@ class JobProcessor:
             try:
                 await self._run_scrape(session, job)
                 job.status = "completed"
+                # Clear any error_message left over from an earlier failed
+                # attempt on this same job row (retry_pending reuses it,
+                # retry_count and all) -- otherwise a job that eventually
+                # succeeds still displays its last failure's message.
+                job.error_message = None
             except ScraperBlockedError as e:
                 logger.exception("Scrape blocked", exc_info=e)
                 outcome = "blocked"
@@ -199,7 +204,21 @@ class JobProcessor:
             try:
                 raw_feed = await self.client.get_user_feed(handle, max_id)
             except Exception as e:
-                logger.warning("Feed fetch unavailable", handle=handle, error=str(e))
+                if posts_processed == 0:
+                    # Failed on the very first page -- indistinguishable
+                    # from a totally failed scrape, so it must not be
+                    # swallowed into a false "completed". Re-raise so it
+                    # hits the outer handler in process(), which classifies
+                    # it properly (blocked/rate_limited/error) and retries
+                    # -- instead of silently reporting success having
+                    # scraped nothing.
+                    raise
+                # Failed on a *later* page, after some posts already
+                # committed this run -- graceful degradation. That partial
+                # progress (and, mid-backfill, influencer.backfill_cursor)
+                # is real and worth keeping rather than discarding via a
+                # retry from scratch.
+                logger.warning("Feed fetch unavailable after partial progress", handle=handle, error=str(e))
                 break
 
             items, next_max_id = InstagramParser.parse_feed(raw_feed)
