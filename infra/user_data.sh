@@ -128,6 +128,14 @@ services:
       - /opt/app/.env.production
     ports:
       - "8000:8000"     # security group already restricts this to admin_cidr_block
+    # Watchtower recreates containers directly via the Docker API on every
+    # rolling deploy -- it has no notion of the `migrate` one-shot service
+    # or its depends_on/service_completed_successfully ordering (that only
+    # applies to a `docker-compose up`, i.e. first boot). Without this, a
+    # deploy that adds a migration would start serving on the old schema
+    # until someone noticed and ran it by hand. alembic upgrade head is a
+    # no-op once already applied, so this is safe on every restart.
+    command: sh -c "uv run alembic upgrade head && uv run uvicorn main:app --host 0.0.0.0 --port 8000"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -153,6 +161,9 @@ services:
     restart: unless-stopped
     env_file:
       - /opt/app/.env.production
+    # Same reasoning as api's command override above -- Watchtower bypasses
+    # depends_on entirely on rolling deploys.
+    command: sh -c "uv run alembic upgrade head && uv run python -m app.workers.worker_runner"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -166,6 +177,7 @@ services:
     restart: unless-stopped
     env_file:
       - /opt/app/.env.production
+    command: sh -c "uv run alembic upgrade head && uv run python -m app.scheduler.runner"
     depends_on:
       migrate:
         condition: service_completed_successfully
