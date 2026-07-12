@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from typing import Sequence
 from uuid import UUID
 
@@ -115,9 +116,18 @@ async def get_dashboard_status(db: AsyncSession = Depends(get_db)):
 
 @router.get("/dashboard/metrics", response_model=DashboardMetricsOut)
 async def get_dashboard_metrics(
-    days: int = Query(default=30, ge=1, le=90), db: AsyncSession = Depends(get_db)
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
 ):
-    return await DashboardService(db).get_daily_metrics(days)
+    # Defaults to the last 30 days if unset, matching the dashboard's
+    # default preset. Bounded to a 366-day span so a stray far-apart
+    # custom range can't trigger an unbounded full-table scan.
+    resolved_end = end_date or date.today()
+    resolved_start = start_date or (resolved_end - timedelta(days=30))
+    if (resolved_end - resolved_start).days > 366:
+        resolved_start = resolved_end - timedelta(days=366)
+    return await DashboardService(db).get_daily_metrics(resolved_start, resolved_end)
 
 
 @router.get("/accounts", response_model=list[InstagramAccountOut])

@@ -1,3 +1,5 @@
+from datetime import date
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.influencer_repo import InfluencerRepo
@@ -34,12 +36,13 @@ class DashboardService:
                     last_job_duration_s=job.duration_s if job else None,
                     last_job_error_message=job.error_message if job else None,
                     last_job_posts_processed=job.posts_processed if job else None,
+                    last_job_comments_processed=job.comments_processed if job else None,
                 )
             )
         return rows
 
-    async def get_daily_metrics(self, days: int) -> DashboardMetricsOut:
-        rows = await self.job_repo.get_daily_metrics(days)
+    async def get_daily_metrics(self, start_date: date, end_date: date) -> DashboardMetricsOut:
+        rows = await self.job_repo.get_daily_metrics(start_date, end_date)
         buckets = [
             DailyMetricBucket(
                 date=row.day.date(),
@@ -47,7 +50,8 @@ class DashboardService:
                 job_count=row.job_count,
                 avg_duration_s=row.avg_duration_s,
                 posts_processed=row.posts_processed,
+                comments_processed=row.comments_processed,
             )
             for row in rows
         ]
-        return DashboardMetricsOut(days=days, buckets=buckets)
+        return DashboardMetricsOut(start_date=start_date, end_date=end_date, buckets=buckets)

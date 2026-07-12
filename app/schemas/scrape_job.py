@@ -13,6 +13,7 @@ class ScrapeJobOut(BaseModel):
     duration_s: Optional[float] = None
     error_message: Optional[str] = None
     posts_processed: int
+    comments_processed: int
     retry_count: int
 
     model_config = ConfigDict(from_attributes=True)

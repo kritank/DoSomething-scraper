@@ -19,6 +19,7 @@ class DashboardStatusRow(BaseModel):
     last_job_duration_s: Optional[float] = None
     last_job_error_message: Optional[str] = None
     last_job_posts_processed: Optional[int] = None
+    last_job_comments_processed: Optional[int] = None
     # No ConfigDict(from_attributes=True) -- unlike every other *Out schema
     # in this repo, this is an aggregated view model assembled in
     # DashboardService by merging influencers + latest-job-per-influencer,
@@ -31,8 +32,10 @@ class DailyMetricBucket(BaseModel):
     job_count: int
     avg_duration_s: Optional[float] = None
     posts_processed: int
+    comments_processed: int
 
 
 class DashboardMetricsOut(BaseModel):
-    days: int
+    start_date: date
+    end_date: date
     buckets: list[DailyMetricBucket]

@@ -333,16 +333,20 @@ class JobProcessor:
         # sleeping here.
         semaphore = asyncio.Semaphore(settings.COMMENT_SYNC_CONCURRENCY)
 
-        async def _sync_one(post: Post) -> None:
+        async def _sync_one(post: Post) -> int:
             async with semaphore:
                 try:
                     async with get_session() as post_session:
-                        await self._sync_comments_for_post(post_session, post)
+                        count = await self._sync_comments_for_post(post_session, post)
                         await self._update_engagement_timing_features(post_session, post)
+                        return count
                 except Exception as e:
                     logger.warning("Comment sync failed", shortcode=post.shortcode, error=str(e))
+                    return 0
 
-        await asyncio.gather(*(_sync_one(post) for post in posts_to_sync))
+        comment_counts = await asyncio.gather(*(_sync_one(post) for post in posts_to_sync))
+        job.comments_processed = sum(comment_counts)
+        await session.commit()
 
     async def _record_metrics_snapshot(
         self, session: AsyncSession, post: Post, item: InstagramMediaItem
@@ -370,8 +374,9 @@ class JobProcessor:
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def _sync_comments_for_post(self, session: AsyncSession, post: Post) -> None:
+    async def _sync_comments_for_post(self, session: AsyncSession, post: Post) -> int:
         after: str | None = None
+        total = 0
         for _ in range(MAX_COMMENT_PAGES):
             connection = await self.client.get_media_comments(post.media_pk, post.permalink, after)
             comments, next_after, has_more = InstagramParser.parse_comments(connection)
@@ -380,17 +385,20 @@ class JobProcessor:
 
             await self._upsert_comments_bulk(session, post.id, comments)
             await session.commit()
+            total += len(comments)
 
             for comment in comments:
                 if comment.child_comment_count > 0:
-                    await self._sync_replies(session, post, comment)
+                    total += await self._sync_replies(session, post, comment)
 
             if not has_more or not next_after:
                 break
             after = next_after
+        return total
 
-    async def _sync_replies(self, session: AsyncSession, post: Post, parent: InstagramComment) -> None:
+    async def _sync_replies(self, session: AsyncSession, post: Post, parent: InstagramComment) -> int:
         after: str | None = None
+        total = 0
         for _ in range(MAX_REPLY_PAGES):
             connection = await self.client.get_comment_replies(post.media_pk, parent.comment_id, post.permalink, after)
             replies, next_after, has_more = InstagramParser.parse_replies(connection, parent.comment_id)
@@ -399,10 +407,12 @@ class JobProcessor:
 
             await self._upsert_comments_bulk(session, post.id, replies)
             await session.commit()
+            total += len(replies)
 
             if not has_more or not next_after:
                 break
             after = next_after
+        return total
 
     async def _upsert_comments_bulk(
         self, session: AsyncSession, post_id: UUID, comments: list[InstagramComment]

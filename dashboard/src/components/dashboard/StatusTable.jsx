@@ -12,6 +12,7 @@ const COLUMNS = [
   { key: 'last_job_finished_at', label: 'When' },
   { key: 'last_job_duration_s', label: 'Duration' },
   { key: 'last_job_posts_processed', label: 'Posts' },
+  { key: 'last_job_comments_processed', label: 'Comments' },
 ];
 
 function formatDuration(s) {
@@ -132,6 +133,9 @@ export default function StatusTable({ rows }) {
                   </td>
                   <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>
                     {row.last_job_posts_processed ?? '—'}
+                  </td>
+                  <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>
+                    {row.last_job_comments_processed ?? '—'}
                   </td>
                   <td className="py-2.5 px-3 text-xs" style={{ color: 'var(--color-text-muted)' }}>
                     {!row.is_active && <span className="mr-2">paused</span>}

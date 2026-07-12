@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Sequence
 from uuid import UUID
 
@@ -79,8 +79,12 @@ class ScrapeJobRepo:
         result = await self.session.execute(stmt)
         return result.scalars().all()
 
-    async def get_daily_metrics(self, days: int) -> Sequence[Row]:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    async def get_daily_metrics(self, start_date: date, end_date: date) -> Sequence[Row]:
+        # end_date is inclusive -- bump to the start of the next day so a
+        # single-day range (start_date == end_date) still captures that
+        # whole day's jobs rather than matching zero rows.
+        range_start = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+        range_end = datetime.combine(end_date, datetime.min.time()).replace(tzinfo=timezone.utc) + timedelta(days=1)
         day = func.date_trunc("day", ScrapeJob.created_at).label("day")
         stmt = (
             select(
@@ -89,8 +93,10 @@ class ScrapeJobRepo:
                 func.count().label("job_count"),
                 func.avg(ScrapeJob.duration_s).label("avg_duration_s"),
                 func.coalesce(func.sum(ScrapeJob.posts_processed), 0).label("posts_processed"),
+                func.coalesce(func.sum(ScrapeJob.comments_processed), 0).label("comments_processed"),
             )
-            .where(ScrapeJob.created_at >= cutoff)
+            .where(ScrapeJob.created_at >= range_start)
+            .where(ScrapeJob.created_at < range_end)
             .group_by(day, ScrapeJob.status)
             .order_by(day)
         )

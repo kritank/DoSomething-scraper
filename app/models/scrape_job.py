@@ -28,6 +28,7 @@ class ScrapeJob(Base):
     
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     posts_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    comments_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

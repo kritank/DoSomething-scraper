@@ -5,7 +5,9 @@ export async function getDashboardStatus() {
   return data;
 }
 
-export async function getDashboardMetrics(days = 30) {
-  const { data } = await apiClient.get('/admin/dashboard/metrics', { params: { days } });
+export async function getDashboardMetrics(startDate, endDate) {
+  const { data } = await apiClient.get('/admin/dashboard/metrics', {
+    params: { start_date: startDate, end_date: endDate },
+  });
   return data;
 }
