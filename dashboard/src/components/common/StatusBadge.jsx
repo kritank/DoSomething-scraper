@@ -14,6 +14,8 @@ const STYLES = {
   checkpoint_required:{ bg: 'var(--color-danger-muted)',  fg: 'var(--color-danger)' },
   disabled:           { bg: 'rgba(255,255,255,0.06)',     fg: 'var(--color-text-muted)' },
   never_scraped:      { bg: 'rgba(255,255,255,0.06)',     fg: 'var(--color-text-muted)' },
+  pending_login:      { bg: 'var(--color-accent-muted)',  fg: 'var(--color-accent)' },
+  login_failed:       { bg: 'var(--color-danger-muted)',  fg: 'var(--color-danger)' },
 };
 
 export default function StatusBadge({ status, className }) {

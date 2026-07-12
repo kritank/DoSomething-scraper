@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
 from app.core.database import init_db, close_db
 from app.queue.factory import get_queue
+from app.workers.account_login_processor import process_pending_logins
 from app.workers.job_processor import JobProcessor
 
 
@@ -58,7 +59,7 @@ async def main():
     
     await init_db()
     try:
-        await worker_loop()
+        await asyncio.gather(worker_loop(), process_pending_logins(shutdown_event))
     finally:
         await close_db()
 

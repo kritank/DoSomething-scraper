@@ -95,6 +95,9 @@ class Settings(BaseSettings):
     ACCOUNT_ENCRYPTION_KEY: str = ""  # required — Fernet key for cookies at rest
     ACCOUNT_LEASE_TIMEOUT_S: int = 1800
     ACCOUNT_MAX_CONSECUTIVE_FAILURES: int = 5
+    # How often the worker's background loop polls for pending_login accounts
+    # (dashboard-initiated username/password registrations) to process.
+    ACCOUNT_LOGIN_POLL_INTERVAL_S: int = 30
 
     # ── Scheduler ─────────────────────────────────────────────────────────────
     SCHEDULER_TIMEZONE: str = "UTC"

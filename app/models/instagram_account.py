@@ -11,10 +11,15 @@ from app.core.database import Base
 
 
 class InstagramAccount(Base):
-    """A pooled Instagram session, logged in via app.scraper.login_automator.
+    """A pooled Instagram session, logged in via app.scraper.login_automator
+    or by pasting session cookies directly.
 
-    status: "active" | "in_use" | "checkpoint_required" | "disabled"
-    Passwords are never stored -- only session cookies captured at login time.
+    status: "active" | "in_use" | "checkpoint_required" | "disabled" |
+            "pending_login" | "login_failed"
+    auth_method: "cookies" | "login" -- how the account was registered.
+    For "login" accounts, password_encrypted is retained (Fernet, same key
+    as cookies) after a successful login too, not just during the pending
+    attempt -- enables a future auto-relogin-on-session-expiry capability.
     """
 
     __tablename__ = "instagram_accounts"
@@ -24,9 +29,11 @@ class InstagramAccount(Base):
     )
     username: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", index=True)
+    auth_method: Mapped[str] = mapped_column(String(16), nullable=False, default="cookies")
 
     session_cookies_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     session_captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    password_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     user_agent: Mapped[str] = mapped_column(String(512), nullable=False)
     locale: Mapped[str] = mapped_column(String(16), nullable=False)

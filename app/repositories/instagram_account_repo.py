@@ -94,6 +94,56 @@ class InstagramAccountRepo:
     def decrypt_cookies(self, account: InstagramAccount) -> dict[str, str]:
         return decrypt_json(account.session_cookies_encrypted)
 
+    async def create_pending_login(
+        self,
+        username: str,
+        password: str,
+        user_agent: str,
+        locale: str,
+        tz: str,
+    ) -> InstagramAccount:
+        """Register a login-method account for async processing.
+
+        Returns immediately with status="pending_login" -- the worker's
+        background poll loop (app.workers.account_login_processor) picks
+        this up, runs the actual Playwright login, and updates the row to
+        active/checkpoint_required/login_failed. Upserts by username, same
+        pattern as create()/create_checkpoint_required().
+        """
+        account = await self._get_by_username(username)
+        if account is None:
+            account = InstagramAccount(username=username)
+            self.session.add(account)
+
+        account.status = "pending_login"
+        account.auth_method = "login"
+        account.password_encrypted = encrypt_json({"password": password})
+        account.session_cookies_encrypted = encrypt_json({})  # placeholder until login succeeds
+        account.session_captured_at = datetime.now(timezone.utc)
+        account.user_agent = user_agent
+        account.locale = locale
+        account.timezone = tz
+        account.error_message = None
+        await self.session.commit()
+        return account
+
+    async def mark_login_failed(self, username: str, detail: str) -> None:
+        account = await self._get_by_username(username)
+        if account is None:
+            return
+        account.status = "login_failed"
+        account.error_message = detail
+        await self.session.commit()
+
+    async def get_pending_logins(self) -> list[InstagramAccount]:
+        result = await self.session.execute(
+            select(InstagramAccount).where(InstagramAccount.status == "pending_login")
+        )
+        return list(result.scalars().all())
+
+    def decrypt_password(self, account: InstagramAccount) -> str:
+        return decrypt_json(account.password_encrypted)["password"]
+
     async def acquire_healthy_account(self, worker_id: str) -> Optional[InstagramAccount]:
         """Atomically claim one healthy account for a single job.
 

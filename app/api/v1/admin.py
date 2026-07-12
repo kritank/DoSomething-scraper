@@ -10,6 +10,7 @@ from app.repositories.category_repo import CategoryRepo
 from app.repositories.influencer_repo import InfluencerRepo
 from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
+from app.schemas.account_registration import RegisterAccountCookiesRequest, RegisterAccountLoginRequest
 from app.schemas.category import CategoryCreate, CategoryOut
 from app.schemas.dashboard import DashboardMetricsOut, DashboardStatusRow
 from app.schemas.db_schema import SchemaTable
@@ -88,6 +89,30 @@ async def get_dashboard_metrics(
 @router.get("/accounts", response_model=list[InstagramAccountOut])
 async def list_accounts(db: AsyncSession = Depends(get_db)):
     return await InstagramAccountRepo(db).get_all()
+
+
+@router.post("/accounts/cookies", response_model=InstagramAccountOut)
+async def register_account_via_cookies(
+    data: RegisterAccountCookiesRequest, db: AsyncSession = Depends(get_db)
+):
+    cookies = {"sessionid": data.sessionid, "csrftoken": data.csrftoken, "ds_user_id": data.ds_user_id}
+    if data.ig_did:
+        cookies["ig_did"] = data.ig_did
+    return await InstagramAccountRepo(db).create(
+        data.username, cookies, data.user_agent, data.locale, data.timezone
+    )
+
+
+@router.post("/accounts/login", response_model=InstagramAccountOut)
+async def register_account_via_login(
+    data: RegisterAccountLoginRequest, db: AsyncSession = Depends(get_db)
+):
+    # Returns immediately with status="pending_login" -- the worker's
+    # background poll loop (app.workers.account_login_processor) does the
+    # actual Playwright login, since only the worker image has Chromium.
+    return await InstagramAccountRepo(db).create_pending_login(
+        data.username, data.password, data.user_agent, data.locale, data.timezone
+    )
 
 
 @router.post("/query", response_model=QueryResult)

@@ -9,6 +9,7 @@ class InstagramAccountOut(BaseModel):
     id: UUID
     username: str
     status: str
+    auth_method: str
     failure_count: int
     cooldown_until: Optional[datetime] = None
     locked_by: Optional[str] = None
