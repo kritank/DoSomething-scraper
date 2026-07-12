@@ -1,8 +1,16 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
+
+
+class AccountStatusUpdate(BaseModel):
+    # Deliberately restricted to these two -- an operator manually setting
+    # in_use/pending_login/checkpoint_required would fight the account-pool
+    # state machine (acquire_healthy_account, the login processor, etc.),
+    # which own those transitions themselves.
+    status: Literal["active", "disabled"]
 
 
 class InstagramAccountOut(BaseModel):

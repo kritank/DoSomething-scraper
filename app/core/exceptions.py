@@ -57,6 +57,13 @@ class ScrapeJobNotFoundError(NotFoundError):
         super().__init__(f"Scrape job not found: {job_id}")
 
 
+class InstagramAccountNotFoundError(NotFoundError):
+    code = "INSTAGRAM_ACCOUNT_NOT_FOUND"
+
+    def __init__(self, account_id: str) -> None:
+        super().__init__(f"Instagram account not found: {account_id}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 400 — Bad Request / Validation
 # ─────────────────────────────────────────────────────────────────────────────

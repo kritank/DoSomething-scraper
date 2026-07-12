@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import DuplicateInfluencerError, InfluencerNotFoundError
 from app.models.influencer import Influencer
-from app.schemas.influencer import InfluencerCreate, InfluencerScrapeSettingsUpdate
+from app.schemas.influencer import InfluencerActiveUpdate, InfluencerCreate, InfluencerScrapeSettingsUpdate
 
 
 class InfluencerRepo:
@@ -51,6 +51,23 @@ class InfluencerRepo:
         influencer.scrape_posts_since = data.scrape_posts_since
         await self.session.commit()
         return influencer
+
+    async def update_active(self, influencer_id: UUID, data: InfluencerActiveUpdate) -> Influencer:
+        """Pause/resume tracking without touching any scraped data -- the
+        default, reversible "remove" action. run_daily_scrapes() and the
+        dashboard's add-influencer flow already only consider is_active
+        influencers."""
+        influencer = await self.get_by_id(influencer_id)
+        influencer.is_active = data.is_active
+        await self.session.commit()
+        return influencer
+
+    async def delete(self, influencer_id: UUID) -> None:
+        """Hard delete -- cascades to posts/comments/snapshots/feature_store
+        via DB-level ON DELETE CASCADE. Irreversible."""
+        influencer = await self.get_by_id(influencer_id)
+        await self.session.delete(influencer)
+        await self.session.commit()
 
     async def get_by_id(self, influencer_id: UUID) -> Influencer:
         influencer = await self.session.get(Influencer, influencer_id)

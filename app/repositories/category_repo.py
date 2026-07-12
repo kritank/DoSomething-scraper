@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import DuplicateCategoryError, CategoryNotFoundError
 from app.models.category import Category
-from app.schemas.category import CategoryCreate
+from app.schemas.category import CategoryCreate, CategoryUpdate
 
 
 class CategoryRepo:
@@ -33,3 +33,25 @@ class CategoryRepo:
         if not category:
             raise CategoryNotFoundError(str(category_id))
         return category
+
+    async def update(self, category_id: UUID, data: CategoryUpdate) -> Category:
+        category = await self.get_by_id(category_id)
+        if data.name is not None:
+            category.name = data.name
+        if data.is_active is not None:
+            category.is_active = data.is_active
+        try:
+            await self.session.commit()
+        except IntegrityError:
+            await self.session.rollback()
+            raise DuplicateCategoryError(data.name or category.name)
+        return category
+
+    async def delete(self, category_id: UUID) -> None:
+        """Hard delete -- cascades to every influencer in this category, and
+        from there to their posts/comments/snapshots/feature_store rows via
+        DB-level ON DELETE CASCADE. Irreversible; the API layer requires this
+        to be called explicitly (not the default "remove" action)."""
+        category = await self.get_by_id(category_id)
+        await self.session.delete(category)
+        await self.session.commit()

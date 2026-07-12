@@ -10,6 +10,7 @@ from sqlalchemy.sql import func
 
 from app.core.config import settings
 from app.core.crypto import decrypt_json, encrypt_json
+from app.core.exceptions import InstagramAccountNotFoundError
 from app.core.logging import get_logger
 from app.models.instagram_account import InstagramAccount
 
@@ -143,6 +144,26 @@ class InstagramAccountRepo:
 
     def decrypt_password(self, account: InstagramAccount) -> str:
         return decrypt_json(account.password_encrypted)["password"]
+
+    async def update_status(self, account_id: UUID, status: str) -> InstagramAccount:
+        """Manual active/disabled toggle -- the reversible, default 'remove'
+        action. Does not touch cookies/password, just excludes the account
+        from acquire_healthy_account()'s pool when disabled."""
+        account = await self.session.get(InstagramAccount, account_id)
+        if account is None:
+            raise InstagramAccountNotFoundError(str(account_id))
+        account.status = status
+        await self.session.commit()
+        return account
+
+    async def delete(self, account_id: UUID) -> None:
+        """Hard delete -- actually removes the row (cookies/password
+        included). Irreversible."""
+        account = await self.session.get(InstagramAccount, account_id)
+        if account is None:
+            return
+        await self.session.delete(account)
+        await self.session.commit()
 
     async def acquire_healthy_account(self, worker_id: str) -> Optional[InstagramAccount]:
         """Atomically claim one healthy account for a single job.

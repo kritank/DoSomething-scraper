@@ -25,3 +25,23 @@ export async function triggerScrape(influencerId) {
   });
   return data;
 }
+
+export async function updateCategory(categoryId, payload) {
+  const { data } = await apiClient.patch(`/admin/categories/${categoryId}`, payload);
+  return data;
+}
+
+export async function deleteCategory(categoryId) {
+  await apiClient.delete(`/admin/categories/${categoryId}`);
+}
+
+export async function updateInfluencerActive(influencerId, isActive) {
+  const { data } = await apiClient.patch(`/admin/influencers/${influencerId}/active`, {
+    is_active: isActive,
+  });
+  return data;
+}
+
+export async function deleteInfluencer(influencerId) {
+  await apiClient.delete(`/admin/influencers/${influencerId}`);
+}

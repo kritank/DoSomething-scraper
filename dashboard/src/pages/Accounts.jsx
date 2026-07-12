@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
+import { RefreshCw, ChevronDown, ChevronUp, Power, Trash2 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
-import { getAccounts } from '../services/accountsService';
+import { toast } from 'sonner';
+import { getAccounts, updateAccountStatus, deleteAccount } from '../services/accountsService';
 import StatusBadge from '../components/common/StatusBadge';
 import Button from '../components/common/Button';
 import ErrorState from '../components/common/ErrorState';
@@ -38,6 +39,30 @@ export default function Accounts() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const handleToggleStatus = async (account) => {
+    const next = account.status === 'disabled' ? 'active' : 'disabled';
+    try {
+      await updateAccountStatus(account.id, next);
+      toast.success(`@${account.username} ${next === 'disabled' ? 'disabled' : 're-enabled'}`);
+      load();
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    }
+  };
+
+  const handleDelete = async (account) => {
+    if (!window.confirm(`Permanently delete @${account.username}? This removes its stored session/credentials and cannot be undone.`)) {
+      return;
+    }
+    try {
+      await deleteAccount(account.id);
+      toast.success(`@${account.username} deleted`);
+      load();
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    }
+  };
 
   if (error) {
     return <ErrorState title="Couldn't load accounts" description={error} onRetry={load} />;
@@ -83,7 +108,7 @@ export default function Accounts() {
             <table className="w-full text-sm">
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                  {['Username', 'Status', 'Method', 'Failures', 'Cooldown until', 'Last used', 'Last success', 'Last failure', 'Note'].map((h) => (
+                  {['Username', 'Status', 'Method', 'Failures', 'Cooldown until', 'Last used', 'Last success', 'Last failure', 'Note', 'Actions'].map((h) => (
                     <th key={h} className="text-left py-2.5 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
                       {h}
                     </th>
@@ -110,6 +135,21 @@ export default function Accounts() {
                           Needs manual resolution over SSH
                         </div>
                       )}
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          title={a.status === 'disabled' ? 'Re-enable' : 'Disable'}
+                          onClick={() => handleToggleStatus(a)}
+                        >
+                          <Power className="w-3.5 h-3.5" style={{ color: a.status === 'disabled' ? 'var(--color-success)' : 'var(--color-warning)' }} />
+                        </Button>
+                        <Button variant="ghost" size="sm" title="Delete permanently" onClick={() => handleDelete(a)}>
+                          <Trash2 className="w-3.5 h-3.5" style={{ color: 'var(--color-danger)' }} />
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}

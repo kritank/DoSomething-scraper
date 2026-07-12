@@ -15,6 +15,10 @@ class InfluencerScrapeSettingsUpdate(BaseModel):
     scrape_posts_since: Optional[date] = None
 
 
+class InfluencerActiveUpdate(BaseModel):
+    is_active: bool
+
+
 class InfluencerOut(BaseModel):
     id: UUID
     handle: str

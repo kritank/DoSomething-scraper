@@ -11,11 +11,16 @@ from app.repositories.influencer_repo import InfluencerRepo
 from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
 from app.schemas.account_registration import RegisterAccountCookiesRequest, RegisterAccountLoginRequest
-from app.schemas.category import CategoryCreate, CategoryOut
+from app.schemas.category import CategoryCreate, CategoryOut, CategoryUpdate
 from app.schemas.dashboard import DashboardMetricsOut, DashboardStatusRow
 from app.schemas.db_schema import SchemaTable
-from app.schemas.influencer import InfluencerCreate, InfluencerOut, InfluencerScrapeSettingsUpdate
-from app.schemas.instagram_account import InstagramAccountOut
+from app.schemas.influencer import (
+    InfluencerActiveUpdate,
+    InfluencerCreate,
+    InfluencerOut,
+    InfluencerScrapeSettingsUpdate,
+)
+from app.schemas.instagram_account import AccountStatusUpdate, InstagramAccountOut
 from app.schemas.query_console import QueryRequest, QueryResult
 from app.schemas.scrape_job import ScrapeJobOut
 from app.services.dashboard_service import DashboardService
@@ -36,6 +41,20 @@ async def create_category(data: CategoryCreate, db: AsyncSession = Depends(get_d
 async def list_categories(db: AsyncSession = Depends(get_db)):
     repo = CategoryRepo(db)
     return await repo.get_all()
+
+
+@router.patch("/categories/{category_id}", response_model=CategoryOut)
+async def update_category(category_id: UUID, data: CategoryUpdate, db: AsyncSession = Depends(get_db)):
+    return await CategoryRepo(db).update(category_id, data)
+
+
+@router.delete("/categories/{category_id}", status_code=204)
+async def delete_category(category_id: UUID, db: AsyncSession = Depends(get_db)):
+    # Hard delete -- cascades to every influencer in this category and, from
+    # there, their posts/comments/snapshots. Irreversible; the dashboard
+    # gates this behind an explicit confirm, deactivate (PATCH is_active)
+    # is the default/reversible action.
+    await CategoryRepo(db).delete(category_id)
 
 
 @router.post("/influencers", response_model=InfluencerOut)
@@ -59,6 +78,21 @@ async def update_influencer_scrape_settings(
 ):
     repo = InfluencerRepo(db)
     return await repo.update_scrape_settings(influencer_id, data)
+
+
+@router.patch("/influencers/{influencer_id}/active", response_model=InfluencerOut)
+async def update_influencer_active(
+    influencer_id: UUID, data: InfluencerActiveUpdate, db: AsyncSession = Depends(get_db)
+):
+    return await InfluencerRepo(db).update_active(influencer_id, data)
+
+
+@router.delete("/influencers/{influencer_id}", status_code=204)
+async def delete_influencer(influencer_id: UUID, db: AsyncSession = Depends(get_db)):
+    # Hard delete -- cascades to posts/comments/snapshots/feature_store.
+    # Irreversible; the dashboard gates this behind an explicit confirm,
+    # deactivate (PATCH active) is the default/reversible action.
+    await InfluencerRepo(db).delete(influencer_id)
 
 
 @router.post("/scrape")
@@ -113,6 +147,21 @@ async def register_account_via_login(
     return await InstagramAccountRepo(db).create_pending_login(
         data.username, data.password, data.user_agent, data.locale, data.timezone
     )
+
+
+@router.patch("/accounts/{account_id}", response_model=InstagramAccountOut)
+async def update_account_status(
+    account_id: UUID, data: AccountStatusUpdate, db: AsyncSession = Depends(get_db)
+):
+    return await InstagramAccountRepo(db).update_status(account_id, data.status)
+
+
+@router.delete("/accounts/{account_id}", status_code=204)
+async def delete_account(account_id: UUID, db: AsyncSession = Depends(get_db)):
+    # Hard delete -- actually removes the row (cookies/password included).
+    # Irreversible; the dashboard gates this behind an explicit confirm,
+    # disabling (PATCH status) is the default/reversible action.
+    await InstagramAccountRepo(db).delete(account_id)
 
 
 @router.post("/query", response_model=QueryResult)

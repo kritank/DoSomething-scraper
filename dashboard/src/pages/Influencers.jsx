@@ -1,9 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { PlayCircle, RefreshCw } from 'lucide-react';
+import { PlayCircle, RefreshCw, Power, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import { getDashboardStatus } from '../services/dashboardService';
-import { getCategories, triggerScrape } from '../services/influencerService';
+import {
+  getCategories,
+  triggerScrape,
+  updateCategory,
+  deleteCategory,
+  updateInfluencerActive,
+  deleteInfluencer,
+} from '../services/influencerService';
 import StatusBadge from '../components/common/StatusBadge';
 import Button from '../components/common/Button';
 import ErrorState from '../components/common/ErrorState';
@@ -71,6 +78,54 @@ export default function Influencers() {
     }
   };
 
+  const handleToggleCategoryActive = async (category) => {
+    try {
+      await updateCategory(category.id, { is_active: !(category.is_active ?? true) });
+      toast.success(`"${category.name}" ${category.is_active ? 'deactivated' : 'activated'}`);
+      load();
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    }
+  };
+
+  const handleDeleteCategory = async (category, influencerCount) => {
+    const msg = influencerCount > 0
+      ? `Permanently delete category "${category.name}" and its ${influencerCount} influencer(s) -- including ALL their posts, comments, and metrics? This cannot be undone.`
+      : `Permanently delete category "${category.name}"? This cannot be undone.`;
+    if (!window.confirm(msg)) return;
+    try {
+      await deleteCategory(category.id);
+      toast.success(`"${category.name}" deleted`);
+      load();
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    }
+  };
+
+  const handleToggleInfluencerActive = async (row) => {
+    const next = !row.is_active;
+    try {
+      await updateInfluencerActive(row.influencer_id, next);
+      toast.success(`@${row.handle} ${next ? 'activated' : 'deactivated'}`);
+      load();
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    }
+  };
+
+  const handleDeleteInfluencer = async (row) => {
+    if (!window.confirm(`Permanently delete @${row.handle} -- including ALL its posts, comments, and metrics? This cannot be undone.`)) {
+      return;
+    }
+    try {
+      await deleteInfluencer(row.influencer_id);
+      toast.success(`@${row.handle} deleted`);
+      load();
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    }
+  };
+
   if (error) {
     return <ErrorState title="Couldn't load influencers" description={error} onRetry={load} />;
   }
@@ -104,9 +159,32 @@ export default function Influencers() {
         <div className="flex flex-col gap-4">
           {grouped.map(({ category, influencers }) => (
             <div key={category.id} className="card p-5 flex flex-col gap-3 min-w-0">
-              <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-                {category.name} <span style={{ color: 'var(--color-text-muted)' }}>({influencers.length})</span>
-              </h3>
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+                  {category.name} <span style={{ color: 'var(--color-text-muted)' }}>({influencers.length})</span>
+                  {category.is_active === false && (
+                    <span className="ml-2 text-xs font-normal" style={{ color: 'var(--color-text-muted)' }}>(inactive)</span>
+                  )}
+                </h3>
+                <div className="flex items-center gap-1 shrink-0">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    title={category.is_active === false ? 'Activate category' : 'Deactivate category'}
+                    onClick={() => handleToggleCategoryActive(category)}
+                  >
+                    <Power className="w-3.5 h-3.5" style={{ color: category.is_active === false ? 'var(--color-success)' : 'var(--color-warning)' }} />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    title="Delete category permanently"
+                    onClick={() => handleDeleteCategory(category, influencers.length)}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" style={{ color: 'var(--color-danger)' }} />
+                  </Button>
+                </div>
+              </div>
 
               {influencers.length === 0 ? (
                 <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>No influencers in this category yet.</p>
@@ -125,6 +203,9 @@ export default function Influencers() {
                             @{row.handle}
                           </span>
                           <StatusBadge status={row.last_job_status} />
+                          {!row.is_active && (
+                            <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>(inactive)</span>
+                          )}
                         </div>
                         <div className="flex items-center gap-4 shrink-0">
                           <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
@@ -141,6 +222,17 @@ export default function Influencers() {
                           >
                             <PlayCircle className="w-3.5 h-3.5" />
                             Scrape now
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            title={row.is_active ? 'Deactivate' : 'Activate'}
+                            onClick={() => handleToggleInfluencerActive(row)}
+                          >
+                            <Power className="w-3.5 h-3.5" style={{ color: row.is_active ? 'var(--color-warning)' : 'var(--color-success)' }} />
+                          </Button>
+                          <Button variant="ghost" size="sm" title="Delete permanently" onClick={() => handleDeleteInfluencer(row)}>
+                            <Trash2 className="w-3.5 h-3.5" style={{ color: 'var(--color-danger)' }} />
                           </Button>
                         </div>
                       </div>
