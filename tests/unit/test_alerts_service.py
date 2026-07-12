@@ -33,6 +33,26 @@ async def test_all_healthy_produces_no_alerts():
 
 
 @pytest.mark.asyncio
+async def test_in_use_account_does_not_trigger_no_healthy_alert():
+    """Regression test: in_use is a healthy account actively leased for a
+    running job (see acquire_healthy_account), not a problem state. This
+    previously fired a false "no healthy accounts" alert during every
+    single legitimate scrape."""
+    with (
+        patch("app.services.alerts_service.InstagramAccountRepo") as MockAccountRepo,
+        patch("app.services.alerts_service.ScrapeJobRepo") as MockJobRepo,
+        patch("app.services.alerts_service.settings") as mock_settings,
+    ):
+        MockAccountRepo.return_value.get_all = AsyncMock(return_value=[_account(status="in_use")])
+        MockJobRepo.return_value.get_latest_per_influencer = AsyncMock(return_value=[_job()])
+        mock_settings.is_sqs_queue = False
+
+        alerts = await get_alerts(session=None)
+
+    assert alerts == []
+
+
+@pytest.mark.asyncio
 async def test_zero_active_accounts_is_critical():
     with (
         patch("app.services.alerts_service.InstagramAccountRepo") as MockAccountRepo,

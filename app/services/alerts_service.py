@@ -9,13 +9,19 @@ from app.repositories.scrape_job_repo import ScrapeJobRepo
 from app.schemas.alert import AlertOut
 
 _NEEDS_MANUAL_RESOLUTION = ("login_failed", "checkpoint_required")
+# "in_use" is a healthy account actively leased for a running job, not a
+# problem state -- acquire_healthy_account() sets exactly this status the
+# whole time a scrape is in flight. Checking only "active" here previously
+# fired a false "no healthy accounts" critical alert during every single
+# legitimate scrape.
+_HEALTHY_STATUSES = ("active", "in_use")
 
 
 async def get_alerts(session: AsyncSession) -> list[AlertOut]:
     alerts: list[AlertOut] = []
 
     accounts = await InstagramAccountRepo(session).get_all()
-    if not any(a.status == "active" for a in accounts):
+    if not any(a.status in _HEALTHY_STATUSES for a in accounts):
         alerts.append(AlertOut(
             severity="critical",
             message="No healthy Instagram accounts -- all scraping is blocked",
