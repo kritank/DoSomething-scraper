@@ -2,6 +2,19 @@
 # same origin (no CORS needed). Only /api/*, /health, /ready and the SPA are
 # exposed here -- /docs, /openapi.json, /metrics stay reachable only via the
 # admin-CIDR-restricted :8000 port directly, not through this public gateway.
+#
+# auto_https disable_redirects: Caddy's automatic-HTTPS redirect is keyed on
+# HOSTNAME, not listener -- an explicit :80 block with no redirect is NOT
+# enough on its own, because Caddy still injects a per-host 301/308 redirect
+# for any domain under automatic TLS management (engine.viralytics.in below),
+# even inside an unrelated :80 block that imports the same content. Verified
+# this the hard way: `curl -H "Host: engine.viralytics.in" http://.../health`
+# came back 308 despite the :80 block below never mentioning a redirect.
+# This global option is what actually disables that behavior.
+{
+	auto_https disable_redirects
+}
+
 (app) {
 	encode gzip
 
