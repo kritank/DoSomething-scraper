@@ -65,6 +65,14 @@ class JobProcessor:
             job.status = "running"
             job.started_at = datetime.now(timezone.utc)
             job.last_heartbeat_at = job.started_at
+            # A retried job reuses this same row -- without resetting these,
+            # a fresh attempt that bails out instantly (e.g. no healthy
+            # account available) would display alongside posts/comments
+            # counts left over from a *previous* attempt that made real
+            # progress before failing, making a 0-duration row look like it
+            # somehow processed hundreds of posts.
+            job.posts_processed = 0
+            job.comments_processed = 0
             await session.commit()
 
             # Proves this worker is still alive independent of which phase
