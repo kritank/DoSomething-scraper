@@ -23,6 +23,7 @@ export default function Accounts() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [addPanelOpen, setAddPanelOpen] = useState(false);
+  const [refreshingAccountId, setRefreshingAccountId] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -116,8 +117,11 @@ export default function Accounts() {
                 </tr>
               </thead>
               <tbody>
-                {accounts.map((a) => (
-                  <tr key={a.id} className="hover:bg-[var(--color-bg-card-hover)]" style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
+                {accounts.map((a) => {
+                  const refreshOpen = refreshingAccountId === a.id;
+                  return (
+                  <React.Fragment key={a.id}>
+                  <tr className="hover:bg-[var(--color-bg-card-hover)]" style={{ borderBottom: refreshOpen ? 'none' : '1px solid var(--color-border-subtle)' }}>
                     <td className="py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-primary)' }}>@{a.username}</td>
                     <td className="py-2.5 px-3"><StatusBadge status={a.status} /></td>
                     <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{a.auth_method}</td>
@@ -141,6 +145,14 @@ export default function Accounts() {
                         <Button
                           variant="ghost"
                           size="sm"
+                          title="Refresh cookies (fix an expired session / checkpoint_required)"
+                          onClick={() => setRefreshingAccountId(refreshOpen ? null : a.id)}
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" style={{ color: refreshOpen ? 'var(--color-accent)' : 'var(--color-text-muted)' }} />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           title={a.status === 'disabled' ? 'Re-enable' : 'Disable'}
                           onClick={() => handleToggleStatus(a)}
                         >
@@ -152,7 +164,22 @@ export default function Accounts() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  {refreshOpen && (
+                    <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
+                      <td colSpan={10} className="px-3 pb-4">
+                        <div className="card p-4" style={{ background: 'var(--color-bg-secondary)' }}>
+                          <AddAccountForm
+                            initialUsername={a.username}
+                            lockUsername
+                            onRegistered={() => { setRefreshingAccountId(null); load(); }}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>

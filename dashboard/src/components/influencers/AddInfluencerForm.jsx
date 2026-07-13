@@ -1,14 +1,22 @@
 import React, { useState } from 'react';
 import { Plus } from 'lucide-react';
 import { toast } from 'sonner';
+import { format, startOfYear } from 'date-fns';
 import Input from '../common/Input';
 import Button from '../common/Button';
 import { createInfluencer } from '../../services/influencerService';
 
+// Jan 1 of the current year -- a sensible default backfill boundary so a
+// new influencer doesn't silently pull years of history unless someone
+// deliberately clears this field.
+function defaultScrapeSince() {
+  return format(startOfYear(new Date()), 'yyyy-MM-dd');
+}
+
 export default function AddInfluencerForm({ categories, onCreated }) {
   const [handle, setHandle] = useState('');
   const [categoryId, setCategoryId] = useState('');
-  const [scrapePostsSince, setScrapePostsSince] = useState('');
+  const [scrapePostsSince, setScrapePostsSince] = useState(defaultScrapeSince);
   const [submitting, setSubmitting] = useState(false);
 
   const effectiveCategoryId = categoryId || categories[0]?.id || '';
@@ -22,7 +30,7 @@ export default function AddInfluencerForm({ categories, onCreated }) {
       await createInfluencer(cleanHandle, effectiveCategoryId, scrapePostsSince);
       toast.success(`@${cleanHandle} added`);
       setHandle('');
-      setScrapePostsSince('');
+      setScrapePostsSince(defaultScrapeSince());
       onCreated();
     } catch {
       // apiClient's interceptor already toasts the error detail.

@@ -8,7 +8,12 @@ from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import DuplicateInfluencerError, InfluencerNotFoundError
 from app.models.influencer import Influencer
-from app.schemas.influencer import InfluencerActiveUpdate, InfluencerCreate, InfluencerScrapeSettingsUpdate
+from app.schemas.influencer import (
+    InfluencerActiveUpdate,
+    InfluencerCreate,
+    InfluencerDetailsUpdate,
+    InfluencerScrapeSettingsUpdate,
+)
 
 
 class InfluencerRepo:
@@ -60,6 +65,23 @@ class InfluencerRepo:
         influencer = await self.get_by_id(influencer_id)
         influencer.is_active = data.is_active
         await self.session.commit()
+        return influencer
+
+    async def update_details(self, influencer_id: UUID, data: InfluencerDetailsUpdate) -> Influencer:
+        """Corrects a wrong handle or moves an influencer to a different
+        category after creation -- neither was possible before (both were
+        write-once at create() time), which is exactly what forced a manual
+        SQL fix for a mistyped handle earlier."""
+        influencer = await self.get_by_id(influencer_id)
+        if data.handle is not None:
+            influencer.handle = data.handle
+        if data.category_id is not None:
+            influencer.category_id = data.category_id
+        try:
+            await self.session.commit()
+        except IntegrityError:
+            await self.session.rollback()
+            raise DuplicateInfluencerError(data.handle or influencer.handle)
         return influencer
 
     async def delete(self, influencer_id: UUID) -> None:

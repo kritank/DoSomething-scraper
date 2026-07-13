@@ -21,6 +21,7 @@ from app.schemas.db_schema import SchemaTable
 from app.schemas.influencer import (
     InfluencerActiveUpdate,
     InfluencerCreate,
+    InfluencerDetailsUpdate,
     InfluencerOut,
     InfluencerScrapeSettingsUpdate,
 )
@@ -77,6 +78,18 @@ async def register_influencer(data: InfluencerCreate, db: AsyncSession = Depends
 async def list_influencers(db: AsyncSession = Depends(get_db)):
     repo = InfluencerRepo(db)
     return await repo.get_all()
+
+
+@router.patch("/influencers/{influencer_id}/details", response_model=InfluencerOut)
+async def update_influencer_details(
+    influencer_id: UUID, data: InfluencerDetailsUpdate, db: AsyncSession = Depends(get_db)
+):
+    if data.category_id is not None:
+        # Fail clean (404) on a bad category before touching the influencer
+        # row, rather than letting a bogus UUID surface as an FK violation
+        # at commit time.
+        await CategoryRepo(db).get_by_id(data.category_id)
+    return await InfluencerRepo(db).update_details(influencer_id, data)
 
 
 @router.patch("/influencers/{influencer_id}/scrape-settings", response_model=InfluencerOut)

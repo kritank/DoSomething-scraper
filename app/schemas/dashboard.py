@@ -12,6 +12,7 @@ class DashboardStatusRow(BaseModel):
     category_name: str
     is_active: bool
     backfill_completed: bool
+    scrape_posts_since: Optional[date] = None
     last_job_id: Optional[UUID] = None
     last_job_status: Optional[str] = None
     last_job_started_at: Optional[datetime] = None

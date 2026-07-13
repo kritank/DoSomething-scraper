@@ -29,6 +29,7 @@ class DashboardService:
                     category_name=influencer.category.name,
                     is_active=influencer.is_active,
                     backfill_completed=influencer.backfill_completed,
+                    scrape_posts_since=influencer.scrape_posts_since,
                     last_job_id=job.id if job else None,
                     last_job_status=job.status if job else None,
                     last_job_started_at=job.started_at if job else None,

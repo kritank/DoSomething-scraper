@@ -15,6 +15,13 @@ class InfluencerScrapeSettingsUpdate(BaseModel):
     scrape_posts_since: Optional[date] = None
 
 
+class InfluencerDetailsUpdate(BaseModel):
+    # Both optional/partial -- only the fields actually provided get
+    # applied, same convention as CategoryUpdate.
+    handle: Optional[str] = None
+    category_id: Optional[UUID] = None
+
+
 class InfluencerActiveUpdate(BaseModel):
     is_active: bool
 

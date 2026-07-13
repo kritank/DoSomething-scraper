@@ -11,11 +11,11 @@ const METHODS = [
   { id: 'login', label: 'Username / password' },
 ];
 
-export default function AddAccountForm({ onRegistered }) {
+export default function AddAccountForm({ onRegistered, initialUsername, lockUsername = false }) {
   const [method, setMethod] = useState('cookies');
   const [submitting, setSubmitting] = useState(false);
 
-  const [username, setUsername] = useState('');
+  const [username, setUsername] = useState(initialUsername ?? '');
   const [sessionid, setSessionid] = useState('');
   const [csrftoken, setCsrftoken] = useState('');
   const [dsUserId, setDsUserId] = useState('');
@@ -43,11 +43,15 @@ export default function AddAccountForm({ onRegistered }) {
           ds_user_id: dsUserId.trim(),
           ig_did: igDid.trim() || undefined,
         });
-        toast.success(`@${cleanUsername} added and active`);
+        toast.success(lockUsername ? `@${cleanUsername} cookies refreshed` : `@${cleanUsername} added and active`);
       } else {
         if (!password) return;
         await registerAccountViaLogin({ username: cleanUsername, password });
-        toast.success(`@${cleanUsername} queued -- processing in the background (checkpoint_required means it needs manual 2FA resolution over SSH)`);
+        toast.success(
+          lockUsername
+            ? `@${cleanUsername} refresh queued -- processing in the background`
+            : `@${cleanUsername} queued -- processing in the background (checkpoint_required means it needs manual 2FA resolution over SSH)`,
+        );
       }
       reset();
       onRegistered();
@@ -92,7 +96,12 @@ export default function AddAccountForm({ onRegistered }) {
           <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
             Instagram username
           </label>
-          <Input placeholder="username" value={username} onChange={(e) => setUsername(e.target.value)} />
+          <Input
+            placeholder="username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            disabled={lockUsername}
+          />
         </div>
 
         {method === 'cookies' ? (
@@ -125,14 +134,16 @@ export default function AddAccountForm({ onRegistered }) {
 
         <Button type="submit" size="md" loading={submitting} disabled={!canSubmit}>
           <Plus className="w-3.5 h-3.5" />
-          Add account
+          {lockUsername ? 'Refresh' : 'Add account'}
         </Button>
       </div>
 
       <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
-        {method === 'cookies'
-          ? 'Cookies are encrypted at rest and used immediately -- the account is active as soon as this submits.'
-          : 'Login runs in the background (real browser automation, ~10-40s) and may hit a 2FA/checkpoint that needs manual resolution over SSH. Password is encrypted at rest the same way cookies are.'}
+        {lockUsername
+          ? 'Re-registering this username updates its session/status in place (upsert-by-username) -- this does not create a second account.'
+          : method === 'cookies'
+            ? 'Cookies are encrypted at rest and used immediately -- the account is active as soon as this submits.'
+            : 'Login runs in the background (real browser automation, ~10-40s) and may hit a 2FA/checkpoint that needs manual resolution over SSH. Password is encrypted at rest the same way cookies are.'}
       </p>
     </form>
   );
