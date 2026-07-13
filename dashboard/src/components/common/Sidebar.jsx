@@ -40,7 +40,7 @@ export default function Sidebar() {
             className="font-bold text-base whitespace-nowrap animate-fade-in"
             style={{ color: 'var(--color-text-primary)' }}
           >
-            Scraper Ops
+            Viralytics Engine
           </span>
         )}
       </div>

@@ -51,7 +51,7 @@ export default function ApiKeyGate({ children }) {
           </div>
           <div>
             <h1 className="font-semibold text-base" style={{ color: 'var(--color-text-primary)' }}>
-              Scraper Ops Dashboard
+              Viralytics Engine Dashboard
             </h1>
             <p className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
               Enter the admin API key to continue.

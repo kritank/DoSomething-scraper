@@ -62,7 +62,7 @@ export default function QueryConsole() {
       <div>
         <h2 className="text-xl font-semibold" style={{ color: 'var(--color-text-primary)' }}>Query Console</h2>
         <p className="text-sm mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-          Ad-hoc read-only SQL against the scraper's tables. Click a table on the left to preview it.
+          Ad-hoc read-only SQL against the engine's tables. Click a table on the left to preview it.
         </p>
       </div>
 
