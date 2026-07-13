@@ -1,0 +1,41 @@
+# Serves the built dashboard SPA and reverse-proxies the API, both from the
+# same origin (no CORS needed). Only /api/*, /health, /ready and the SPA are
+# exposed here -- /docs, /openapi.json, /metrics stay reachable only via the
+# admin-CIDR-restricted :8000 port directly, not through this public gateway.
+(app) {
+	encode gzip
+
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+
+	handle /health {
+		reverse_proxy api:8000
+	}
+
+	handle /ready {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+# Explicit :80 block (serving the same content, no redirect) is what makes
+# Caddy skip its automatic HTTP->HTTPS redirect for the domain block below --
+# required because Cloudflare "Flexible" SSL mode only ever talks plain HTTP
+# to the origin, and an origin-side redirect there causes an infinite
+# redirect loop. This config is correct regardless of which Cloudflare
+# SSL/TLS mode is actually set.
+:80 {
+	import app
+}
+
+# Real Let's Encrypt cert, auto-issued and auto-renewed by Caddy -- satisfies
+# Cloudflare Full and Full (Strict) modes too.
+engine.viralytics.in {
+	import app
+}

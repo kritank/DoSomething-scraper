@@ -15,11 +15,13 @@ data "aws_ami" "ubuntu" {
 }
 
 # ── Security Group ─────────────────────────────────────────────────────────────
-# No public domain/nginx in front of this box (internal admin tool) — SSH and
-# the API port are both restricted to admin_cidr_block, not opened publicly.
+# SSH and the raw API port stay restricted to admin_cidr_block. Ports 80/443
+# are the one deliberately public exception — engine.viralytics.in (via
+# Cloudflare) reverse-proxies through the `dashboard` (Caddy) service on this
+# box, which also needs 80 reachable for Let's Encrypt ACME validation.
 resource "aws_security_group" "app_sg" {
   name        = "dosomething-scraper-sg"
-  description = "DoSomething-scraper: allow SSH and API access from admin CIDR only"
+  description = "DoSomething-scraper: SSH/API from admin CIDR only, 80/443 public for the dashboard"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
@@ -36,6 +38,22 @@ resource "aws_security_group" "app_sg" {
     to_port     = 8000
     protocol    = "tcp"
     cidr_blocks = [var.admin_cidr_block]
+  }
+
+  ingress {
+    description = "HTTP — dashboard (Caddy) + Let's Encrypt ACME challenge"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTPS — dashboard (Caddy), engine.viralytics.in"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
@@ -106,7 +124,9 @@ resource "aws_instance" "app" {
 }
 
 # ── Public IP output note ──────────────────────────────────────────────────────
-# No pre-allocated Elastic IP: unlike DoSomething-be, there's no DNS record
-# pointing here, so a stable IP isn't required. The default VPC assigns a
-# public IP automatically; it will change only if the instance is stopped and
-# restarted (it won't on a reboot). Add an aws_eip if you want it pinned.
+# An Elastic IP (13.206.31.71) has been manually allocated and associated to
+# this instance outside of Terraform (engine.viralytics.in points at it via
+# Cloudflare) — this stack has no aws_eip resource, so Terraform has no
+# opinion on it and won't touch it. aws_instance.app.public_ip reflects the
+# EIP automatically once associated. Import it as a proper aws_eip resource
+# if you want Terraform to manage it directly.

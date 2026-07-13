@@ -1,7 +1,10 @@
 # ── docker-compose.prod.yml — Production (EC2) ────────────────────────────────
 # Uses Amazon SQS instead of Redis for the queue, and Amazon RDS instead of a
-# local Postgres container. No nginx/TLS — this box has no public domain, just
-# a security-group-restricted API port (see infra/ec2.tf: admin_cidr_block).
+# local Postgres container. The `dashboard` service (Caddy) is the only
+# public-facing thing — it terminates TLS for engine.viralytics.in with an
+# auto-renewed Let's Encrypt cert and reverse-proxies to `api`. Port 8000
+# stays security-group-restricted to admin_cidr_block for direct access
+# (see infra/ec2.tf).
 #
 # This file mirrors the version Terraform writes to /opt/app/docker-compose.prod.yml
 # on the EC2 instance (infra/user_data.sh) — keep them in sync if you edit either.
@@ -70,3 +73,21 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    restart: always
+
+volumes:
+  caddy_data:
+  caddy_config:

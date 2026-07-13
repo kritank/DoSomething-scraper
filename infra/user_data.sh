@@ -185,6 +185,19 @@ services:
       - net.ipv6.conf.all.disable_ipv6=1
       - net.ipv6.conf.default.disable_ipv6=1
 
+  dashboard:
+    image: ghcr.io/${ghcr_username}/dosomething-scraper-dashboard:latest
+    container_name: dosomething_scraper_dashboard
+    restart: unless-stopped
+    ports:
+      - "80:80"       # security group opens this publicly -- Cloudflare + real visitors
+      - "443:443"     # Caddy auto-issues/renews a Let's Encrypt cert for engine.viralytics.in
+    volumes:
+      - caddy_data:/data       # cert storage -- must persist across Watchtower redeploys
+      - caddy_config:/config
+    depends_on:
+      - api
+
   watchtower:
     image: containrrr/watchtower:latest
     container_name: dosomething_scraper_watchtower
@@ -202,7 +215,11 @@ services:
       # Docker Engine (this host runs 29.x / API 1.52) refuses anything
       # below 1.44, so watchtower crash-loops on every poll until pinned.
       - DOCKER_API_VERSION=1.44
-    command: dosomething_scraper_api dosomething_scraper_worker dosomething_scraper_scheduler
+    command: dosomething_scraper_api dosomething_scraper_worker dosomething_scraper_scheduler dosomething_scraper_dashboard
+
+volumes:
+  caddy_data:
+  caddy_config:
 COMPOSEEOF
 
 # ── 5. Authenticate Docker with GHCR ──────────────────────────────────────────
@@ -214,6 +231,7 @@ cd /opt/app
 docker pull ghcr.io/${ghcr_username}/dosomething-scraper-api:latest
 docker pull ghcr.io/${ghcr_username}/dosomething-scraper-worker:latest
 docker pull ghcr.io/${ghcr_username}/dosomething-scraper-scheduler:latest
+docker pull ghcr.io/${ghcr_username}/dosomething-scraper-dashboard:latest
 
 docker-compose -f docker-compose.prod.yml up -d
 
