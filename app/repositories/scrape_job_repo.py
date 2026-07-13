@@ -36,17 +36,36 @@ class ScrapeJobRepo:
         )
         return result.scalars().all()
 
+    async def heartbeat(self, job_id: UUID) -> None:
+        """Proves a running job's worker is still alive, independent of
+        which phase of the scrape is currently executing -- see
+        JobProcessor._heartbeat. reap_stale_running() below keys off
+        staleness of this instead of total elapsed time since started_at,
+        so a job that's legitimately taking a long time is never falsely
+        reaped as long as this keeps landing every JOB_HEARTBEAT_INTERVAL_S."""
+        await self.session.execute(
+            update(ScrapeJob)
+            .where(ScrapeJob.id == job_id)
+            .values(last_heartbeat_at=func.now())
+        )
+        await self.session.commit()
+
     async def reap_stale_running(self, timeout_s: int, max_retries: int) -> int:
         """Crash-recovery valve: mirrors InstagramAccountRepo.release_stale_leases,
         but for the job row itself -- a worker killed mid-job (SIGKILL, OOM,
         or a Watchtower rolling deploy sending SIGTERM) otherwise leaves it
         stuck in "running" forever, since only retry_pending/failed jobs are
-        ever revisited by the scheduler."""
+        ever revisited by the scheduler.
+
+        Keys off last_heartbeat_at (falling back to started_at for a job
+        reaped before its first heartbeat tick), not total job duration --
+        a job that's still ticking is still alive, no matter how long the
+        scrape itself legitimately takes."""
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=timeout_s)
         stmt = (
             update(ScrapeJob)
             .where(ScrapeJob.status == "running")
-            .where(ScrapeJob.started_at < cutoff)
+            .where(func.coalesce(ScrapeJob.last_heartbeat_at, ScrapeJob.started_at) < cutoff)
             .values(
                 status=case(
                     (ScrapeJob.retry_count < max_retries, "retry_pending"),

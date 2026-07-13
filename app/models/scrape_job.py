@@ -25,6 +25,13 @@ class ScrapeJob(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Ticked every JOB_HEARTBEAT_INTERVAL_S by JobProcessor._heartbeat while
+    # status == "running", independent of which phase of the scrape is
+    # currently executing. reap_stale_jobs() uses staleness of *this*, not
+    # total elapsed time since started_at, to detect a genuinely dead
+    # worker -- a job legitimately taking a long time never gets falsely
+    # reaped as long as heartbeats keep landing.
+    last_heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     posts_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

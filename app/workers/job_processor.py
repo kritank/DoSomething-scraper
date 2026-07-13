@@ -21,6 +21,7 @@ from app.models.post import Post
 from app.models.comment import Comment
 from app.models.feature_store import FeatureStore
 from app.repositories.instagram_account_repo import InstagramAccountRepo
+from app.repositories.scrape_job_repo import ScrapeJobRepo
 from app.scraper.client import InstagramClient
 from app.scraper.parser import InstagramParser
 from app.schemas.instagram import InstagramComment, InstagramMediaItem
@@ -54,71 +55,107 @@ class JobProcessor:
 
             job.status = "running"
             job.started_at = datetime.now(timezone.utc)
+            job.last_heartbeat_at = job.started_at
             await session.commit()
 
-            account_repo = InstagramAccountRepo(session)
-            self._account = await account_repo.acquire_healthy_account(worker_id=WORKER_ID)
-            if self._account is None:
-                # Pool contention, not a scrape failure -- this job never got
-                # to attempt anything, so it shouldn't spend retry_count the
-                # same way a real failure does. retry_failed_scrapes()
-                # re-dispatches *every* retry_pending job on each tick, so
-                # with N queued influencers and 1 account, N-1 of them hit
-                # this branch every single tick; counting those against
-                # SCRAPER_MAX_RETRIES would burn the budget in a few ticks
-                # regardless of how deep the backlog actually is. Always
-                # retry_pending, uncounted -- it naturally stops once the
-                # pool has spare capacity (or stays queued forever if it
-                # truly never does, which is the correct outcome: that's an
-                # operator problem -- register more accounts -- not a
-                # per-job one).
-                logger.warning("No healthy Instagram accounts available -- will retry")
-                job.status = "retry_pending"
-                job.error_message = "no healthy Instagram accounts available"
-                job.finished_at = datetime.now(timezone.utc)
-                job.duration_s = time.perf_counter() - start_time
-                await session.commit()
-                return
-
-            self.client = InstagramClient(
-                cookies=account_repo.decrypt_cookies(self._account),
-                user_agent=self._account.user_agent,
-            )
-
-            outcome = "success"
-            retry_after: int | None = None
+            # Proves this worker is still alive independent of which phase
+            # of the scrape is currently executing (feed pagination on
+            # `session` vs. concurrent comment sync on its own short-lived
+            # sessions -- see _run_scrape). reap_stale_running/
+            # release_stale_leases key off staleness of this, not total
+            # job duration, so a job legitimately taking a long time (a
+            # large comment backlog on a single shared account) is never
+            # falsely reaped as dead. Cancelled in the outer finally below
+            # no matter which path out of this method is taken.
+            heartbeat_task = asyncio.create_task(self._heartbeat(job.id))
             try:
-                await self._run_scrape(session, job)
-                job.status = "completed"
-                # Clear any error_message left over from an earlier failed
-                # attempt on this same job row (retry_pending reuses it,
-                # retry_count and all) -- otherwise a job that eventually
-                # succeeds still displays its last failure's message.
-                job.error_message = None
-            except ScraperBlockedError as e:
-                logger.exception("Scrape blocked", exc_info=e)
-                outcome = "blocked"
-                job.error_message = str(e)
-            except ScraperRateLimitError as e:
-                logger.exception("Scrape rate limited", exc_info=e)
-                outcome = "rate_limited"
-                retry_after = e.context.get("retry_after")
-                job.error_message = str(e)
-            except Exception as e:
-                logger.exception("Scrape failed", exc_info=e)
-                outcome = "error"
-                job.error_message = str(e)
+                account_repo = InstagramAccountRepo(session)
+                self._account = await account_repo.acquire_healthy_account(worker_id=WORKER_ID)
+                if self._account is None:
+                    # Pool contention, not a scrape failure -- this job never got
+                    # to attempt anything, so it shouldn't spend retry_count the
+                    # same way a real failure does. retry_failed_scrapes()
+                    # re-dispatches *every* retry_pending job on each tick, so
+                    # with N queued influencers and 1 account, N-1 of them hit
+                    # this branch every single tick; counting those against
+                    # SCRAPER_MAX_RETRIES would burn the budget in a few ticks
+                    # regardless of how deep the backlog actually is. Always
+                    # retry_pending, uncounted -- it naturally stops once the
+                    # pool has spare capacity (or stays queued forever if it
+                    # truly never does, which is the correct outcome: that's an
+                    # operator problem -- register more accounts -- not a
+                    # per-job one).
+                    logger.warning("No healthy Instagram accounts available -- will retry")
+                    job.status = "retry_pending"
+                    job.error_message = "no healthy Instagram accounts available"
+                    job.finished_at = datetime.now(timezone.utc)
+                    job.duration_s = time.perf_counter() - start_time
+                    await session.commit()
+                    return
+
+                self.client = InstagramClient(
+                    cookies=account_repo.decrypt_cookies(self._account),
+                    user_agent=self._account.user_agent,
+                )
+
+                outcome = "success"
+                retry_after: int | None = None
+                try:
+                    await self._run_scrape(session, job)
+                    job.status = "completed"
+                    # Clear any error_message left over from an earlier failed
+                    # attempt on this same job row (retry_pending reuses it,
+                    # retry_count and all) -- otherwise a job that eventually
+                    # succeeds still displays its last failure's message.
+                    job.error_message = None
+                except ScraperBlockedError as e:
+                    logger.exception("Scrape blocked", exc_info=e)
+                    outcome = "blocked"
+                    job.error_message = str(e)
+                except ScraperRateLimitError as e:
+                    logger.exception("Scrape rate limited", exc_info=e)
+                    outcome = "rate_limited"
+                    retry_after = e.context.get("retry_after")
+                    job.error_message = str(e)
+                except Exception as e:
+                    logger.exception("Scrape failed", exc_info=e)
+                    outcome = "error"
+                    job.error_message = str(e)
+                finally:
+                    if outcome != "success":
+                        job.retry_count += 1
+                        job.status = (
+                            "retry_pending" if job.retry_count < settings.SCRAPER_MAX_RETRIES else "failed"
+                        )
+                    job.finished_at = datetime.now(timezone.utc)
+                    job.duration_s = time.perf_counter() - start_time
+                    await session.commit()
+                    await account_repo.release(self._account.id, outcome, retry_after=retry_after)
+                    await self.client.close()
             finally:
-                if outcome != "success":
-                    job.retry_count += 1
-                    job.status = (
-                        "retry_pending" if job.retry_count < settings.SCRAPER_MAX_RETRIES else "failed"
-                    )
-                job.finished_at = datetime.now(timezone.utc)
-                job.duration_s = time.perf_counter() - start_time
-                await session.commit()
-                await account_repo.release(self._account.id, outcome, retry_after=retry_after)
-                await self.client.close()
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+
+    async def _heartbeat(self, job_id: UUID) -> None:
+        """Background ticker for the duration of process(): every
+        JOB_HEARTBEAT_INTERVAL_S, renews both the job's liveness signal and
+        (if an account has been acquired by then) its account's lease, each
+        via their own short-lived session/transaction so this never
+        contends with whatever the main scrape work is doing concurrently.
+        A transient failure here just skips one tick and logs -- it doesn't
+        take down the scrape."""
+        while True:
+            await asyncio.sleep(settings.JOB_HEARTBEAT_INTERVAL_S)
+            try:
+                async with get_session() as hb_session:
+                    await ScrapeJobRepo(hb_session).heartbeat(job_id)
+                    if self._account is not None:
+                        await InstagramAccountRepo(hb_session).renew_lease(self._account.id)
+            except Exception:
+                logger.warning("Heartbeat update failed", job_id=job_id, exc_info=True)
 
     async def _run_scrape(self, session: AsyncSession, job: ScrapeJob):
         handle = self.message.handle

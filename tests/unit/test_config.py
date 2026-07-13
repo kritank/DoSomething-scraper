@@ -107,7 +107,11 @@ class TestInstagramAccountPoolDefaults:
 
     def test_account_lease_timeout_default(self):
         s = self._make()
-        assert s.ACCOUNT_LEASE_TIMEOUT_S == 1800
+        assert s.ACCOUNT_LEASE_TIMEOUT_S == 180
+
+    def test_job_heartbeat_interval_default(self):
+        s = self._make()
+        assert s.JOB_HEARTBEAT_INTERVAL_S == 30
 
     def test_account_max_consecutive_failures_default(self):
         s = self._make()

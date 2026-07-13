@@ -93,7 +93,22 @@ class Settings(BaseSettings):
     # automation) and stored in the instagram_accounts table -- no more manually
     # pasting session cookies into .env.
     ACCOUNT_ENCRYPTION_KEY: str = ""  # required — Fernet key for cookies at rest
-    ACCOUNT_LEASE_TIMEOUT_S: int = 1800
+    # Worker liveness TTL -- both the leased account (lease_expires_at) and
+    # the running job (last_heartbeat_at) are renewed to now() + this value
+    # every JOB_HEARTBEAT_INTERVAL_S by JobProcessor._heartbeat, for as long
+    # as the worker is genuinely alive (regardless of how long the scrape
+    # itself legitimately takes). Only once heartbeats actually stop --
+    # worker killed by SIGKILL/OOM/a Watchtower rolling deploy -- does this
+    # window elapse, at which point reap_stale_jobs/release_stale_leases
+    # correctly presume the worker dead and recover both the job and the
+    # account. Was previously a fixed 1800s measured from job start with no
+    # renewal, which (a) falsely reaped legitimately long jobs, and (b) is a
+    # worse latent bug: a job running past 1800s let its OWN still-in-use
+    # account get silently released and re-acquired by a second, concurrent
+    # job -- two scrapes sharing one live Instagram session at once. A
+    # short, renewed TTL closes both.
+    ACCOUNT_LEASE_TIMEOUT_S: int = 180
+    JOB_HEARTBEAT_INTERVAL_S: int = 30
     ACCOUNT_MAX_CONSECUTIVE_FAILURES: int = 5
     # How often the worker's background loop polls for pending_login accounts
     # (dashboard-initiated username/password registrations) to process.

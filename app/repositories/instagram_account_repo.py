@@ -202,6 +202,23 @@ class InstagramAccountRepo:
         await self.session.commit()
         return account
 
+    async def renew_lease(self, account_id: UUID) -> None:
+        """Slides the lease forward -- called every JOB_HEARTBEAT_INTERVAL_S
+        by JobProcessor._heartbeat for as long as its job is genuinely
+        alive. Without this, a job legitimately running past
+        ACCOUNT_LEASE_TIMEOUT_S would let release_stale_leases() free this
+        SAME still-in-use account for a second job to acquire concurrently
+        -- two scrapes sharing one live Instagram session at once."""
+        await self.session.execute(
+            update(InstagramAccount)
+            .where(InstagramAccount.id == account_id)
+            .values(
+                lease_expires_at=datetime.now(timezone.utc)
+                + timedelta(seconds=settings.ACCOUNT_LEASE_TIMEOUT_S)
+            )
+        )
+        await self.session.commit()
+
     async def release(
         self,
         account_id: UUID,
