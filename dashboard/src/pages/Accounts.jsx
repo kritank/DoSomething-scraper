@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { getAccounts, updateAccountStatus, deleteAccount } from '../services/accountsService';
 import StatusBadge from '../components/common/StatusBadge';
 import Button from '../components/common/Button';
+import Input from '../components/common/Input';
 import ErrorState from '../components/common/ErrorState';
 import EmptyState from '../components/common/EmptyState';
 import AddAccountForm from '../components/accounts/AddAccountForm';
@@ -24,6 +25,7 @@ export default function Accounts() {
   const [loading, setLoading] = useState(true);
   const [addPanelOpen, setAddPanelOpen] = useState(false);
   const [refreshingAccountId, setRefreshingAccountId] = useState(null);
+  const [search, setSearch] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -69,6 +71,10 @@ export default function Accounts() {
     return <ErrorState title="Couldn't load accounts" description={error} onRetry={load} />;
   }
 
+  const filteredAccounts = accounts
+    ? accounts.filter((a) => a.username.toLowerCase().includes(search.trim().toLowerCase()))
+    : accounts;
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
@@ -96,6 +102,15 @@ export default function Accounts() {
         </div>
       )}
 
+      {!loading && accounts?.length > 0 && (
+        <Input
+          placeholder="Search accounts by username..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="max-w-xs"
+        />
+      )}
+
       <div className="card p-5">
         {loading ? (
           <div className="h-48 rounded-lg animate-shimmer" style={{ background: 'var(--color-bg-card-hover)' }} />
@@ -104,6 +119,8 @@ export default function Accounts() {
             title="No accounts registered"
             message="Register one via scripts/register_instagram_account.py before scraping."
           />
+        ) : filteredAccounts.length === 0 ? (
+          <EmptyState title="No matches" message={`No account usernames match "${search}".`} />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -117,7 +134,7 @@ export default function Accounts() {
                 </tr>
               </thead>
               <tbody>
-                {accounts.map((a) => {
+                {filteredAccounts.map((a) => {
                   const refreshOpen = refreshingAccountId === a.id;
                   return (
                   <React.Fragment key={a.id}>

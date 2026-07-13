@@ -39,11 +39,20 @@ MAX_REPLY_PAGES = 20     # per comment thread, safety cap
 WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 
 
+class JobCancelledError(Exception):
+    """Internal control-flow signal only -- raised inside _run_scrape when
+    self._cancel_event fires, caught in process() to route the job to a
+    "cancelled" outcome. Never surfaces as an HTTP response (unlike the
+    ViralyticBaseError hierarchy in app.core.exceptions), since nothing
+    outside this worker process ever sees it directly."""
+
+
 class JobProcessor:
     def __init__(self, message: ScrapeJobMessage):
         self.message = message
         self.client: InstagramClient | None = None
         self._account = None
+        self._cancel_event = asyncio.Event()
 
     async def process(self):
         start_time = time.perf_counter()
@@ -108,6 +117,10 @@ class JobProcessor:
                     # retry_count and all) -- otherwise a job that eventually
                     # succeeds still displays its last failure's message.
                     job.error_message = None
+                except JobCancelledError:
+                    logger.info("Scrape cancelled", job_id=job.id)
+                    outcome = "cancelled"
+                    job.error_message = None
                 except ScraperBlockedError as e:
                     logger.exception("Scrape blocked", exc_info=e)
                     outcome = "blocked"
@@ -122,7 +135,11 @@ class JobProcessor:
                     outcome = "error"
                     job.error_message = str(e)
                 finally:
-                    if outcome != "success":
+                    if outcome == "cancelled":
+                        # A user-requested stop, not a failure -- doesn't
+                        # spend retry_count or route through retry_pending.
+                        job.status = "cancelled"
+                    elif outcome != "success":
                         job.retry_count += 1
                         job.status = (
                             "retry_pending" if job.retry_count < settings.SCRAPER_MAX_RETRIES else "failed"
@@ -130,7 +147,11 @@ class JobProcessor:
                     job.finished_at = datetime.now(timezone.utc)
                     job.duration_s = time.perf_counter() - start_time
                     await session.commit()
-                    await account_repo.release(self._account.id, outcome, retry_after=retry_after)
+                    # The account did nothing wrong on a cancel -- release it
+                    # exactly like a clean success (active, no failure_count
+                    # bump), not as an "error" outcome.
+                    release_outcome = "success" if outcome == "cancelled" else outcome
+                    await account_repo.release(self._account.id, release_outcome, retry_after=retry_after)
                     await self.client.close()
             finally:
                 heartbeat_task.cancel()
@@ -151,9 +172,11 @@ class JobProcessor:
             await asyncio.sleep(settings.JOB_HEARTBEAT_INTERVAL_S)
             try:
                 async with get_session() as hb_session:
-                    await ScrapeJobRepo(hb_session).heartbeat(job_id)
+                    cancel_requested = await ScrapeJobRepo(hb_session).heartbeat(job_id)
                     if self._account is not None:
                         await InstagramAccountRepo(hb_session).renew_lease(self._account.id)
+                if cancel_requested:
+                    self._cancel_event.set()
             except Exception:
                 logger.warning("Heartbeat update failed", job_id=job_id, exc_info=True)
 
@@ -237,7 +260,16 @@ class JobProcessor:
         max_id = (influencer.backfill_cursor or "") if is_backfilling else ""
         sync_candidates: dict[UUID, Post] = {}
 
+        cancelled = False
         while True:
+            if self._cancel_event.is_set():
+                # Break, not raise, here -- same reasoning as the graceful
+                # degradation path below: whatever posts this run already
+                # found are real and worth keeping (job.posts_processed is
+                # set right after this loop), only the *remaining*
+                # pagination and the comment-sync phase get skipped.
+                cancelled = True
+                break
             try:
                 raw_feed = await self.client.get_user_feed(handle, max_id)
             except Exception as e:
@@ -369,6 +401,9 @@ class JobProcessor:
         job.posts_processed = posts_processed
         await session.commit()
 
+        if cancelled:
+            raise JobCancelledError()
+
         # 4. Sync comments (including nested reply threads) for posts whose
         # comment count changed since we last looked, capped at
         # MAX_POSTS_PER_SCRAPE as a safety net regardless of window size.
@@ -384,6 +419,12 @@ class JobProcessor:
 
         async def _sync_one(post: Post) -> int:
             async with semaphore:
+                # Checked after acquiring the semaphore slot, not before --
+                # tasks already in flight when cancellation fires are left
+                # to finish (their progress is real and cheap to keep);
+                # only tasks that haven't started yet skip themselves.
+                if self._cancel_event.is_set():
+                    return 0
                 try:
                     async with get_session() as post_session:
                         count = await self._sync_comments_for_post(post_session, post)
@@ -396,6 +437,9 @@ class JobProcessor:
         comment_counts = await asyncio.gather(*(_sync_one(post) for post in posts_to_sync))
         job.comments_processed = sum(comment_counts)
         await session.commit()
+
+        if self._cancel_event.is_set():
+            raise JobCancelledError()
 
     async def _record_metrics_snapshot(
         self, session: AsyncSession, post: Post, item: InstagramMediaItem

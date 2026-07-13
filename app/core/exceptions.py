@@ -96,6 +96,29 @@ class QueryExecutionError(ValidationError):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 409 — Conflict
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ConflictError(ViralyticBaseError):
+    http_status = 409
+    code = "CONFLICT"
+
+
+class ActiveJobExistsError(ConflictError):
+    """Message is caller-supplied (not derived here) since the same
+    condition reads differently for an influencer ("@handle has an active
+    job") vs. a category ("has influencer(s) with an active job")."""
+    code = "ACTIVE_JOB_EXISTS"
+
+
+class JobNotCancellableError(ConflictError):
+    code = "JOB_NOT_CANCELLABLE"
+
+    def __init__(self, job_id: str, status: str) -> None:
+        super().__init__(f"Job {job_id} is already {status} -- nothing to cancel.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 401 / 403 — Auth
 # ─────────────────────────────────────────────────────────────────────────────
 

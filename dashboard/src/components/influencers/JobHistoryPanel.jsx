@@ -1,9 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { format } from 'date-fns';
-import { getInfluencerJobs } from '../../services/influencerJobsService';
+import { XCircle } from 'lucide-react';
+import { toast } from 'sonner';
+import { getInfluencerJobs, cancelJob } from '../../services/influencerJobsService';
 import StatusBadge from '../common/StatusBadge';
+import Button from '../common/Button';
 import LoadingSpinner from '../common/LoadingSpinner';
 import EmptyState from '../common/EmptyState';
+
+const CANCELLABLE_STATUSES = new Set(['queued', 'running', 'retry_pending']);
 
 function formatDuration(s) {
   if (s == null) return '—';
@@ -16,19 +21,45 @@ function formatDuration(s) {
 export default function JobHistoryPanel({ influencerId }) {
   const [jobs, setJobs] = useState(null);
   const [error, setError] = useState(null);
+  const [cancelling, setCancelling] = useState(() => new Set());
+
+  const load = useCallback(async () => {
+    try {
+      const data = await getInfluencerJobs(influencerId);
+      setJobs(data);
+    } catch (err) {
+      setError(err.message);
+    }
+  }, [influencerId]);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const data = await getInfluencerJobs(influencerId);
-        if (!cancelled) setJobs(data);
-      } catch (err) {
-        if (!cancelled) setError(err.message);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [influencerId]);
+    load();
+  }, [load]);
+
+  const handleCancel = async (job) => {
+    const isRunning = job.status === 'running';
+    if (!window.confirm(
+      isRunning
+        ? 'Request cancellation of this running job? It will stop within ~30s once the worker notices.'
+        : 'Cancel this queued job?'
+    )) {
+      return;
+    }
+    setCancelling((prev) => new Set(prev).add(job.id));
+    try {
+      await cancelJob(job.id);
+      toast.success(isRunning ? 'Cancellation requested' : 'Job cancelled');
+      load();
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    } finally {
+      setCancelling((prev) => {
+        const next = new Set(prev);
+        next.delete(job.id);
+        return next;
+      });
+    }
+  };
 
   if (error) {
     return <p className="text-xs px-3 py-2" style={{ color: 'var(--color-danger)' }}>{error}</p>;
@@ -55,7 +86,7 @@ export default function JobHistoryPanel({ influencerId }) {
       <table className="w-full text-xs">
         <thead>
           <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-            {['Status', 'Started', 'Duration', 'Posts', 'Comments', 'Retries', 'Error'].map((h) => (
+            {['Status', 'Started', 'Duration', 'Posts', 'Comments', 'Retries', 'Error', ''].map((h) => (
               <th key={h} className="text-left py-2 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
                 {h}
               </th>
@@ -75,6 +106,19 @@ export default function JobHistoryPanel({ influencerId }) {
               <td className="py-2 px-3" style={{ color: 'var(--color-text-secondary)' }}>{job.retry_count}</td>
               <td className="py-2 px-3 max-w-[240px] truncate" style={{ color: 'var(--color-text-muted)' }} title={job.error_message ?? undefined}>
                 {job.error_message ?? '—'}
+              </td>
+              <td className="py-2 px-3">
+                {CANCELLABLE_STATUSES.has(job.status) && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    title="Cancel this job"
+                    onClick={() => handleCancel(job)}
+                    loading={cancelling.has(job.id)}
+                  >
+                    <XCircle className="w-3.5 h-3.5" style={{ color: 'var(--color-danger)' }} />
+                  </Button>
+                )}
               </td>
             </tr>
           ))}

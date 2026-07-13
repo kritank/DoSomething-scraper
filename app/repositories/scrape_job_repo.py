@@ -2,12 +2,15 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Sequence
 from uuid import UUID
 
-from sqlalchemy import Row, case, select, update
+from sqlalchemy import Row, case, exists, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 
-from app.core.exceptions import ScrapeJobNotFoundError
+from app.core.exceptions import JobNotCancellableError, ScrapeJobNotFoundError
+from app.models.influencer import Influencer
 from app.models.scrape_job import ScrapeJob
+
+ACTIVE_JOB_STATUSES = ("queued", "running", "retry_pending")
 
 
 class ScrapeJobRepo:
@@ -36,19 +39,25 @@ class ScrapeJobRepo:
         )
         return result.scalars().all()
 
-    async def heartbeat(self, job_id: UUID) -> None:
+    async def heartbeat(self, job_id: UUID) -> bool:
         """Proves a running job's worker is still alive, independent of
         which phase of the scrape is currently executing -- see
         JobProcessor._heartbeat. reap_stale_running() below keys off
         staleness of this instead of total elapsed time since started_at,
         so a job that's legitimately taking a long time is never falsely
-        reaped as long as this keeps landing every JOB_HEARTBEAT_INTERVAL_S."""
-        await self.session.execute(
+        reaped as long as this keeps landing every JOB_HEARTBEAT_INTERVAL_S.
+
+        Returns True if cancellation has been requested for this job, so
+        the same tick that proves liveness also delivers the one signal
+        that should interrupt it -- no separate query needed."""
+        result = await self.session.execute(
             update(ScrapeJob)
             .where(ScrapeJob.id == job_id)
             .values(last_heartbeat_at=func.now())
+            .returning(ScrapeJob.cancel_requested_at)
         )
         await self.session.commit()
+        return result.scalar_one_or_none() is not None
 
     async def reap_stale_running(self, timeout_s: int, max_retries: int) -> int:
         """Crash-recovery valve: mirrors InstagramAccountRepo.release_stale_leases,
@@ -79,6 +88,46 @@ class ScrapeJobRepo:
         result = await self.session.execute(stmt)
         await self.session.commit()
         return result.rowcount or 0
+
+    async def request_cancel(self, job_id: UUID) -> ScrapeJob:
+        """queued/retry_pending jobs aren't being worked on by anything --
+        cancel them outright, no worker involvement needed. A "running" job
+        can't be stopped from here directly (this repo has no reach into
+        the worker process); it can only flag cancel_requested_at and let
+        JobProcessor._heartbeat notice on its next tick and unwind the
+        scrape cooperatively (see JobCancelledError)."""
+        job = await self.get_by_id(job_id)
+        if job.status in ("queued", "retry_pending"):
+            job.status = "cancelled"
+            job.finished_at = datetime.now(timezone.utc)
+        elif job.status == "running":
+            job.cancel_requested_at = datetime.now(timezone.utc)
+        else:
+            raise JobNotCancellableError(str(job_id), job.status)
+        await self.session.commit()
+        return job
+
+    async def has_active_job(self, influencer_id: UUID) -> bool:
+        stmt = select(
+            exists().where(
+                ScrapeJob.influencer_id == influencer_id,
+                ScrapeJob.status.in_(ACTIVE_JOB_STATUSES),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return bool(result.scalar())
+
+    async def has_active_job_in_category(self, category_id: UUID) -> bool:
+        stmt = select(
+            exists()
+            .where(
+                ScrapeJob.influencer_id == Influencer.id,
+                Influencer.category_id == category_id,
+                ScrapeJob.status.in_(ACTIVE_JOB_STATUSES),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return bool(result.scalar())
 
     async def get_by_influencer(self, influencer_id: UUID, limit: int = 50) -> Sequence[ScrapeJob]:
         stmt = (

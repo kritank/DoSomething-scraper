@@ -21,3 +21,8 @@ export async function getQueueStatus() {
   const { data } = await apiClient.get('/admin/queue/status');
   return data;
 }
+
+export async function getDlqContents() {
+  const { data } = await apiClient.get('/admin/queue/dlq');
+  return data;
+}

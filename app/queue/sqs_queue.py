@@ -119,3 +119,41 @@ class SQSQueueBackend:
             return int(response["Attributes"].get("ApproximateNumberOfMessages", 0))
 
         return await loop.run_in_executor(None, _get_attrs)
+
+    async def peek_dlq(self, limit: int = 10) -> list[dict]:
+        """Read (not delete) up to `limit` DLQ messages so an operator can
+        see *which* jobs are stuck, not just how many. Since nothing
+        consumes the DLQ today, the messages briefly going invisible for
+        SQS's default visibility timeout is harmless -- no need to force
+        VisibilityTimeout=0. A message reaching the DLQ at all means its
+        worker died hard enough (OOM/SIGKILL) to never reach the
+        always-delete-on-completion finally block in worker_runner.py --
+        that's a different failure signature than a ScrapeJob row with
+        status="failed", which every DLQ entry's body still names via its
+        job_id/influencer_id/handle."""
+        import asyncio
+        loop = asyncio.get_running_loop()
+        dlq_url = self.queue_url + "-dlq"
+
+        def _receive():
+            response = self.sqs.receive_message(
+                QueueUrl=dlq_url,
+                MaxNumberOfMessages=min(limit, 10),  # SQS max per call
+            )
+            return response.get("Messages", [])
+
+        messages = await loop.run_in_executor(None, _receive)
+
+        results = []
+        for msg in messages:
+            try:
+                job_msg = ScrapeJobMessage.model_validate_json(msg["Body"])
+                results.append({
+                    "job_id": str(job_msg.job_id),
+                    "influencer_id": str(job_msg.influencer_id),
+                    "handle": job_msg.handle,
+                })
+            except Exception as e:
+                logger.error(f"Failed to parse DLQ message: {e}")
+
+        return results

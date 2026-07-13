@@ -25,6 +25,7 @@ from app.schemas.influencer import (
     InfluencerOut,
     InfluencerScrapeSettingsUpdate,
 )
+from app.core.exceptions import ActiveJobExistsError
 from app.schemas.alert import AlertOut
 from app.schemas.instagram_account import AccountStatusUpdate, InstagramAccountOut
 from app.schemas.post import PostListOut, PostOut
@@ -62,6 +63,11 @@ async def delete_category(category_id: UUID, db: AsyncSession = Depends(get_db))
     # there, their posts/comments/snapshots. Irreversible; the dashboard
     # gates this behind an explicit confirm, deactivate (PATCH is_active)
     # is the default/reversible action.
+    category = await CategoryRepo(db).get_by_id(category_id)
+    if await ScrapeJobRepo(db).has_active_job_in_category(category_id):
+        raise ActiveJobExistsError(
+            f'"{category.name}" has an influencer with an active scrape job -- cancel it first, then delete.'
+        )
     await CategoryRepo(db).delete(category_id)
 
 
@@ -112,6 +118,15 @@ async def delete_influencer(influencer_id: UUID, db: AsyncSession = Depends(get_
     # Hard delete -- cascades to posts/comments/snapshots/feature_store.
     # Irreversible; the dashboard gates this behind an explicit confirm,
     # deactivate (PATCH active) is the default/reversible action.
+    influencer = await InfluencerRepo(db).get_by_id(influencer_id)
+    if await ScrapeJobRepo(db).has_active_job(influencer_id):
+        # A job "running" against a row that vanishes mid-scrape leaves the
+        # worker's next commit matching zero rows -- its cleanup (account
+        # release, client close) never runs, stranding the Instagram
+        # account in_use for up to ACCOUNT_LEASE_TIMEOUT_S.
+        raise ActiveJobExistsError(
+            f"@{influencer.handle} has an active scrape job -- cancel it first, then delete."
+        )
     await InfluencerRepo(db).delete(influencer_id)
 
 
@@ -131,6 +146,17 @@ async def trigger_scrape(influencer_id: UUID, db: AsyncSession = Depends(get_db)
 async def list_jobs(db: AsyncSession = Depends(get_db)):
     repo = ScrapeJobRepo(db)
     return await repo.get_all()
+
+
+@router.post("/jobs/{job_id}/cancel", response_model=ScrapeJobOut)
+async def cancel_job(job_id: UUID, db: AsyncSession = Depends(get_db)):
+    # queued/retry_pending jobs are cancelled outright here (nothing is
+    # working on them yet). A "running" job only gets cancel_requested_at
+    # set -- the worker's own heartbeat loop notices within one
+    # JOB_HEARTBEAT_INTERVAL_S tick and unwinds the scrape cooperatively;
+    # this endpoint returns immediately either way, it doesn't wait for
+    # that to happen.
+    return await ScrapeJobRepo(db).request_cancel(job_id)
 
 
 @router.get("/dashboard/status", response_model=list[DashboardStatusRow])
@@ -236,6 +262,13 @@ async def get_queue_status():
         "main_depth": await queue.queue_depth(),
         "dlq_depth": await queue.dlq_depth(),
     }
+
+
+@router.get("/queue/dlq")
+async def get_dlq_contents():
+    if not settings.is_sqs_queue:
+        return []
+    return await get_queue().peek_dlq()
 
 
 @router.post("/query", response_model=QueryResult)

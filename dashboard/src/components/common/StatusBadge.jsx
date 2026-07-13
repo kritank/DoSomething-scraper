@@ -11,6 +11,7 @@ const STYLES = {
   queued:             { bg: 'var(--color-warning-muted)', fg: 'var(--color-warning)' },
   retry_pending:      { bg: 'var(--color-warning-muted)', fg: 'var(--color-warning)' },
   failed:             { bg: 'var(--color-danger-muted)',  fg: 'var(--color-danger)' },
+  cancelled:          { bg: 'rgba(255,255,255,0.06)',     fg: 'var(--color-text-muted)' },
   checkpoint_required:{ bg: 'var(--color-danger-muted)',  fg: 'var(--color-danger)' },
   disabled:           { bg: 'rgba(255,255,255,0.06)',     fg: 'var(--color-text-muted)' },
   never_scraped:      { bg: 'rgba(255,255,255,0.06)',     fg: 'var(--color-text-muted)' },

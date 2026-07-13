@@ -36,6 +36,7 @@ export default function Influencers() {
   const [editingInfluencerId, setEditingInfluencerId] = useState(null);
   const [influencerDraft, setInfluencerDraft] = useState({ handle: '', categoryId: '', scrapePostsSince: '' });
   const [savingEdit, setSavingEdit] = useState(false);
+  const [search, setSearch] = useState('');
 
   const toggleHistory = (influencerId) => {
     setExpandedHistory((prev) => {
@@ -73,6 +74,17 @@ export default function Influencers() {
     }
     return [...byCategory.values()].sort((a, b) => a.category.name.localeCompare(b.category.name));
   }, [categories, statusRows]);
+
+  const filteredGrouped = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return grouped;
+    return grouped
+      .map(({ category, influencers }) => ({
+        category,
+        influencers: influencers.filter((row) => row.handle.toLowerCase().includes(q)),
+      }))
+      .filter(({ influencers }) => influencers.length > 0);
+  }, [grouped, search]);
 
   const handleScrapeNow = async (row) => {
     setTriggering((prev) => new Set(prev).add(row.influencer_id));
@@ -239,13 +251,24 @@ export default function Influencers() {
         <AddInfluencerForm categories={categories} onCreated={load} />
       </div>
 
+      {!loading && grouped.length > 0 && (
+        <Input
+          placeholder="Search influencers by handle..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="max-w-xs"
+        />
+      )}
+
       {loading ? (
         <div className="card p-5 h-64 animate-shimmer" style={{ background: 'var(--color-bg-card-hover)' }} />
       ) : grouped.length === 0 ? (
         <EmptyState title="No categories yet" message="Add your first category above to get started." />
+      ) : filteredGrouped.length === 0 ? (
+        <EmptyState title="No matches" message={`No influencer handles match "${search}".`} />
       ) : (
         <div className="flex flex-col gap-4">
-          {grouped.map(({ category, influencers }) => (
+          {filteredGrouped.map(({ category, influencers }) => (
             <div key={category.id} className="card p-5 flex flex-col gap-3 min-w-0">
               <div className="flex items-center justify-between gap-3">
                 {editingCategoryId === category.id ? (

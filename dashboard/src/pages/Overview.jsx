@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Users, CheckCircle2, Clock, FileText, MessageSquare, Layers, ListOrdered, RefreshCw } from 'lucide-react';
 import { format, subDays } from 'date-fns';
-import { getDashboardStatus, getDashboardMetrics, getAlerts, getQueueStatus } from '../services/dashboardService';
+import { getDashboardStatus, getDashboardMetrics, getAlerts, getQueueStatus, getDlqContents } from '../services/dashboardService';
 import { getCategories } from '../services/influencerService';
 import KPICard from '../components/common/KPICard';
 import { SkeletonKPICard } from '../components/common/Skeleton';
@@ -23,6 +23,7 @@ export default function Overview() {
   const [categoryCount, setCategoryCount] = useState(null);
   const [alerts, setAlerts] = useState([]);
   const [queueStatus, setQueueStatus] = useState(null);
+  const [dlqMessages, setDlqMessages] = useState([]);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -33,18 +34,20 @@ export default function Overview() {
     setLoading(true);
     setError(null);
     try {
-      const [statusRows, metricsData, categories, alertRows, queue] = await Promise.all([
+      const [statusRows, metricsData, categories, alertRows, queue, dlq] = await Promise.all([
         getDashboardStatus(),
         getDashboardMetrics(startDate, endDate),
         getCategories(),
         getAlerts(),
         getQueueStatus(),
+        getDlqContents(),
       ]);
       setStatus(statusRows);
       setMetrics(metricsData);
       setCategoryCount(categories.length);
       setAlerts(alertRows);
       setQueueStatus(queue);
+      setDlqMessages(dlq);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -135,6 +138,26 @@ export default function Overview() {
           </>
         )}
       </div>
+
+      {dlqMessages.length > 0 && (
+        <div className="card p-5">
+          <h3 className="text-sm font-semibold mb-1" style={{ color: 'var(--color-text-primary)' }}>
+            Dead-letter queue contents
+          </h3>
+          <p className="text-xs mb-3" style={{ color: 'var(--color-text-muted)' }}>
+            These jobs' workers died mid-run (OOM/crash) before cleaning up -- a different failure
+            mode than a job that ran and failed normally. Check job history for each handle below.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            {dlqMessages.map((m) => (
+              <div key={m.job_id} className="flex items-center gap-3 text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--color-bg-secondary)' }}>
+                <span className="font-medium" style={{ color: 'var(--color-text-primary)' }}>@{m.handle}</span>
+                <span style={{ color: 'var(--color-text-muted)' }}>job {m.job_id}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {loading ? (

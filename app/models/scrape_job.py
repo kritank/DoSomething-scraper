@@ -32,7 +32,14 @@ class ScrapeJob(Base):
     # worker -- a job legitimately taking a long time never gets falsely
     # reaped as long as heartbeats keep landing.
     last_heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    
+    # Set by request_cancel() when a "running" job is asked to stop.
+    # JobProcessor._heartbeat notices this on its next tick and signals the
+    # in-flight scrape to unwind cooperatively (see JobCancelledError) --
+    # this is a request, not a guarantee of instant stop, bounded by
+    # roughly one heartbeat interval or one feed-page fetch, whichever the
+    # loop reaches first.
+    cancel_requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     posts_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     comments_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
