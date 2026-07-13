@@ -252,6 +252,18 @@ class JobProcessor:
                         continue  # duplicate within a resumed/overlapping backfill page
 
                     if comment_sync_cutoff is None or not within_comment_window:
+                        if item.is_pinned:
+                            # Pinned posts sit at the top of the feed
+                            # regardless of age -- reaching an old, known,
+                            # pinned post does NOT mean "everything further
+                            # back is also old", unlike a real
+                            # newest-first item. Skip it without stopping,
+                            # so pagination reaches the actual
+                            # reverse-chronological posts that follow.
+                            # Without this, any influencer with >=1 pinned
+                            # post from outside the window has every scrape
+                            # stop on page 1 before ever seeing new posts.
+                            continue
                         # No window configured (old "cap at MAX_POSTS_PER_SCRAPE"
                         # behavior) or this known post is already outside the
                         # window -- everything further back in this
