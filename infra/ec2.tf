@@ -20,8 +20,14 @@ data "aws_ami" "ubuntu" {
 # Cloudflare) reverse-proxies through the `dashboard` (Caddy) service on this
 # box, which also needs 80 reachable for Let's Encrypt ACME validation.
 resource "aws_security_group" "app_sg" {
-  name        = "dosomething-scraper-sg"
-  description = "DoSomething-scraper: SSH/API from admin CIDR only, 80/443 public for the dashboard"
+  name = "dosomething-scraper-sg"
+  # description is ForceNew in the AWS provider (changing it destroys and
+  # recreates the security group) -- since this SG is attached to the live,
+  # running EC2 instance's ENI, AWS refuses that delete (DependencyViolation)
+  # and Terraform hangs for the full delete timeout before failing. Left
+  # exactly as originally created; the ingress rules below are free-form
+  # in-place updates and don't have this problem.
+  description = "DoSomething-scraper: allow SSH and API access from admin CIDR only"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
