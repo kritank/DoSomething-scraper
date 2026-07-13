@@ -22,7 +22,7 @@ from app.core.database import close_db, init_db
 from app.core.readonly_db import close_readonly_db
 from app.core.exceptions import ViralyticBaseError
 from app.core.logging import configure_logging, get_logger, set_request_id
-from app.api.v1 import health, admin, benchmarks, recommendations
+from app.api.v1 import health, admin, benchmarks, influencers, recommendations
 
 configure_logging(log_level=settings.LOG_LEVEL, json_logs=not settings.DEBUG)
 logger = get_logger(__name__)
@@ -131,5 +131,5 @@ app.include_router(health.router, tags=["Health"])
 # app.include_router(categories.router, prefix=settings.API_V1_PREFIX, tags=["Categories"])
 app.include_router(benchmarks.router, prefix=settings.API_V1_PREFIX, tags=["Benchmarks"])
 app.include_router(recommendations.router, prefix=settings.API_V1_PREFIX, tags=["Recommendations"])
-# app.include_router(influencers.router, prefix=settings.API_V1_PREFIX, tags=["Influencers"])
+app.include_router(influencers.router, prefix=settings.API_V1_PREFIX, tags=["Influencers"])
 app.include_router(admin.router, prefix=settings.API_V1_PREFIX, tags=["Admin"])
