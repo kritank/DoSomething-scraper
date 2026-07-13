@@ -41,7 +41,7 @@ resource "aws_security_group" "app_sg" {
   }
 
   ingress {
-    description = "HTTP — dashboard (Caddy) + Let's Encrypt ACME challenge"
+    description = "HTTP - dashboard (Caddy) + Let's Encrypt ACME challenge"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -49,7 +49,7 @@ resource "aws_security_group" "app_sg" {
   }
 
   ingress {
-    description = "HTTPS — dashboard (Caddy), engine.viralytics.in"
+    description = "HTTPS - dashboard (Caddy), engine.viralytics.in"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
