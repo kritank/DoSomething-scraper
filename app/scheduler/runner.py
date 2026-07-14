@@ -1,5 +1,5 @@
 import asyncio
-import random
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -23,38 +23,58 @@ configure_logging(log_level=settings.LOG_LEVEL, json_logs=not settings.DEBUG)
 logger = get_logger(__name__)
 
 async def run_daily_scrapes():
-    """Dispatch a scrape job for every active influencer.
+    """Dispatch a scrape job for every active influencer whose latest job
+    (if any) is older than DAILY_SCRAPE_INTERVAL_H, skipping any that
+    already have one queued/running/retry_pending.
 
-    Spread across DAILY_SCRAPE_STAGGER_WINDOW_S instead of enqueuing all of
-    them in one instant burst at midnight -- a smoother arrival rate is
-    easier on the queue and on the Instagram account pool (jobs still
-    queue up if there are fewer accounts than influencers, but they arrive
-    over hours instead of all at once). Each dispatch uses its own
-    short-lived session rather than holding one connection open for the
-    whole (potentially hours-long) stagger window.
+    Runs on the same frequent CRON_RETRY_FAILED cadence as the other
+    crash-recovery jobs below, NOT once at midnight. The previous version
+    dispatched all active influencers in one single function call, staggered
+    with asyncio.sleep() across up to 20 hours, with the "which influencers
+    are left" state held only in that call's local loop variable. A
+    scheduler restart at any point during that window -- a routine deploy,
+    this codebase's own Watchtower-driven ones included -- silently and
+    permanently dropped every influencer not yet reached that day, with no
+    error and no retry until the *next* midnight (which had the same
+    problem). Confirmed in production: 18 of 46 active influencers had
+    never been dispatched a single job, ever.
+
+    Checking "who's overdue" fresh on every tick instead makes this
+    resumable for free -- a restart just means the next tick (within
+    CRON_RETRY_FAILED, currently 10 minutes) picks up from wherever things
+    actually stand, and it self-heals any backlog (like the one above)
+    without needing a manual catch-up.
     """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.DAILY_SCRAPE_INTERVAL_H)
     async with get_session() as session:
         influencer_repo = InfluencerRepo(session)
+        job_repo = ScrapeJobRepo(session)
         influencers = [i for i in await influencer_repo.get_all() if i.is_active]
+        latest_jobs = {job.influencer_id: job for job in await job_repo.get_latest_per_influencer()}
 
-    if not influencers:
-        logger.info("No active influencers to dispatch")
+    due = [
+        influencer
+        for influencer in influencers
+        if (job := latest_jobs.get(influencer.id)) is None or job.created_at < cutoff
+    ]
+    if not due:
         return
 
-    stagger_window_s = settings.DAILY_SCRAPE_STAGGER_WINDOW_S
-    interval_s = stagger_window_s / len(influencers) if stagger_window_s > 0 else 0
-
     count = 0
-    for influencer in influencers:
+    for influencer in due:
         async with get_session() as session:
-            dispatch_service = DispatchService(session)
-            await dispatch_service.dispatch_scrape_job(influencer.id)
+            job_repo = ScrapeJobRepo(session)
+            if await job_repo.has_active_job(influencer.id):
+                # Already queued/running/retry_pending from an earlier
+                # dispatch that just hasn't been reached yet (single-account
+                # contention can leave a job queued for well over
+                # DAILY_SCRAPE_INTERVAL_H) -- don't pile on a duplicate.
+                continue
+            await DispatchService(session).dispatch_scrape_job(influencer.id)
         count += 1
 
-        if interval_s > 0 and count < len(influencers):
-            await asyncio.sleep(interval_s * random.uniform(0.5, 1.5))
-
-    logger.info(f"Dispatched scrapes for {count} influencers")
+    if count:
+        logger.info(f"Dispatched scrapes for {count} influencer(s) due for a daily scrape")
 
 
 async def retry_failed_scrapes():
@@ -112,7 +132,14 @@ async def main():
     await init_db()
 
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(run_daily_scrapes, CronTrigger(hour=0, minute=0))
+    # Not CronTrigger(hour=0, minute=0) -- see run_daily_scrapes()'s
+    # docstring for why a once-a-day trigger silently dropped influencers
+    # on every scheduler restart. Same cadence as the crash-recovery jobs
+    # below.
+    scheduler.add_job(
+        run_daily_scrapes,
+        CronTrigger.from_crontab(settings.CRON_RETRY_FAILED, timezone=settings.SCHEDULER_TIMEZONE),
+    )
     scheduler.add_job(
         retry_failed_scrapes,
         CronTrigger.from_crontab(settings.CRON_RETRY_FAILED, timezone=settings.SCHEDULER_TIMEZONE),
@@ -127,7 +154,7 @@ async def main():
     )
     scheduler.start()
 
-    logger.info("Scheduler started. Running daily scrapes at midnight UTC.")
+    logger.info(f"Scheduler started. Checking for overdue daily scrapes every tick ({settings.CRON_RETRY_FAILED}).")
 
     try:
         while True:

@@ -83,10 +83,12 @@ class Settings(BaseSettings):
     ACCOUNT_RATE_LIMIT_RPS: float = 0.3
     ACCOUNT_RATE_LIMIT_BURST: int = 2
 
-    # Spread the midnight dispatch of all active influencers across this
-    # many seconds instead of enqueuing every job at once. 0 disables
-    # staggering (dispatch everything immediately).
-    DAILY_SCRAPE_STAGGER_WINDOW_S: int = 20 * 3600
+    # run_daily_scrapes() dispatches any active influencer whose latest job
+    # is older than this (or has none), checked on every CRON_RETRY_FAILED
+    # tick rather than once at midnight -- see that function's docstring
+    # for why a single long-running once-a-day loop turned out to silently
+    # drop influencers on every scheduler restart.
+    DAILY_SCRAPE_INTERVAL_H: int = 24
 
     # ── Instagram Account Pool ─────────────────────────────────────────────────
     # Accounts are logged in via scripts/register_instagram_account.py (Playwright
