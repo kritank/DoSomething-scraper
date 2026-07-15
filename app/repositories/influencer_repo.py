@@ -1,19 +1,27 @@
-from typing import Sequence
+from typing import Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import Row, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import DuplicateInfluencerError, InfluencerNotFoundError
+from app.models.category import Category
 from app.models.influencer import Influencer
+from app.models.post import Post
+from app.models.snapshot import PostMetricsSnapshot, ProfileSnapshot
 from app.schemas.influencer import (
     InfluencerActiveUpdate,
     InfluencerCreate,
     InfluencerDetailsUpdate,
     InfluencerScrapeSettingsUpdate,
 )
+
+# How many of an influencer's most recent posts feed the engagement-rate
+# average on the top-influencers leaderboard. Keeps the metric responsive to
+# recent performance instead of being diluted by years of post history.
+ENGAGEMENT_LOOKBACK_POSTS = 12
 
 
 class InfluencerRepo:
@@ -103,3 +111,92 @@ class InfluencerRepo:
         if not influencer:
             raise InfluencerNotFoundError(handle)
         return influencer
+
+    async def get_top_ranked(
+        self, limit: int = 20, category_name: Optional[str] = None
+    ) -> Sequence[Row]:
+        """Ranked leaderboard for the public "Top Influencers" page: each
+        active influencer's latest profile snapshot (followers/verified/etc.)
+        plus an engagement rate averaged over their most recent posts.
+
+        Returns raw Rows (not ORM objects) since this is a read-only
+        aggregate projection, not a mapped entity.
+        """
+        latest_snapshot = (
+            select(
+                ProfileSnapshot,
+                func.row_number()
+                .over(
+                    partition_by=ProfileSnapshot.influencer_id,
+                    order_by=ProfileSnapshot.scraped_at.desc(),
+                )
+                .label("rn"),
+            )
+            .subquery("latest_snapshot")
+        )
+
+        latest_metric = (
+            select(
+                PostMetricsSnapshot.post_id,
+                PostMetricsSnapshot.likes,
+                PostMetricsSnapshot.comments,
+                func.row_number()
+                .over(
+                    partition_by=PostMetricsSnapshot.post_id,
+                    order_by=PostMetricsSnapshot.scraped_at.desc(),
+                )
+                .label("rn"),
+            )
+            .subquery("latest_metric")
+        )
+
+        recent_posts = (
+            select(
+                Post.id,
+                Post.influencer_id,
+                func.row_number()
+                .over(partition_by=Post.influencer_id, order_by=Post.posted_at.desc())
+                .label("rn"),
+            )
+            .subquery("recent_posts")
+        )
+
+        engagement = (
+            select(
+                recent_posts.c.influencer_id,
+                func.avg(latest_metric.c.likes + latest_metric.c.comments).label(
+                    "avg_engagement"
+                ),
+            )
+            .join(latest_metric, latest_metric.c.post_id == recent_posts.c.id)
+            .where(
+                recent_posts.c.rn <= ENGAGEMENT_LOOKBACK_POSTS,
+                latest_metric.c.rn == 1,
+            )
+            .group_by(recent_posts.c.influencer_id)
+            .subquery("engagement")
+        )
+
+        stmt = (
+            select(
+                Influencer.id,
+                Influencer.handle,
+                Category.name.label("category_name"),
+                latest_snapshot.c.followers,
+                latest_snapshot.c.following,
+                latest_snapshot.c.posts,
+                latest_snapshot.c.is_verified,
+                latest_snapshot.c.updated_at.label("last_updated"),
+                engagement.c.avg_engagement,
+            )
+            .join(latest_snapshot, latest_snapshot.c.influencer_id == Influencer.id)
+            .join(Category, Category.id == Influencer.category_id)
+            .outerjoin(engagement, engagement.c.influencer_id == Influencer.id)
+            .where(Influencer.is_active.is_(True), latest_snapshot.c.rn == 1)
+        )
+        if category_name:
+            stmt = stmt.where(Category.name == category_name)
+        stmt = stmt.order_by(latest_snapshot.c.followers.desc()).limit(limit)
+
+        result = await self.session.execute(stmt)
+        return result.all()
