@@ -26,6 +26,9 @@ class InstagramAccountOut(BaseModel):
     last_success_at: Optional[datetime] = None
     last_failure_at: Optional[datetime] = None
     error_message: Optional[str] = None
+    # Presence flag only -- the proxy URL carries credentials and is never
+    # returned over the API. Reads the InstagramAccount.has_proxy property.
+    has_proxy: bool = False
     # session_cookies_encrypted, session_captured_at, user_agent, locale,
     # timezone are deliberately not listed -- response_model= strips
     # anything undeclared here, same mechanism every other *Out schema

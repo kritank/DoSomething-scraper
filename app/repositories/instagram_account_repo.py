@@ -41,12 +41,19 @@ class InstagramAccountRepo:
         user_agent: str,
         locale: str,
         tz: str,
+        proxy: str | None = None,
     ) -> InstagramAccount:
         """Register (or re-register) an account as active with a fresh session.
 
         Re-running the registration script for a username already in the
         pool -- e.g. after refreshing an expired session -- must update the
         existing row rather than fail on the unique username constraint.
+
+        proxy: a truthy value sets/replaces the account's pinned egress proxy;
+        None leaves any existing proxy in place. That way a plain "refresh
+        cookies" (which passes no proxy) doesn't silently drop the proxy the
+        account was already pinned to -- the new cookies keep egressing through
+        the same IP. Use set_proxy() to explicitly clear one.
         """
         account = await self._get_by_username(username)
         if account is None:
@@ -59,13 +66,16 @@ class InstagramAccountRepo:
         account.user_agent = user_agent
         account.locale = locale
         account.timezone = tz
+        if proxy:
+            account.proxy_encrypted = encrypt_json({"url": proxy})
         account.error_message = None
         account.failure_count = 0
         await self.session.commit()
         return account
 
     async def create_checkpoint_required(
-        self, username: str, user_agent: str, locale: str, tz: str, detail: str
+        self, username: str, user_agent: str, locale: str, tz: str, detail: str,
+        proxy: str | None = None,
     ) -> InstagramAccount:
         """Record an account that needs manual 2FA/checkpoint completion.
 
@@ -88,12 +98,35 @@ class InstagramAccountRepo:
         account.user_agent = user_agent
         account.locale = locale
         account.timezone = tz
+        if proxy:
+            account.proxy_encrypted = encrypt_json({"url": proxy})
         account.error_message = detail
         await self.session.commit()
         return account
 
     def decrypt_cookies(self, account: InstagramAccount) -> dict[str, str]:
         return decrypt_json(account.session_cookies_encrypted)
+
+    def decrypt_proxy(self, account: InstagramAccount) -> str | None:
+        """The account's pinned egress proxy URL, or None for a direct
+        connection. Threaded into both InstagramClient (scraping) and
+        perform_login (browser login) so every request for this account
+        leaves from the same IP."""
+        if not account.proxy_encrypted:
+            return None
+        return decrypt_json(account.proxy_encrypted).get("url")
+
+    async def set_proxy(self, account_id: UUID, proxy: str | None) -> InstagramAccount:
+        """Set or clear the pinned proxy independently of a re-registration.
+        A falsy proxy clears it (back to a direct connection); this is the
+        only path that removes a proxy, since the create*() upserts
+        deliberately preserve an existing one when passed None."""
+        account = await self.session.get(InstagramAccount, account_id)
+        if account is None:
+            raise InstagramAccountNotFoundError(str(account_id))
+        account.proxy_encrypted = encrypt_json({"url": proxy}) if proxy else None
+        await self.session.commit()
+        return account
 
     async def create_pending_login(
         self,
@@ -102,6 +135,7 @@ class InstagramAccountRepo:
         user_agent: str,
         locale: str,
         tz: str,
+        proxy: str | None = None,
     ) -> InstagramAccount:
         """Register a login-method account for async processing.
 
@@ -124,6 +158,8 @@ class InstagramAccountRepo:
         account.user_agent = user_agent
         account.locale = locale
         account.timezone = tz
+        if proxy:
+            account.proxy_encrypted = encrypt_json({"url": proxy})
         account.error_message = None
         await self.session.commit()
         return account

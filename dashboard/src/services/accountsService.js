@@ -20,6 +20,11 @@ export async function updateAccountStatus(accountId, status) {
   return data;
 }
 
+export async function setAccountProxy(accountId, proxy) {
+  const { data } = await apiClient.patch(`/admin/accounts/${accountId}/proxy`, { proxy: proxy || null });
+  return data;
+}
+
 export async function deleteAccount(accountId) {
   await apiClient.delete(`/admin/accounts/${accountId}`);
 }

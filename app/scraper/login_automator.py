@@ -25,6 +25,7 @@ from playwright.async_api import async_playwright, Page
 from playwright_stealth import Stealth
 
 from app.core.logging import get_logger
+from app.scraper.proxies import playwright_proxy
 from app.scraper.user_agents import random_viewport
 
 logger = get_logger(__name__)
@@ -103,14 +104,22 @@ async def perform_login(
     locale: str,
     timezone: str,
     headless: bool = True,
+    proxy: str | None = None,
 ) -> LoginResult:
+    proxy_config = playwright_proxy(proxy)
     async with Stealth().use_async(async_playwright()) as p:
         browser = await p.chromium.launch(headless=headless, args=_LAUNCH_ARGS)
+        # The login MUST egress through the same proxy the scraper will later
+        # use for this account -- the cookies minted here are then replayed by
+        # app.scraper.client from that IP. Logging in on one IP and scraping
+        # from another is what trips Instagram's checkpoint. proxy=None leaves
+        # the context on a direct connection.
         context = await browser.new_context(
             user_agent=user_agent,
             locale=locale,
             timezone_id=timezone,
             viewport=random_viewport(),
+            proxy=proxy_config,
         )
         try:
             page = await context.new_page()

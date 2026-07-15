@@ -24,6 +24,7 @@ async def process_pending_logins(shutdown_event: asyncio.Event) -> None:
             for account in pending:
                 logger.info("Processing pending login", username=account.username)
                 password = repo.decrypt_password(account)
+                proxy = repo.decrypt_proxy(account)
                 try:
                     result = await perform_login(
                         account.username,
@@ -32,6 +33,7 @@ async def process_pending_logins(shutdown_event: asyncio.Event) -> None:
                         account.locale,
                         account.timezone,
                         headless=True,
+                        proxy=proxy,
                     )
                 except Exception as e:
                     logger.error("Login automation raised", username=account.username, error=str(e))

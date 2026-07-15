@@ -14,7 +14,11 @@ from app.repositories.influencer_repo import InfluencerRepo
 from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.repositories.post_repo import PostRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
-from app.schemas.account_registration import RegisterAccountCookiesRequest, RegisterAccountLoginRequest
+from app.schemas.account_registration import (
+    AccountProxyUpdate,
+    RegisterAccountCookiesRequest,
+    RegisterAccountLoginRequest,
+)
 from app.schemas.category import CategoryCreate, CategoryOut, CategoryUpdate
 from app.schemas.dashboard import DashboardMetricsOut, DashboardStatusRow
 from app.schemas.db_schema import SchemaTable
@@ -193,7 +197,7 @@ async def register_account_via_cookies(
     if data.ig_did:
         cookies["ig_did"] = data.ig_did
     return await InstagramAccountRepo(db).create(
-        data.username, cookies, data.user_agent, data.locale, data.timezone
+        data.username, cookies, data.user_agent, data.locale, data.timezone, proxy=data.proxy
     )
 
 
@@ -205,8 +209,17 @@ async def register_account_via_login(
     # background poll loop (app.workers.account_login_processor) does the
     # actual Playwright login, since only the worker image has Chromium.
     return await InstagramAccountRepo(db).create_pending_login(
-        data.username, data.password, data.user_agent, data.locale, data.timezone
+        data.username, data.password, data.user_agent, data.locale, data.timezone, proxy=data.proxy
     )
+
+
+@router.patch("/accounts/{account_id}/proxy", response_model=InstagramAccountOut)
+async def set_account_proxy(
+    account_id: UUID, data: AccountProxyUpdate, db: AsyncSession = Depends(get_db)
+):
+    # Set or clear the pinned egress proxy without touching cookies/session.
+    # Takes effect on the account's next acquisition by a worker.
+    return await InstagramAccountRepo(db).set_proxy(account_id, data.proxy)
 
 
 @router.patch("/accounts/{account_id}", response_model=InstagramAccountOut)

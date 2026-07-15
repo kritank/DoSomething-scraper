@@ -15,6 +15,9 @@ class RegisterAccountCookiesRequest(BaseModel):
     user_agent: str = _DEFAULT_UA
     locale: str = "en_US"
     timezone: str = "UTC"
+    # Pin egress to a proxy (scheme://[user:pass@]host:port). None on a
+    # re-register keeps any existing proxy; see InstagramAccountRepo.create.
+    proxy: str | None = None
 
 
 class RegisterAccountLoginRequest(BaseModel):
@@ -23,3 +26,9 @@ class RegisterAccountLoginRequest(BaseModel):
     user_agent: str = _DEFAULT_UA
     locale: str = "en_US"
     timezone: str = "UTC"
+    proxy: str | None = None
+
+
+class AccountProxyUpdate(BaseModel):
+    # Empty/None clears the proxy (direct connection); a value sets it.
+    proxy: str | None = None

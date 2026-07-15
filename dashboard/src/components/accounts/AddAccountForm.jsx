@@ -21,9 +21,10 @@ export default function AddAccountForm({ onRegistered, initialUsername, lockUser
   const [dsUserId, setDsUserId] = useState('');
   const [igDid, setIgDid] = useState('');
   const [password, setPassword] = useState('');
+  const [proxy, setProxy] = useState('');
 
   const reset = () => {
-    setUsername(''); setSessionid(''); setCsrftoken(''); setDsUserId(''); setIgDid(''); setPassword('');
+    setUsername(''); setSessionid(''); setCsrftoken(''); setDsUserId(''); setIgDid(''); setPassword(''); setProxy('');
   };
 
   const handleSubmit = async (e) => {
@@ -34,6 +35,7 @@ export default function AddAccountForm({ onRegistered, initialUsername, lockUser
 
     setSubmitting(true);
     try {
+      const cleanProxy = proxy.trim() || undefined;
       if (method === 'cookies') {
         if (!sessionid.trim() || !csrftoken.trim() || !dsUserId.trim()) return;
         await registerAccountViaCookies({
@@ -42,11 +44,12 @@ export default function AddAccountForm({ onRegistered, initialUsername, lockUser
           csrftoken: csrftoken.trim(),
           ds_user_id: dsUserId.trim(),
           ig_did: igDid.trim() || undefined,
+          proxy: cleanProxy,
         });
         toast.success(lockUsername ? `@${cleanUsername} cookies refreshed` : `@${cleanUsername} added and active`);
       } else {
         if (!password) return;
-        await registerAccountViaLogin({ username: cleanUsername, password });
+        await registerAccountViaLogin({ username: cleanUsername, password, proxy: cleanProxy });
         toast.success(
           lockUsername
             ? `@${cleanUsername} refresh queued -- processing in the background`
@@ -132,6 +135,18 @@ export default function AddAccountForm({ onRegistered, initialUsername, lockUser
           </div>
         )}
 
+        <div className="min-w-[240px] flex-1">
+          <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+            Proxy <span style={{ color: 'var(--color-text-muted)' }}>(recommended)</span>
+          </label>
+          <Input
+            type="password"
+            placeholder="scheme://user:pass@host:port"
+            value={proxy}
+            onChange={(e) => setProxy(e.target.value)}
+          />
+        </div>
+
         <Button type="submit" size="md" loading={submitting} disabled={!canSubmit}>
           <Plus className="w-3.5 h-3.5" />
           {lockUsername ? 'Refresh' : 'Add account'}
@@ -140,10 +155,15 @@ export default function AddAccountForm({ onRegistered, initialUsername, lockUser
 
       <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
         {lockUsername
-          ? 'Re-registering this username updates its session/status in place (upsert-by-username) -- this does not create a second account.'
+          ? 'Re-registering this username updates its session/status in place (upsert-by-username) -- this does not create a second account. Leave proxy blank to keep the current one.'
           : method === 'cookies'
             ? 'Cookies are encrypted at rest and used immediately -- the account is active as soon as this submits.'
             : 'Login runs in the background (real browser automation, ~10-40s) and may hit a 2FA/checkpoint that needs manual resolution over SSH. Password is encrypted at rest the same way cookies are.'}
+      </p>
+      <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+        Pin a sticky residential/mobile proxy so login and all scraping share one IP.
+        A datacenter IP (or an IP mismatch between login and scraping) is what triggers
+        Instagram's checkpoint/"email may not be secure" lockouts. Stored encrypted at rest.
       </p>
     </form>
   );

@@ -126,7 +126,7 @@ export default function Accounts() {
             <table className="w-full text-sm">
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                  {['Username', 'Status', 'Method', 'Failures', 'Cooldown until', 'Last used', 'Last success', 'Last failure', 'Note', 'Actions'].map((h) => (
+                  {['Username', 'Status', 'Method', 'Proxy', 'Failures', 'Cooldown until', 'Last used', 'Last success', 'Last failure', 'Note', 'Actions'].map((h) => (
                     <th key={h} className="text-left py-2.5 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
                       {h}
                     </th>
@@ -142,6 +142,10 @@ export default function Accounts() {
                     <td className="py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-primary)' }}>@{a.username}</td>
                     <td className="py-2.5 px-3"><StatusBadge status={a.status} /></td>
                     <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{a.auth_method}</td>
+                    <td className="py-2.5 px-3" style={{ color: a.has_proxy ? 'var(--color-success)' : 'var(--color-warning)' }}
+                        title={a.has_proxy ? 'Egress pinned to a proxy' : 'No proxy — scraping from the host IP risks Instagram checkpoints'}>
+                      {a.has_proxy ? 'proxied' : 'direct'}
+                    </td>
                     <td className="py-2.5 px-3" style={{ color: a.failure_count > 0 ? 'var(--color-warning)' : 'var(--color-text-secondary)' }}>
                       {a.failure_count}
                     </td>
@@ -183,7 +187,7 @@ export default function Accounts() {
                   </tr>
                   {refreshOpen && (
                     <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                      <td colSpan={10} className="px-3 pb-4">
+                      <td colSpan={11} className="px-3 pb-4">
                         <div className="card p-4" style={{ background: 'var(--color-bg-secondary)' }}>
                           <AddAccountForm
                             initialUsername={a.username}

@@ -113,6 +113,7 @@ class JobProcessor:
                 self.client = InstagramClient(
                     cookies=account_repo.decrypt_cookies(self._account),
                     user_agent=self._account.user_agent,
+                    proxy=account_repo.decrypt_proxy(self._account),
                 )
 
                 outcome = "success"

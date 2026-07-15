@@ -9,6 +9,7 @@ from curl_cffi.requests import AsyncSession as CurlAsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import ScraperRateLimitError, ScraperBlockedError, ScraperTimeoutError
+from app.scraper.proxies import curl_proxies
 
 _BACKOFF_BASE_S = 5.0
 _BACKOFF_MAX_S = 120.0
@@ -63,7 +64,7 @@ _REPLIES_DOC_ID = "27130774429946606"
 
 
 class InstagramClient:
-    def __init__(self, cookies: dict[str, str], user_agent: str):
+    def __init__(self, cookies: dict[str, str], user_agent: str, proxy: str | None = None):
         self.headers = {
             "User-Agent": user_agent,
             "Accept-Language": "en-US",
@@ -80,7 +81,18 @@ class InstagramClient:
         # are not gated, so httpx appears to work locally but is blocked from
         # EC2. curl_cffi reproduces Chrome's exact fingerprint via
         # curl-impersonate, far cheaper than driving a real browser per request.
-        self._curl = CurlAsyncSession(impersonate="chrome124")
+        #
+        # proxies pins every request to this account's dedicated egress IP.
+        # The session cookies were minted from that same IP at registration
+        # (see login_automator); replaying them from a different IP -- e.g. a
+        # datacenter/EC2 address -- is exactly the pattern Instagram's
+        # anti-hijack detection flags, forcing the account into
+        # checkpoint_required. A residential/mobile proxy per account is the
+        # structural fix for the recurring "email may not be secure" lockouts.
+        self._curl = CurlAsyncSession(
+            impersonate="chrome124",
+            proxies=curl_proxies(proxy),
+        )
         self._fb_dtsg: str | None = None
         self._lsd: str | None = None
         self._token_lock = asyncio.Lock()
@@ -90,9 +102,9 @@ class InstagramClient:
         )
 
     @classmethod
-    def from_account(cls, account, cookies: dict[str, str]) -> "InstagramClient":
+    def from_account(cls, account, cookies: dict[str, str], proxy: str | None = None) -> "InstagramClient":
         """Convenience constructor for an InstagramAccount pool row."""
-        return cls(cookies=cookies, user_agent=account.user_agent)
+        return cls(cookies=cookies, user_agent=account.user_agent, proxy=proxy)
 
     async def _ensure_csrf_tokens(self, force: bool = False) -> tuple[str, str]:
         """fb_dtsg/lsd are session-scoped, not per-page -- fetched once (from
