@@ -9,7 +9,10 @@ from curl_cffi.requests import AsyncSession as CurlAsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import ScraperRateLimitError, ScraperBlockedError, ScraperTimeoutError
+from app.core.logging import get_logger
 from app.scraper.proxies import curl_proxies
+
+logger = get_logger(__name__)
 
 _BACKOFF_BASE_S = 5.0
 _BACKOFF_MAX_S = 120.0
@@ -203,14 +206,36 @@ class InstagramClient:
                 raise ScraperRateLimitError(handle=handle, retry_after=last_retry_after)
             elif response.status_code in (401, 403):
                 raise ScraperBlockedError(handle=handle)
+            elif response.status_code >= 500:
+                # Transient on Instagram's end, not a blocked/rate-limited
+                # session -- retry with the same backoff instead of letting
+                # a passing 5xx burn the whole job's retry_count.
+                if attempt < settings.SCRAPER_MAX_RETRIES:
+                    wait_s = min(_BACKOFF_BASE_S * (2 ** attempt), _BACKOFF_MAX_S)
+                    wait_s += random.uniform(0, wait_s * 0.2)
+                    await asyncio.sleep(wait_s)
+                    continue
+                raise ScraperTimeoutError(handle=handle)
 
             try:
-                return response.json()
+                payload = response.json()
             except Exception:
                 if attempt < settings.SCRAPER_MAX_RETRIES:
                     await self._ensure_csrf_tokens(force=True)
                     continue
                 raise
+            if isinstance(payload, dict) and payload.get("status") not in (None, "ok"):
+                # Same 200-with-checkpoint-body shape as _get -- see there
+                # for why this can't be told apart from a real success by
+                # status code alone.
+                logger.warning(
+                    "GraphQL response reported non-ok status",
+                    handle=handle,
+                    friendly_name=friendly_name,
+                    status=payload.get("status"),
+                )
+                raise ScraperBlockedError(handle=handle)
+            return payload
         raise ScraperTimeoutError(handle=handle)
 
     async def _get(
@@ -263,9 +288,33 @@ class InstagramClient:
                 raise ScraperRateLimitError(handle=handle, retry_after=last_retry_after)
             elif response.status_code in (401, 403):
                 raise ScraperBlockedError(handle=handle)
+            elif response.status_code >= 500:
+                # Transient on Instagram's end -- retry rather than let
+                # raise_for_status() below kill the job outright.
+                if attempt < settings.SCRAPER_MAX_RETRIES:
+                    wait_s = min(_BACKOFF_BASE_S * (2 ** attempt), _BACKOFF_MAX_S)
+                    wait_s += random.uniform(0, wait_s * 0.2)
+                    await asyncio.sleep(wait_s)
+                    continue
+                raise ScraperTimeoutError(handle=handle)
 
             response.raise_for_status()
-            return response.json()
+            payload = response.json()
+            if isinstance(payload, dict) and payload.get("status") not in (None, "ok"):
+                # Instagram 200s a checkpoint_required/login_required body
+                # instead of erroring -- indistinguishable from a real
+                # success by status code alone. Left unchecked, this reads
+                # as "0 items" (empty feed) or "0 followers" (empty user),
+                # both of which silently write corrupt data rather than
+                # surfacing the account as blocked.
+                logger.warning(
+                    "Instagram response reported non-ok status",
+                    handle=handle,
+                    url=url,
+                    status=payload.get("status"),
+                )
+                raise ScraperBlockedError(handle=handle)
+            return payload
         raise ScraperTimeoutError(handle=handle)
 
     async def get_user_info(self, username: str) -> dict[str, Any]:
@@ -283,6 +332,13 @@ class InstagramClient:
             handle=username,
         )
         user = payload.get("data", {}).get("user") or {}
+        if not user:
+            # A "status": "ok" body with no user object is what a
+            # deactivated/removed account (or a session Instagram has
+            # quietly degraded short of an outright checkpoint) looks
+            # like -- treat it as blocked rather than let the caller
+            # write a ProfileSnapshot full of zeros over real history.
+            raise ScraperBlockedError(handle=username)
         return {
             "user": {
                 "pk": user.get("id", ""),
@@ -327,8 +383,13 @@ class InstagramClient:
         session and checkpoint-blocks browser cookies. The web-hosted,
         username-keyed equivalent accepts the same session cookies and
         returns items in the same shape.
+
+        count=33 (this endpoint's practical max) rather than the UI's own
+        12 -- request pacing is the actual throughput bottleneck (see
+        TokenBucketRateLimiter), so fewer, larger pages beats more, smaller
+        ones for the same amount of feed history.
         """
-        params: dict[str, Any] = {"count": 12}
+        params: dict[str, Any] = {"count": 33}
         if max_id:
             params["max_id"] = max_id
         return await self._get(

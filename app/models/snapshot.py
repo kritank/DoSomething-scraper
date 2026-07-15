@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -94,13 +94,14 @@ class PostMetricsSnapshot(Base):
 
     likes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     comments: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    views: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    # Instagram exposes no share_count or save_count for other accounts'
-    # posts (saves are fully private to the owner via Insights; shares
-    # aren't exposed as a number at all -- verified against a live raw
-    # response). media_repost_count is the closest real, public metric:
-    # how many times other accounts have reposted this content.
-    reposts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # NULL (not 0) for media types with no public view metric at all --
+    # see JobProcessor._record_metrics_snapshot. BigInteger since a viral
+    # reel's play count routinely exceeds Integer's ~2.1B range.
+    views: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # Instagram exposes no save_count for other accounts' posts (fully
+    # private to the owner via Insights). reshare_count is the closest
+    # real, public metric: how many times this reel has been reshared.
+    reposts: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

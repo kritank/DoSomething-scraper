@@ -49,13 +49,19 @@ class InstagramMediaItem(BaseModel):
     caption: Optional[dict[str, Any]] = None
     like_count: int = 0
     comment_count: int = 0
+    # view_count is populated only for photo/carousel media that happen to
+    # embed a video component; for reels/video posts Instagram reports the
+    # play (view) count under play_count instead -- and, since late 2024,
+    # frequently sends play_count itself as null with the real number
+    # moved to ig_play_count (or fb_play_count for cross-posted content).
+    # Parser falls back through all three; see InstagramParser.parse_feed.
     view_count: int = 0
     play_count: int = 0
-    # Instagram's public/private-metric split: no share_count or save_count
-    # exist anywhere in the raw response (saves are owner-only via
-    # Insights, shares aren't exposed as a number at all). This is the
-    # closest real public metric -- reposts of this content by others.
-    media_repost_count: int = 0
+    # reshare_count is the real, publicly-exposed "this got shared/reposted
+    # N times" metric on reels (Instagram started returning it in late
+    # 2024). Saves and DM-shares are never exposed as numbers at all --
+    # this is the closest real public metric to a "share count".
+    reshare_count: int = 0
     media_type: int
     taken_at: int
 

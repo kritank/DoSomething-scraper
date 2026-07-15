@@ -13,12 +13,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.database import get_session
-from app.core.exceptions import ScraperBlockedError, ScraperRateLimitError
+from app.core.exceptions import InfluencerNotFoundError, ScraperBlockedError, ScraperRateLimitError
 from app.models.scrape_job import ScrapeJob
 from app.models.influencer import Influencer
 from app.models.snapshot import ProfileSnapshot, PostMetricsSnapshot
 from app.models.post import Post
 from app.models.comment import Comment
+from app.models.raw_response import RawResponse
 from app.models.feature_store import FeatureStore
 from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
@@ -110,15 +111,19 @@ class JobProcessor:
                     await session.commit()
                     return
 
-                self.client = InstagramClient(
-                    cookies=account_repo.decrypt_cookies(self._account),
-                    user_agent=self._account.user_agent,
-                    proxy=account_repo.decrypt_proxy(self._account),
-                )
-
                 outcome = "success"
                 retry_after: int | None = None
                 try:
+                    # Constructed inside this try -- a decrypt/constructor
+                    # failure here used to happen *before* the
+                    # finally-released account, stranding it in "in_use"
+                    # for the full lease TTL instead of being freed
+                    # immediately like any other error outcome.
+                    self.client = InstagramClient(
+                        cookies=account_repo.decrypt_cookies(self._account),
+                        user_agent=self._account.user_agent,
+                        proxy=account_repo.decrypt_proxy(self._account),
+                    )
                     await self._run_scrape(session, job)
                     job.status = "completed"
                     # Clear any error_message left over from an earlier failed
@@ -161,7 +166,8 @@ class JobProcessor:
                     # bump), not as an "error" outcome.
                     release_outcome = "success" if outcome == "cancelled" else outcome
                     await account_repo.release(self._account.id, release_outcome, retry_after=retry_after)
-                    await self.client.close()
+                    if self.client is not None:
+                        await self.client.close()
             finally:
                 heartbeat_task.cancel()
                 try:
@@ -192,6 +198,12 @@ class JobProcessor:
     async def _run_scrape(self, session: AsyncSession, job: ScrapeJob):
         handle = self.message.handle
         influencer = await session.get(Influencer, self.message.influencer_id)
+        if influencer is None:
+            # Deleted while this job sat queued -- fail cleanly (routes
+            # through the same retry/error bookkeeping as any other
+            # scrape failure) instead of an AttributeError on the first
+            # attribute access below.
+            raise InfluencerNotFoundError(str(self.message.influencer_id))
 
         # 1. Fetch User Info
         raw_user = await self.client.get_user_info(handle)
@@ -268,6 +280,7 @@ class JobProcessor:
         posts_processed = 0
         max_id = (influencer.backfill_cursor or "") if is_backfilling else ""
         sync_candidates: dict[UUID, Post] = {}
+        raw_feed_captured = False
 
         cancelled = False
         while True:
@@ -298,6 +311,18 @@ class JobProcessor:
                 # retry from scratch.
                 logger.warning("Feed fetch unavailable after partial progress", handle=handle, error=str(e))
                 break
+
+            if not raw_feed_captured:
+                # One raw payload per run, not per page -- enough to
+                # diagnose a field-shape drift (Instagram silently
+                # renaming/moving a metric, the way ig_play_count/
+                # reshare_count replaced view_count/media_repost_count)
+                # without the table growing unboundedly on every page of
+                # every scrape.
+                session.add(
+                    RawResponse(endpoint="get_user_feed", handle=handle, payload=raw_feed, status=200)
+                )
+                raw_feed_captured = True
 
             items, next_max_id = InstagramParser.parse_feed(raw_feed)
             if not items:
@@ -453,16 +478,21 @@ class JobProcessor:
     async def _record_metrics_snapshot(
         self, session: AsyncSession, post: Post, item: InstagramMediaItem
     ) -> None:
+        # Image/carousel posts have no public view metric at all (Instagram
+        # only tracks impressions for those privately, via owner-only
+        # Insights) -- storing 0 for them would silently read as "zero
+        # views" in analytics instead of "not applicable". Only video posts
+        # (media_type 2) and reels (product_type "clips") ever report a
+        # real view/play count.
+        has_view_metric = item.media_type == 2 or item.product_type == "clips"
+        views = (item.view_count or item.play_count) if has_view_metric else None
         session.add(
             PostMetricsSnapshot(
                 post_id=post.id,
                 likes=item.like_count,
                 comments=item.comment_count,
-                # Reels/videos report their view count in play_count;
-                # view_count is 0 for those and only meaningful for
-                # media types that don't have a play_count at all.
-                views=item.view_count or item.play_count,
-                reposts=item.media_repost_count,
+                views=views,
+                reposts=item.reshare_count,
             )
         )
 
@@ -485,12 +515,28 @@ class JobProcessor:
             if not comments:
                 break
 
+            # Diff each comment's reply count against what's already stored
+            # *before* upserting -- otherwise every comment with any replies
+            # gets its whole thread re-walked on every single run, even when
+            # nothing about it changed since last time. Comparing against
+            # the incoming count (not just >0) means only genuinely new
+            # comments and threads with new replies since last sync cost a
+            # request; an unchanged thread costs zero.
+            stmt = select(Comment.comment_id, Comment.child_comment_count).where(
+                Comment.comment_id.in_([c.comment_id for c in comments])
+            )
+            result = await session.execute(stmt)
+            prev_child_counts = dict(result.all())
+
             await self._upsert_comments_bulk(session, post.id, comments)
             await session.commit()
             total += len(comments)
 
             for comment in comments:
-                if comment.child_comment_count > 0:
+                if (
+                    comment.child_comment_count > 0
+                    and comment.child_comment_count != prev_child_counts.get(comment.comment_id)
+                ):
                     total += await self._sync_replies(session, post, comment)
 
             if not has_more or not next_after:

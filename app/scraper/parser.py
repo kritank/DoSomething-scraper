@@ -59,8 +59,18 @@ class InstagramParser:
                 like_count=item.get("like_count") or 0,
                 comment_count=item.get("comment_count") or 0,
                 view_count=item.get("view_count") or 0,
-                play_count=item.get("play_count") or 0,
-                media_repost_count=item.get("media_repost_count") or 0,
+                # play_count is frequently sent as an explicit null on
+                # reels since Instagram moved the real number to
+                # ig_play_count (fb_play_count for cross-posted content) --
+                # without this fallback chain every reel view count silently
+                # stores as 0.
+                play_count=(
+                    item.get("play_count")
+                    or item.get("ig_play_count")
+                    or item.get("fb_play_count")
+                    or 0
+                ),
+                reshare_count=item.get("reshare_count") or 0,
                 media_type=item.get("media_type") or 1,
                 taken_at=item.get("taken_at") or 0,
                 accessibility_caption=item.get("accessibility_caption"),
