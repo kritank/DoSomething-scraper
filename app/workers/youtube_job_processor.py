@@ -186,12 +186,19 @@ class YouTubeJobProcessor:
 
         channel = YouTubeParser.parse_channel(raw_channel)
         if not channel.channel_id:
-            # channels.list returned zero items -- deleted channel or a
-            # typo'd handle. A 200 with an empty list, not an HTTP error,
-            # so the client can't distinguish this from "unavailable" on
-            # its own; surfaced here as blocked (counted retry, clear
-            # message) same as JobProcessor treats an unresolvable target.
-            raise ScraperBlockedError(handle=f"{handle} (channel not found)")
+            # channels.list returned zero items -- deleted channel, or (the
+            # common case in practice) the registered handle doesn't match
+            # any real channel's forHandle value exactly. A 200 with an
+            # empty list, not an HTTP error, so the client can't
+            # distinguish this from "unavailable" on its own; surfaced
+            # here as blocked (counted retry, clear message) same as
+            # JobProcessor treats an unresolvable target. Once the
+            # influencer's handle is corrected (Influencers page -> edit),
+            # the next daily scrape resolves it with no other action needed.
+            raise ScraperBlockedError(
+                handle=f"{handle} (no channel found for this handle -- verify it's exact, e.g. via youtube.com/{handle})",
+                platform="youtube",
+            )
 
         if influencer.platform_user_id is None:
             influencer.platform_user_id = channel.channel_id

@@ -210,11 +210,13 @@ class YouTubeClient:
                 raise ScraperRateLimitError(handle=handle)
 
             if response.status_code in (401,):
-                raise ScraperBlockedError(handle=handle)
+                raise ScraperBlockedError(handle=handle, platform="youtube")
 
             # Any other 4xx we don't have a specific handler for -- not
             # retryable, not a key problem. Surface it plainly.
-            raise ScraperBlockedError(handle=f"{handle} ({resource}: {message or response.status_code})")
+            raise ScraperBlockedError(
+                handle=f"{handle} ({resource}: {message or response.status_code})", platform="youtube"
+            )
 
         raise ScraperTimeoutError(handle=handle)
 

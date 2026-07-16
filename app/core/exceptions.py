@@ -176,12 +176,29 @@ class ScraperError(ViralyticBaseError):
 
 
 class ScraperBlockedError(ScraperError):
+    """Shared by both platforms' scrapers -- originally Instagram-only (the
+    message hardcoded "Instagram"), later reused as-is for YouTube's
+    "key rejected" and "channel not found" cases too, which made every
+    YouTube failure of this kind misreport itself as an Instagram problem
+    with an irrelevant "session may need to be refreshed" (YouTube has no
+    session, just an API key). platform selects the accurate wording;
+    defaults to "instagram" so every pre-existing call site (all of
+    app/scraper/client.py) keeps its exact original message unchanged.
+    """
+
     code = "SCRAPER_BLOCKED"
 
-    def __init__(self, handle: str = "") -> None:
+    def __init__(self, handle: str = "", platform: str = "instagram") -> None:
+        if platform == "youtube":
+            label = "YouTube"
+            detail = "Check the API key and that the target handle/channel exists."
+        else:
+            label = "Instagram"
+            detail = "Session may need to be refreshed."
         super().__init__(
-            f"Scraper blocked by Instagram{f' for {handle}' if handle else ''}. "
-            "Session may need to be refreshed."
+            f"Scraper blocked by {label}{f' for {handle}' if handle else ''}. {detail}",
+            handle=handle,
+            platform=platform,
         )
 
 
