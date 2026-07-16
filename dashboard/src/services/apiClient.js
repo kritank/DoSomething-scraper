@@ -8,6 +8,16 @@ const apiClient = axios.create({
   baseURL: BASE_URL,
   headers: { 'Content-Type': 'application/json' },
   timeout: 15_000,
+  // Axios's default array serialization is bracket-indexed
+  // ("platforms[]=instagram&platforms[]=youtube"), which doesn't match
+  // FastAPI's Query(default=None) for a list[str] param (it expects plain
+  // repeated keys: "platforms=instagram&platforms=youtube"). The
+  // mismatched param name means FastAPI silently sees no "platforms" key
+  // at all and treats the filter as absent -- this is why the Content
+  // page's platform filter had no effect. `indexes: null` switches the
+  // built-in serializer to the repeated-key form every array param in
+  // this app needs.
+  paramsSerializer: { indexes: null },
 });
 
 apiClient.interceptors.request.use((config) => {
