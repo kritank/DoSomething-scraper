@@ -68,9 +68,20 @@ app = FastAPI(
 
 _origins = [o.strip() for o in settings.CORS_ALLOWED_ORIGINS.split(",") if o.strip()]
 
+# Always allow our own first-party origins (viralytics.in and any single-label
+# subdomain: dev., engine., www., …) regardless of the env-configured list.
+# The public marketing pages — e.g. the "Top Influencers" leaderboard on
+# dev.viralytics.in — call this API cross-origin, and the dev/prod frontends are
+# fronted by Cloudflare Bot Fight Mode, which challenges any same-origin proxy
+# path that isn't explicitly excluded; calling engine directly avoids that, but
+# needs engine to CORS-allow those origins. Starlette matches this with
+# fullmatch, so it does not widen access beyond *.viralytics.in.
+_ORIGIN_REGEX = r"https://([a-z0-9-]+\.)?viralytics\.in"
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
+    allow_origin_regex=_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE", "PATCH"],
     allow_headers=["*"],
