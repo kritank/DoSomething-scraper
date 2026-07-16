@@ -178,6 +178,37 @@ class InstagramAccountRepo:
         )
         return list(result.scalars().all())
 
+    async def get_checkpointed_with_real_session(self) -> list[InstagramAccount]:
+        """checkpoint_required accounts worth retesting.
+
+        Two different flows write "checkpoint_required": create_checkpoint_required()
+        (login-time, before any session existed -- cookies are just an empty
+        placeholder, genuinely nothing to retest) and release(outcome="blocked")
+        (scrape-time, on an already-active account -- its real session cookies are
+        left untouched). Only the latter can self-heal: the block may have been a
+        transient/since-fixed false positive (see _is_checkpoint_response) or
+        Instagram's own checkpoint may have cleared, and the still-real cookies let
+        us actually probe that instead of guessing.
+        """
+        result = await self.session.execute(
+            select(InstagramAccount).where(InstagramAccount.status == "checkpoint_required")
+        )
+        accounts = list(result.scalars().all())
+        return [a for a in accounts if self.decrypt_cookies(a)]
+
+    async def reactivate(self, account_id: UUID) -> None:
+        """Restores a checkpoint_required account to active once the revalidator
+        has confirmed its still-real session actually works -- the counterpart to
+        release(outcome="blocked") for accounts that turn out not to need the
+        manual re-registration that status implies."""
+        account = await self.session.get(InstagramAccount, account_id)
+        if account is None:
+            return
+        account.status = "active"
+        account.error_message = None
+        account.failure_count = 0
+        await self.session.commit()
+
     def decrypt_password(self, account: InstagramAccount) -> str:
         return decrypt_json(account.password_encrypted)["password"]
 

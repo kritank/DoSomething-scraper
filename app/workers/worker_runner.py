@@ -7,6 +7,7 @@ from app.core.logging import configure_logging, get_logger
 from app.core.database import init_db, close_db
 from app.queue.factory import get_queue
 from app.workers.account_login_processor import process_pending_logins
+from app.workers.account_revalidator import revalidate_checkpoint_accounts
 from app.workers.job_processor import JobProcessor
 
 
@@ -86,7 +87,11 @@ async def main():
     
     await init_db()
     try:
-        await asyncio.gather(worker_loop(), process_pending_logins(shutdown_event))
+        await asyncio.gather(
+            worker_loop(),
+            process_pending_logins(shutdown_event),
+            revalidate_checkpoint_accounts(shutdown_event),
+        )
     finally:
         await close_db()
 

@@ -115,6 +115,25 @@ class Settings(BaseSettings):
     # How often the worker's background loop polls for pending_login accounts
     # (dashboard-initiated username/password registrations) to process.
     ACCOUNT_LOGIN_POLL_INTERVAL_S: int = 30
+    # How often the background loop retests checkpoint_required accounts that
+    # still hold a real session (see get_checkpointed_with_real_session) and
+    # restores them to active if a probe request succeeds. Deliberately much
+    # less frequent than ACCOUNT_LOGIN_POLL_INTERVAL_S -- probing a genuinely
+    # checkpointed session repeatedly is itself the kind of suspicious-request
+    # pattern that triggers/extends a checkpoint.
+    ACCOUNT_REVALIDATE_POLL_INTERVAL_S: int = 1800
+
+    # ── YouTube ───────────────────────────────────────────────────────────────
+    # Official Data API v3 -- no session pool, TLS impersonation, or proxies
+    # needed (see docs/YOUTUBE_SCRAPER_DESIGN.md §2). Rate limit here is
+    # politeness/burst-smoothing, not a real anti-bot gate like Instagram's.
+    YOUTUBE_RATE_LIMIT_RPS: float = 5.0
+    YOUTUBE_RATE_LIMIT_BURST: int = 5
+    YOUTUBE_DAILY_QUOTA_PER_KEY: int = 10000
+    # get_usable_key() stops picking a key once its remaining quota drops
+    # below this, so a long job (backfill, big comment sync) never strands
+    # mid-scrape on a key that's about to run dry.
+    YOUTUBE_QUOTA_SOFT_STOP: int = 200
 
     # ── Scheduler ─────────────────────────────────────────────────────────────
     SCHEDULER_TIMEZONE: str = "UTC"
