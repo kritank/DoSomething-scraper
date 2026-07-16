@@ -65,6 +65,24 @@ _COMMENTS_DOC_ID = "26864966453197043"
 _REPLIES_QUERY = "PolarisPostChildCommentsQuery"
 _REPLIES_DOC_ID = "27130774429946606"
 
+# Instagram's "status" != "ok" envelope covers many unrelated conditions --
+# soft spam/feedback throttles, transient "please wait" responses, and a
+# real hijacked/invalidated session all come back as "status": "fail".
+# Treating all of them as a checkpoint (see _is_checkpoint_response) parked
+# perfectly healthy accounts in checkpoint_required for a transient fail
+# that would have cleared on its own with a cooldown, on every single
+# request that happened to hit one -- the account never actually needed
+# manual resolution at all. Only these markers mean an actual
+# hijacked/invalidated session that a retry can't fix.
+_CHECKPOINT_MESSAGES = {"checkpoint_required", "login_required", "challenge_required"}
+
+
+def _is_checkpoint_response(payload: dict[str, Any]) -> bool:
+    if payload.get("checkpoint_url"):
+        return True
+    message = str(payload.get("message") or "").lower()
+    return message in _CHECKPOINT_MESSAGES or "checkpoint" in message
+
 
 class InstagramClient:
     def __init__(self, cookies: dict[str, str], user_agent: str, proxy: str | None = None):
@@ -225,16 +243,31 @@ class InstagramClient:
                     continue
                 raise
             if isinstance(payload, dict) and payload.get("status") not in (None, "ok"):
-                # Same 200-with-checkpoint-body shape as _get -- see there
-                # for why this can't be told apart from a real success by
-                # status code alone.
+                if _is_checkpoint_response(payload):
+                    logger.warning(
+                        "GraphQL response reported a checkpoint",
+                        handle=handle,
+                        friendly_name=friendly_name,
+                        message=payload.get("message"),
+                    )
+                    raise ScraperBlockedError(handle=handle)
+                # A non-checkpoint "fail" (soft throttle, feedback_required,
+                # transient hiccup) -- retry like a 429 rather than parking
+                # a perfectly healthy session in checkpoint_required for
+                # something that clears with a cooldown.
                 logger.warning(
-                    "GraphQL response reported non-ok status",
+                    "GraphQL response reported a non-ok, non-checkpoint status",
                     handle=handle,
                     friendly_name=friendly_name,
                     status=payload.get("status"),
+                    message=payload.get("message"),
                 )
-                raise ScraperBlockedError(handle=handle)
+                if attempt < settings.SCRAPER_MAX_RETRIES:
+                    wait_s = min(_BACKOFF_BASE_S * (2 ** attempt), _BACKOFF_MAX_S)
+                    wait_s += random.uniform(0, wait_s * 0.2)
+                    await asyncio.sleep(wait_s)
+                    continue
+                raise ScraperRateLimitError(handle=handle)
             return payload
         raise ScraperTimeoutError(handle=handle)
 
@@ -301,19 +334,42 @@ class InstagramClient:
             response.raise_for_status()
             payload = response.json()
             if isinstance(payload, dict) and payload.get("status") not in (None, "ok"):
-                # Instagram 200s a checkpoint_required/login_required body
-                # instead of erroring -- indistinguishable from a real
-                # success by status code alone. Left unchecked, this reads
-                # as "0 items" (empty feed) or "0 followers" (empty user),
-                # both of which silently write corrupt data rather than
-                # surfacing the account as blocked.
+                if _is_checkpoint_response(payload):
+                    # Instagram 200s a checkpoint_required/login_required
+                    # body instead of erroring -- indistinguishable from a
+                    # real success by status code alone. Left unchecked,
+                    # this reads as "0 items" (empty feed) or "0 followers"
+                    # (empty user), both of which silently write corrupt
+                    # data rather than surfacing the account as blocked.
+                    logger.warning(
+                        "Instagram response reported a checkpoint",
+                        handle=handle,
+                        url=url,
+                        message=payload.get("message"),
+                    )
+                    raise ScraperBlockedError(handle=handle)
+                # A non-checkpoint "fail" (soft spam/feedback throttle,
+                # transient hiccup) -- retry like a 429 instead of parking
+                # a perfectly healthy session in checkpoint_required for
+                # something that would have cleared on its own with a
+                # cooldown. This was the actual bug: every non-"ok" status
+                # was being treated as an unrecoverable checkpoint, so a
+                # session that "works absolutely fine" kept getting flagged
+                # as needing manual resolution on the first soft throttle
+                # any single request happened to hit.
                 logger.warning(
-                    "Instagram response reported non-ok status",
+                    "Instagram response reported a non-ok, non-checkpoint status",
                     handle=handle,
                     url=url,
                     status=payload.get("status"),
+                    message=payload.get("message"),
                 )
-                raise ScraperBlockedError(handle=handle)
+                if attempt < settings.SCRAPER_MAX_RETRIES:
+                    wait_s = min(_BACKOFF_BASE_S * (2 ** attempt), _BACKOFF_MAX_S)
+                    wait_s += random.uniform(0, wait_s * 0.2)
+                    await asyncio.sleep(wait_s)
+                    continue
+                raise ScraperRateLimitError(handle=handle)
             return payload
         raise ScraperTimeoutError(handle=handle)
 
@@ -325,19 +381,28 @@ class InstagramClient:
         signed mobile app session. web_profile_info accepts the same web
         cookies (plus X-IG-App-ID) and returns equivalent profile fields.
         """
-        payload = await self._get(
-            "https://www.instagram.com/api/v1/users/web_profile_info/",
-            params={"username": username},
-            headers={"X-IG-App-ID": "936619743392459"},
-            handle=username,
-        )
-        user = payload.get("data", {}).get("user") or {}
+        user: dict[str, Any] = {}
+        for attempt in range(settings.SCRAPER_MAX_RETRIES + 1):
+            payload = await self._get(
+                "https://www.instagram.com/api/v1/users/web_profile_info/",
+                params={"username": username},
+                headers={"X-IG-App-ID": "936619743392459"},
+                handle=username,
+            )
+            user = payload.get("data", {}).get("user") or {}
+            if user:
+                break
+            # A "status": "ok" body with no user object usually means a
+            # deactivated/removed account, but can also be a transient
+            # blip on this specific endpoint -- retry a couple of times
+            # (same as any other soft-fail path) before concluding the
+            # account actually needs attention, rather than treating the
+            # first empty response as blocked.
+            if attempt < settings.SCRAPER_MAX_RETRIES:
+                wait_s = min(_BACKOFF_BASE_S * (2 ** attempt), _BACKOFF_MAX_S)
+                wait_s += random.uniform(0, wait_s * 0.2)
+                await asyncio.sleep(wait_s)
         if not user:
-            # A "status": "ok" body with no user object is what a
-            # deactivated/removed account (or a session Instagram has
-            # quietly degraded short of an outright checkpoint) looks
-            # like -- treat it as blocked rather than let the caller
-            # write a ProfileSnapshot full of zeros over real history.
             raise ScraperBlockedError(handle=username)
         return {
             "user": {
