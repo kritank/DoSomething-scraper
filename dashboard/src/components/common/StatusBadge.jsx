@@ -1,8 +1,9 @@
 import React from 'react';
 import { cn } from '../../utils/cn';
 
-// Covers both ScrapeJob.status and InstagramAccount.status -- the two enums
-// don't overlap, so one badge component/palette works for both.
+// Covers ScrapeJob.status, InstagramAccount.status, and YouTubeApiKey.status
+// -- none of the three enums overlap, so one badge component/palette works
+// for all of them.
 const STYLES = {
   completed:          { bg: 'var(--color-success-muted)', fg: 'var(--color-success)' },
   active:             { bg: 'var(--color-success-muted)', fg: 'var(--color-success)' },
@@ -17,6 +18,8 @@ const STYLES = {
   never_scraped:      { bg: 'rgba(255,255,255,0.06)',     fg: 'var(--color-text-muted)' },
   pending_login:      { bg: 'var(--color-accent-muted)',  fg: 'var(--color-accent)' },
   login_failed:       { bg: 'var(--color-danger-muted)',  fg: 'var(--color-danger)' },
+  quota_exhausted:    { bg: 'var(--color-warning-muted)', fg: 'var(--color-warning)' },
+  invalid:            { bg: 'var(--color-danger-muted)',  fg: 'var(--color-danger)' },
 };
 
 export default function StatusBadge({ status, className }) {

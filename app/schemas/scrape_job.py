@@ -15,5 +15,8 @@ class ScrapeJobOut(BaseModel):
     posts_processed: int
     comments_processed: int
     retry_count: int
+    # Human-readable label (Instagram username or YouTube key label) for
+    # whichever credential ran this job -- see ScrapeJob.scraper_account.
+    scraper_account: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

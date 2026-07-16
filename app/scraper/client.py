@@ -2,53 +2,25 @@ import asyncio
 import json
 import random
 import re
-import time
 from typing import Any
 
 from curl_cffi.requests import AsyncSession as CurlAsyncSession
 
 from app.core.config import settings
-from app.core.exceptions import ScraperRateLimitError, ScraperBlockedError, ScraperTimeoutError
+from app.core.exceptions import (
+    InfluencerNotFoundError,
+    ScraperRateLimitError,
+    ScraperBlockedError,
+    ScraperTimeoutError,
+)
 from app.core.logging import get_logger
 from app.scraper.proxies import curl_proxies
+from app.scraper.rate_limit import TokenBucketRateLimiter
 
 logger = get_logger(__name__)
 
 _BACKOFF_BASE_S = 5.0
 _BACKOFF_MAX_S = 120.0
-
-
-class TokenBucketRateLimiter:
-    """Paces every outbound request against one Instagram account/session.
-
-    Replaces per-coroutine `sleep(random(min, max))` calls: those pace each
-    caller independently, so N concurrent comment-sync tasks sharing one
-    client (see JobProcessor.COMMENT_SYNC_CONCURRENCY) produce an aggregate
-    request rate N times higher than intended. A single bucket shared by the
-    client makes the *aggregate* rate against the account the thing that's
-    actually bounded, regardless of how many coroutines are drawing from it.
-    """
-
-    def __init__(self, rate_per_s: float, burst: int):
-        self.rate_per_s = rate_per_s
-        self.capacity = float(burst)
-        self._tokens = float(burst)
-        self._updated_at = time.monotonic()
-        self._lock = asyncio.Lock()
-
-    async def acquire(self) -> None:
-        async with self._lock:
-            while True:
-                now = time.monotonic()
-                elapsed = now - self._updated_at
-                self._updated_at = now
-                self._tokens = min(self.capacity, self._tokens + elapsed * self.rate_per_s)
-                if self._tokens >= 1:
-                    self._tokens -= 1
-                    return
-                wait_s = (1 - self._tokens) / self.rate_per_s
-                wait_s += random.uniform(0, wait_s * 0.2)  # jitter -- looks less like a bot
-                await asyncio.sleep(wait_s)
 
 _IG_APP_ID = "936619743392459"
 _ASBD_ID = "359341"
@@ -393,17 +365,24 @@ class InstagramClient:
             if user:
                 break
             # A "status": "ok" body with no user object usually means a
-            # deactivated/removed account, but can also be a transient
-            # blip on this specific endpoint -- retry a couple of times
-            # (same as any other soft-fail path) before concluding the
-            # account actually needs attention, rather than treating the
-            # first empty response as blocked.
+            # nonexistent/deactivated/removed Instagram username, but can
+            # also be a transient blip on this specific endpoint -- retry a
+            # couple of times (same as any other soft-fail path) before
+            # concluding it's a real miss, rather than acting on the first
+            # empty response.
             if attempt < settings.SCRAPER_MAX_RETRIES:
                 wait_s = min(_BACKOFF_BASE_S * (2 ** attempt), _BACKOFF_MAX_S)
                 wait_s += random.uniform(0, wait_s * 0.2)
                 await asyncio.sleep(wait_s)
         if not user:
-            raise ScraperBlockedError(handle=username)
+            # This is a bad/nonexistent *handle*, not a blocked *session* --
+            # the account's own cookies are fine (that's what ScraperBlockedError
+            # means, and it drives account_repo.release(outcome="blocked"),
+            # parking the scraping account in checkpoint_required). Every other
+            # account would hit the exact same empty result for this handle, so
+            # raising InfluencerNotFoundError instead routes this to the job
+            # (fail/retry the scrape target) without touching account health.
+            raise InfluencerNotFoundError(username)
         return {
             "user": {
                 "pk": user.get("id", ""),

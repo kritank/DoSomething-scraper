@@ -1,13 +1,17 @@
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.instagram_account import InstagramAccount
+    from app.models.youtube_api_key import YouTubeApiKey
 
 
 class ScrapeJob(Base):
@@ -43,6 +47,32 @@ class ScrapeJob(Base):
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     posts_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     comments_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # YouTube Data API quota units this job consumed (see YouTubeClient.
+    # units_used). NULL (not 0) for Instagram jobs -- there's no quota
+    # concept there, same "N/A stays None" convention as reposts/likes
+    # elsewhere in this schema.
+    quota_units_used: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Which pooled credential actually serviced this run -- exactly one of
+    # these is ever set, matching the job's influencer's platform. Set once
+    # by JobProcessor right after it acquires the leased Instagram account;
+    # for YouTube, set from YouTubeClient.last_key_id after the scrape
+    # finishes -- if the key rotated mid-job (quota exhaustion), this
+    # reflects whichever key was used last, not every key touched.
+    # ON DELETE SET NULL: deleting the account/key later must never delete
+    # this job's own history.
+    instagram_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("instagram_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    youtube_api_key_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("youtube_api_keys.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -53,6 +83,22 @@ class ScrapeJob(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+    instagram_account: Mapped[Optional["InstagramAccount"]] = relationship("InstagramAccount")
+    youtube_api_key: Mapped[Optional["YouTubeApiKey"]] = relationship("YouTubeApiKey")
+
+    @property
+    def scraper_account(self) -> Optional[str]:
+        """Human-readable label for whichever credential ran this job --
+        the Instagram username or the YouTube key's label. Requires
+        instagram_account/youtube_api_key to be eager-loaded (see
+        ScrapeJobRepo) -- this is read from an async context where a lazy
+        load would raise, not silently trigger one."""
+        if self.instagram_account is not None:
+            return self.instagram_account.username
+        if self.youtube_api_key is not None:
+            return self.youtube_api_key.label
+        return None
 
     def __repr__(self) -> str:
         return f"<ScrapeJob id={self.id} status={self.status}>"

@@ -9,6 +9,7 @@ from app.queue.factory import get_queue
 from app.workers.account_login_processor import process_pending_logins
 from app.workers.account_revalidator import revalidate_checkpoint_accounts
 from app.workers.job_processor import JobProcessor
+from app.workers.youtube_job_processor import YouTubeJobProcessor
 
 
 configure_logging(log_level=settings.LOG_LEVEL, json_logs=not settings.DEBUG)
@@ -21,9 +22,10 @@ def handle_sigterm(*args):
 
 
 async def _run_one(receipt: str, msg, queue) -> None:
-    logger.info("Processing job", job_id=msg.job_id)
+    logger.info("Processing job", job_id=msg.job_id, platform=msg.platform)
     try:
-        await JobProcessor(msg).process()
+        processor = YouTubeJobProcessor(msg) if msg.platform == "youtube" else JobProcessor(msg)
+        await processor.process()
     except Exception as e:
         logger.error("Job raised unhandled error", job_id=msg.job_id, error=str(e))
     else:

@@ -9,7 +9,9 @@ from app.core.database import get_session, init_db, close_db
 from app.core.exceptions import InfluencerNotFoundError
 from app.core.logging import configure_logging, get_logger
 from app.services.dispatch_service import DispatchService
+from app.repositories.credential_health_repo import CredentialHealthRepo
 from app.repositories.influencer_repo import InfluencerRepo
+from app.repositories.queue_depth_repo import QueueDepthRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
 from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.queue.base import ScrapeJobMessage
@@ -99,7 +101,12 @@ async def retry_failed_scrapes():
             job.status = "queued"
             await session.commit()
             await queue.enqueue(
-                ScrapeJobMessage(job_id=job.id, influencer_id=influencer.id, handle=influencer.handle)
+                ScrapeJobMessage(
+                    job_id=job.id,
+                    influencer_id=influencer.id,
+                    handle=influencer.handle,
+                    platform=influencer.platform,
+                )
             )
             count += 1
         logger.info(f"Re-dispatched {count} retry-pending scrape jobs")
@@ -128,6 +135,31 @@ async def reap_stale_jobs():
             logger.info(f"Reaped {reaped} stale running scrape job(s)")
 
 
+async def snapshot_credential_health():
+    """Point-in-time health snapshot of every Instagram account and YouTube
+    key, on the same cadence as the crash-recovery jobs above -- see
+    CredentialHealthSnapshot's docstring for why this exists (neither
+    source table historizes its own status, so there's otherwise no way to
+    chart health, or see a quota_exhausted/checkpoint *period*, over time)."""
+    async with get_session() as session:
+        count = await CredentialHealthRepo(session).record_snapshot()
+        if count:
+            logger.info(f"Recorded {count} credential health snapshot(s)")
+
+
+async def snapshot_queue_depth():
+    """Point-in-time sample of the scrape job queue's depth -- see
+    QueueDepthSnapshot's docstring. main_depth is always sampled (both
+    backends implement queue_depth()); dlq_depth only exists for SQS."""
+    queue = get_queue()
+    main_depth = await queue.queue_depth()
+    dlq_depth = await queue.dlq_depth() if settings.is_sqs_queue else None
+    async with get_session() as session:
+        await QueueDepthRepo(session).record_snapshot(
+            backend=settings.QUEUE_BACKEND, main_depth=main_depth, dlq_depth=dlq_depth
+        )
+
+
 async def main():
     await init_db()
 
@@ -150,6 +182,14 @@ async def main():
     )
     scheduler.add_job(
         reap_stale_jobs,
+        CronTrigger.from_crontab(settings.CRON_RETRY_FAILED, timezone=settings.SCHEDULER_TIMEZONE),
+    )
+    scheduler.add_job(
+        snapshot_credential_health,
+        CronTrigger.from_crontab(settings.CRON_RETRY_FAILED, timezone=settings.SCHEDULER_TIMEZONE),
+    )
+    scheduler.add_job(
+        snapshot_queue_depth,
         CronTrigger.from_crontab(settings.CRON_RETRY_FAILED, timezone=settings.SCHEDULER_TIMEZONE),
     )
     scheduler.start()

@@ -1,5 +1,3 @@
-import os
-import socket
 import time
 import uuid
 from uuid import UUID
@@ -7,8 +5,7 @@ from datetime import datetime, timedelta, timezone
 import asyncio
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -18,9 +15,7 @@ from app.models.scrape_job import ScrapeJob
 from app.models.influencer import Influencer
 from app.models.snapshot import ProfileSnapshot, PostMetricsSnapshot
 from app.models.post import Post
-from app.models.comment import Comment
 from app.models.raw_response import RawResponse
-from app.models.feature_store import FeatureStore
 from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
 from app.scraper.client import InstagramClient
@@ -28,6 +23,14 @@ from app.scraper.parser import InstagramParser
 from app.schemas.instagram import InstagramComment, InstagramMediaItem
 from app.queue.base import ScrapeJobMessage
 from app.feature_extraction.extractor import FeatureExtractor
+from app.workers.comment_sync import (
+    NormalizedComment,
+    last_comment_count,
+    previous_child_counts,
+    update_engagement_timing_features,
+    upsert_comments_bulk,
+)
+from app.workers.job_common import WORKER_ID, JobCancelledError
 
 
 logger = get_logger(__name__)
@@ -36,16 +39,6 @@ MEDIA_TYPE_LABELS = {1: "image", 2: "video", 8: "carousel"}
 
 MAX_COMMENT_PAGES = 50   # per post, safety cap (~750 top-level comments/post)
 MAX_REPLY_PAGES = 20     # per comment thread, safety cap
-
-WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
-
-
-class JobCancelledError(Exception):
-    """Internal control-flow signal only -- raised inside _run_scrape when
-    self._cancel_event fires, caught in process() to route the job to a
-    "cancelled" outcome. Never surfaces as an HTTP response (unlike the
-    ViralyticBaseError hierarchy in app.core.exceptions), since nothing
-    outside this worker process ever sees it directly."""
 
 
 class JobProcessor:
@@ -111,7 +104,19 @@ class JobProcessor:
                     await session.commit()
                     return
 
+                # Recorded as soon as the account is known, independent of
+                # how the job ultimately turns out -- ops visibility into
+                # "which account ran this" shouldn't depend on success.
+                job.instagram_account_id = self._account.id
+
                 outcome = "success"
+                # Whether the account's session is implicated in a non-success
+                # outcome. False for outcomes that are about the *scrape
+                # target*, not the session (currently only InfluencerNotFoundError)
+                # -- release() must not spend the account's failure_count (and
+                # risk disabling it, see ACCOUNT_MAX_CONSECUTIVE_FAILURES) for a
+                # target every account would fail identically on.
+                account_at_fault = True
                 retry_after: int | None = None
                 try:
                     # Constructed inside this try -- a decrypt/constructor
@@ -135,6 +140,15 @@ class JobProcessor:
                     logger.info("Scrape cancelled", job_id=job.id)
                     outcome = "cancelled"
                     job.error_message = None
+                except InfluencerNotFoundError as e:
+                    # Wrong/nonexistent Instagram handle, or the Influencer row
+                    # got deleted while this job sat queued -- the job legitimately
+                    # fails/retries, but the account's session is not implicated
+                    # (see account_at_fault above).
+                    logger.warning("Scrape target not found", job_id=job.id, error=str(e))
+                    outcome = "error"
+                    account_at_fault = False
+                    job.error_message = str(e)
                 except ScraperBlockedError as e:
                     logger.exception("Scrape blocked", exc_info=e)
                     outcome = "blocked"
@@ -161,10 +175,12 @@ class JobProcessor:
                     job.finished_at = datetime.now(timezone.utc)
                     job.duration_s = time.perf_counter() - start_time
                     await session.commit()
-                    # The account did nothing wrong on a cancel -- release it
-                    # exactly like a clean success (active, no failure_count
-                    # bump), not as an "error" outcome.
-                    release_outcome = "success" if outcome == "cancelled" else outcome
+                    # The account did nothing wrong on a cancel, or on an
+                    # outcome that isn't its fault (see account_at_fault) --
+                    # release it exactly like a clean success (active, no
+                    # failure_count bump) rather than spending its health on
+                    # a failure it couldn't have avoided.
+                    release_outcome = "success" if (outcome == "cancelled" or not account_at_fault) else outcome
                     await account_repo.release(self._account.id, release_outcome, retry_after=retry_after)
                     if self.client is not None:
                         await self.client.close()
@@ -374,7 +390,7 @@ class JobProcessor:
                         stop_pagination = True
                         break
 
-                    prev_count = await self._last_comment_count(session, post.id)
+                    prev_count = await last_comment_count(session, post.id)
                     await self._record_metrics_snapshot(session, post, item)
                     if prev_count is None or prev_count != item.comment_count:
                         sync_candidates[post.id] = post
@@ -462,7 +478,7 @@ class JobProcessor:
                 try:
                     async with get_session() as post_session:
                         count = await self._sync_comments_for_post(post_session, post)
-                        await self._update_engagement_timing_features(post_session, post)
+                        await update_engagement_timing_features(post_session, post)
                         return count
                 except Exception as e:
                     logger.warning("Comment sync failed", shortcode=post.shortcode, error=str(e))
@@ -496,16 +512,6 @@ class JobProcessor:
             )
         )
 
-    async def _last_comment_count(self, session: AsyncSession, post_id: UUID) -> int | None:
-        stmt = (
-            select(PostMetricsSnapshot.comments)
-            .where(PostMetricsSnapshot.post_id == post_id)
-            .order_by(PostMetricsSnapshot.created_at.desc())
-            .limit(1)
-        )
-        result = await session.execute(stmt)
-        return result.scalar_one_or_none()
-
     async def _sync_comments_for_post(self, session: AsyncSession, post: Post) -> int:
         after: str | None = None
         total = 0
@@ -522,13 +528,9 @@ class JobProcessor:
             # the incoming count (not just >0) means only genuinely new
             # comments and threads with new replies since last sync cost a
             # request; an unchanged thread costs zero.
-            stmt = select(Comment.comment_id, Comment.child_comment_count).where(
-                Comment.comment_id.in_([c.comment_id for c in comments])
-            )
-            result = await session.execute(stmt)
-            prev_child_counts = dict(result.all())
+            prev_child_counts = await previous_child_counts(session, [c.comment_id for c in comments])
 
-            await self._upsert_comments_bulk(session, post.id, comments)
+            await upsert_comments_bulk(session, post.id, [self._normalize_comment(c) for c in comments])
             await session.commit()
             total += len(comments)
 
@@ -553,7 +555,7 @@ class JobProcessor:
             if not replies:
                 break
 
-            await self._upsert_comments_bulk(session, post.id, replies)
+            await upsert_comments_bulk(session, post.id, [self._normalize_comment(c) for c in replies])
             await session.commit()
             total += len(replies)
 
@@ -562,46 +564,14 @@ class JobProcessor:
             after = next_after
         return total
 
-    async def _upsert_comments_bulk(
-        self, session: AsyncSession, post_id: UUID, comments: list[InstagramComment]
-    ) -> None:
-        rows = [self._comment_row(post_id, c) for c in comments if c.comment_id]
-        if not rows:
-            return
-
-        stmt = pg_insert(Comment).values(rows)
-        update_cols = {
-            col: stmt.excluded[col]
-            for col in (
-                "like_count",
-                "child_comment_count",
-                "text",
-                "liked_by_creator",
-                "is_edited",
-                "reported_as_spam",
-                "is_from_creator",
-                "author_profile_pic_url",
-                "author_is_private",
-            )
-        }
-        # on_conflict_do_update's SET clause bypasses the column's onupdate=
-        # default (that only fires for plain Core/ORM UPDATE statements), so
-        # updated_at needs to be set explicitly here.
-        update_cols["updated_at"] = func.now()
-        stmt = stmt.on_conflict_do_update(index_elements=[Comment.comment_id], set_=update_cols)
-        await session.execute(stmt)
-
-    def _comment_row(self, post_id: UUID, comment: InstagramComment) -> dict:
-        is_from_creator = comment.username.lower() == self.message.handle.lower()
-        return dict(
-            id=uuid.uuid4(),
-            post_id=post_id,
+    def _normalize_comment(self, comment: InstagramComment) -> NormalizedComment:
+        return NormalizedComment(
             comment_id=comment.comment_id,
             parent_comment_id=comment.parent_comment_id,
             username=comment.username,
             full_name=comment.full_name,
             is_verified=comment.is_verified,
-            is_from_creator=is_from_creator,
+            is_from_creator=comment.username.lower() == self.message.handle.lower(),
             author_profile_pic_url=comment.author_profile_pic_url,
             author_is_private=comment.author_is_private,
             text=comment.text,
@@ -616,41 +586,3 @@ class JobProcessor:
                 else datetime.now(timezone.utc)
             ),
         )
-
-    async def _update_engagement_timing_features(self, session: AsyncSession, post: Post) -> None:
-        """Derive engagement-timing signals from comments already saved for
-        this post -- no extra API calls, just better use of scraped data.
-        """
-        stmt = select(
-            func.count().label("total"),
-            func.min(Comment.commented_at).filter(Comment.parent_comment_id.is_(None)).label(
-                "first_comment_at"
-            ),
-            func.min(Comment.commented_at).filter(Comment.is_from_creator.is_(True)).label(
-                "first_creator_reply_at"
-            ),
-            func.count().filter(Comment.is_from_creator.is_(True)).label("creator_reply_count"),
-        ).where(Comment.post_id == post.id)
-        result = await session.execute(stmt)
-        row = result.one()
-        if not row.total:
-            return
-
-        stmt = select(FeatureStore).where(FeatureStore.post_id == post.id)
-        result = await session.execute(stmt)
-        features = result.scalar_one_or_none()
-        if not features:
-            return
-
-        posted_at = post.posted_at
-        features.first_comment_at = row.first_comment_at
-        features.time_to_first_comment_s = (
-            int((row.first_comment_at - posted_at).total_seconds()) if row.first_comment_at else None
-        )
-        features.creator_reply_count = row.creator_reply_count
-        features.time_to_first_creator_reply_s = (
-            int((row.first_creator_reply_at - posted_at).total_seconds())
-            if row.first_creator_reply_at
-            else None
-        )
-        await session.commit()

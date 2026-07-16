@@ -10,17 +10,30 @@ from app.core.database import get_db
 from app.core.security import require_api_key
 from app.queue.factory import get_queue
 from app.repositories.category_repo import CategoryRepo
+from app.repositories.creator_repo import CreatorRepo
 from app.repositories.influencer_repo import InfluencerRepo
 from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.repositories.post_repo import PostRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
+from app.repositories.youtube_api_key_repo import YouTubeApiKeyRepo
 from app.schemas.account_registration import (
     AccountProxyUpdate,
     RegisterAccountCookiesRequest,
     RegisterAccountLoginRequest,
 )
+from app.schemas.youtube_api_key import (
+    RegisterYouTubeApiKeyRequest,
+    YouTubeApiKeyOut,
+    YouTubeApiKeyStatusUpdate,
+)
 from app.schemas.category import CategoryCreate, CategoryOut, CategoryUpdate
-from app.schemas.dashboard import DashboardMetricsOut, DashboardStatusRow
+from app.schemas.creator import CreatorOut, CreatorRename
+from app.schemas.dashboard import (
+    CredentialHealthOut,
+    DashboardMetricsOut,
+    DashboardStatusRow,
+    QueueDepthHistoryOut,
+)
 from app.schemas.db_schema import SchemaTable
 from app.schemas.influencer import (
     InfluencerActiveUpdate,
@@ -73,6 +86,46 @@ async def delete_category(category_id: UUID, db: AsyncSession = Depends(get_db))
             f'"{category.name}" has an influencer with an active scrape job -- cancel it first, then delete.'
         )
     await CategoryRepo(db).delete(category_id)
+
+
+@router.get("/creators", response_model=list[CreatorOut])
+async def list_creators(db: AsyncSession = Depends(get_db)):
+    """Every creator group, with which platforms each has a linked account
+    on -- powers the "link to an existing creator" autocomplete on the
+    add-influencer form, and any cross-platform creator view."""
+    creators = await CreatorRepo(db).get_all_with_influencers()
+    return [
+        CreatorOut(
+            id=c.id,
+            name=c.name,
+            platforms=sorted({i.platform for i in c.influencers}),
+            influencer_count=len(c.influencers),
+        )
+        for c in creators
+    ]
+
+
+@router.patch("/creators/{creator_id}", response_model=CreatorOut)
+async def rename_creator(creator_id: UUID, data: CreatorRename, db: AsyncSession = Depends(get_db)):
+    creator = await CreatorRepo(db).rename(creator_id, data.name)
+    # rename() doesn't eager-load influencers -- re-fetch through the same
+    # eager-loaded path list_creators uses rather than lazy-loading here.
+    creators = await CreatorRepo(db).get_all_with_influencers()
+    refreshed = next(c for c in creators if c.id == creator.id)
+    return CreatorOut(
+        id=refreshed.id,
+        name=refreshed.name,
+        platforms=sorted({i.platform for i in refreshed.influencers}),
+        influencer_count=len(refreshed.influencers),
+    )
+
+
+@router.delete("/creators/{creator_id}", status_code=204)
+async def delete_creator(creator_id: UUID, db: AsyncSession = Depends(get_db)):
+    # Unlinks every associated influencer (ON DELETE SET NULL) rather than
+    # deleting them -- see CreatorRepo.delete. No active-job guard needed,
+    # unlike category/influencer delete, since nothing scraped is touched.
+    await CreatorRepo(db).delete(creator_id)
 
 
 @router.post("/influencers", response_model=InfluencerOut)
@@ -184,6 +237,36 @@ async def get_dashboard_metrics(
     return await DashboardService(db).get_daily_metrics(resolved_start, resolved_end)
 
 
+@router.get("/dashboard/credential-health", response_model=CredentialHealthOut)
+async def get_credential_health(
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    # Same defaulting/bounding as /dashboard/metrics.
+    resolved_end = end_date or date.today()
+    resolved_start = start_date or (resolved_end - timedelta(days=30))
+    if (resolved_end - resolved_start).days > 366:
+        resolved_start = resolved_end - timedelta(days=366)
+    return await DashboardService(db).get_credential_health(resolved_start, resolved_end)
+
+
+@router.get("/dashboard/queue-history", response_model=QueueDepthHistoryOut)
+async def get_queue_history(
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    # Hour-bucketed data can get large fast over a wide range -- bounded
+    # tighter than the day-bucketed endpoints above (31 days of hourly
+    # buckets is already ~750 rows, plenty for a chart).
+    resolved_end = end_date or date.today()
+    resolved_start = start_date or (resolved_end - timedelta(days=7))
+    if (resolved_end - resolved_start).days > 31:
+        resolved_start = resolved_end - timedelta(days=31)
+    return await DashboardService(db).get_queue_history(resolved_start, resolved_end)
+
+
 @router.get("/accounts", response_model=list[InstagramAccountOut])
 async def list_accounts(db: AsyncSession = Depends(get_db)):
     return await InstagramAccountRepo(db).get_all()
@@ -237,6 +320,35 @@ async def delete_account(account_id: UUID, db: AsyncSession = Depends(get_db)):
     await InstagramAccountRepo(db).delete(account_id)
 
 
+@router.get("/youtube-keys", response_model=list[YouTubeApiKeyOut])
+async def list_youtube_keys(db: AsyncSession = Depends(get_db)):
+    return await YouTubeApiKeyRepo(db).get_all()
+
+
+@router.post("/youtube-keys", response_model=YouTubeApiKeyOut)
+async def register_youtube_key(data: RegisterYouTubeApiKeyRequest, db: AsyncSession = Depends(get_db)):
+    # Unlike Instagram account registration, no live validation happens
+    # here -- scripts/register_youtube_api_key.py does that (one cheap
+    # channels.list call) before ever calling the repo. A bad key
+    # registered directly through this endpoint just surfaces as
+    # "invalid" on its first real use, same as any other key going stale.
+    return await YouTubeApiKeyRepo(db).create(data.label, data.api_key)
+
+
+@router.patch("/youtube-keys/{key_id}", response_model=YouTubeApiKeyOut)
+async def update_youtube_key_status(
+    key_id: UUID, data: YouTubeApiKeyStatusUpdate, db: AsyncSession = Depends(get_db)
+):
+    return await YouTubeApiKeyRepo(db).update_status(key_id, data.status)
+
+
+@router.delete("/youtube-keys/{key_id}", status_code=204)
+async def delete_youtube_key(key_id: UUID, db: AsyncSession = Depends(get_db)):
+    # Hard delete -- irreversible; disabling (PATCH status) is the
+    # default/reversible action, same convention as Instagram accounts.
+    await YouTubeApiKeyRepo(db).delete(key_id)
+
+
 @router.get("/alerts", response_model=list[AlertOut])
 async def list_alerts(db: AsyncSession = Depends(get_db)):
     return await get_alerts(db)
@@ -246,6 +358,10 @@ async def list_alerts(db: AsyncSession = Depends(get_db)):
 async def list_posts(
     influencer_id: UUID | None = Query(default=None),
     category_id: UUID | None = Query(default=None),
+    # Repeatable query param (?platforms=instagram&platforms=youtube) --
+    # filtered server-side (not client-side after fetching everything)
+    # since this endpoint is paginated and `total` must reflect the filter.
+    platforms: list[str] | None = Query(default=None),
     sort: str = Query(default="posted_at"),
     sort_dir: str = Query(default="desc"),
     limit: int = Query(default=50, ge=1, le=200),
@@ -255,6 +371,7 @@ async def list_posts(
     rows, total = await PostRepo(db).list_posts(
         influencer_id=influencer_id,
         category_id=category_id,
+        platforms=platforms,
         sort=sort,
         sort_dir=sort_dir,
         limit=limit,

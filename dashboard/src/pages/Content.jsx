@@ -7,10 +7,16 @@ import { getDashboardStatus } from '../services/dashboardService';
 import Button from '../components/common/Button';
 import ErrorState from '../components/common/ErrorState';
 import EmptyState from '../components/common/EmptyState';
+import PlatformBadge from '../components/common/PlatformBadge';
+import PlatformFilter from '../components/common/PlatformFilter';
+import { useAppStore } from '../store/useAppStore';
+import { formatHandle } from '../utils/platform';
 
 const PAGE_SIZE = 50;
 
 export default function Content() {
+  const enabledPlatforms = useAppStore((s) => s.enabledPlatforms);
+
   const [posts, setPosts] = useState([]);
   const [total, setTotal] = useState(0);
   const [categories, setCategories] = useState([]);
@@ -20,23 +26,40 @@ export default function Content() {
 
   const [influencerId, setInfluencerId] = useState('');
   const [categoryId, setCategoryId] = useState('');
+  // Local, further-narrowing scope within whatever the Header's global
+  // filter allows -- see PlatformFilter's docstring. Re-clamped to the
+  // global set below whenever it changes, so this page never holds a
+  // selection the user just turned off app-wide.
+  const [selectedPlatforms, setSelectedPlatforms] = useState(enabledPlatforms);
   const [sort, setSort] = useState('posted_at');
   const [sortDir, setSortDir] = useState('desc');
   const [page, setPage] = useState(0);
 
+  useEffect(() => {
+    setSelectedPlatforms((prev) => prev.filter((p) => enabledPlatforms.includes(p)));
+  }, [enabledPlatforms]);
+
   const loadFilters = useCallback(async () => {
     const [cats, status] = await Promise.all([getCategories(), getDashboardStatus()]);
     setCategories(cats);
-    setInfluencers(status.map((r) => ({ id: r.influencer_id, handle: r.handle })));
+    setInfluencers(status.map((r) => ({ id: r.influencer_id, handle: r.handle, platform: r.platform })));
   }, []);
 
   const loadPosts = useCallback(async () => {
+    if (selectedPlatforms.length === 0) {
+      setPosts([]);
+      setTotal(0);
+      setLoading(false);
+      setError(null);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const data = await listPosts({
         influencer_id: influencerId || undefined,
         category_id: categoryId || undefined,
+        platforms: selectedPlatforms,
         sort,
         sort_dir: sortDir,
         limit: PAGE_SIZE,
@@ -49,7 +72,7 @@ export default function Content() {
     } finally {
       setLoading(false);
     }
-  }, [influencerId, categoryId, sort, sortDir, page]);
+  }, [influencerId, categoryId, selectedPlatforms, sort, sortDir, page]);
 
   useEffect(() => {
     loadFilters();
@@ -58,6 +81,11 @@ export default function Content() {
   useEffect(() => {
     loadPosts();
   }, [loadPosts]);
+
+  const handlePlatformChange = (next) => {
+    setSelectedPlatforms(next);
+    setPage(0);
+  };
 
   const toggleSort = (key) => {
     if (sort === key) {
@@ -90,33 +118,38 @@ export default function Content() {
         </Button>
       </div>
 
-      <div className="flex items-center gap-3 flex-wrap">
-        <select
-          value={influencerId}
-          onChange={(e) => { setInfluencerId(e.target.value); setPage(0); }}
-          className="px-3 py-2.5 rounded-xl text-sm outline-none border"
-          style={{ background: 'var(--color-bg-secondary)', color: 'var(--color-text-primary)', borderColor: 'var(--color-border-default)' }}
-        >
-          <option value="">All influencers</option>
-          {influencers.map((i) => (
-            <option key={i.id} value={i.id}>@{i.handle}</option>
-          ))}
-        </select>
-        <select
-          value={categoryId}
-          onChange={(e) => { setCategoryId(e.target.value); setPage(0); }}
-          className="px-3 py-2.5 rounded-xl text-sm outline-none border"
-          style={{ background: 'var(--color-bg-secondary)', color: 'var(--color-text-primary)', borderColor: 'var(--color-border-default)' }}
-        >
-          <option value="">All categories</option>
-          {categories.map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </select>
+      <div className="flex items-center gap-3 flex-wrap justify-between">
+        <div className="flex items-center gap-3 flex-wrap">
+          <select
+            value={influencerId}
+            onChange={(e) => { setInfluencerId(e.target.value); setPage(0); }}
+            className="px-3 py-2.5 rounded-xl text-sm outline-none border"
+            style={{ background: 'var(--color-bg-secondary)', color: 'var(--color-text-primary)', borderColor: 'var(--color-border-default)' }}
+          >
+            <option value="">All influencers</option>
+            {influencers.map((i) => (
+              <option key={i.id} value={i.id}>{formatHandle(i.handle, i.platform)}</option>
+            ))}
+          </select>
+          <select
+            value={categoryId}
+            onChange={(e) => { setCategoryId(e.target.value); setPage(0); }}
+            className="px-3 py-2.5 rounded-xl text-sm outline-none border"
+            style={{ background: 'var(--color-bg-secondary)', color: 'var(--color-text-primary)', borderColor: 'var(--color-border-default)' }}
+          >
+            <option value="">All categories</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+        <PlatformFilter value={selectedPlatforms} onChange={handlePlatformChange} options={enabledPlatforms} />
       </div>
 
       <div className="card p-5 flex flex-col gap-4">
-        {loading ? (
+        {selectedPlatforms.length === 0 ? (
+          <EmptyState title="No platform selected" message="Select at least one platform above to see its content." />
+        ) : loading ? (
           <div className="h-64 rounded-lg animate-shimmer" style={{ background: 'var(--color-bg-card-hover)' }} />
         ) : posts.length === 0 ? (
           <EmptyState title="No posts found" message="Try clearing your filters, or wait for scrapes to run." />
@@ -127,7 +160,8 @@ export default function Content() {
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
                     <th className="text-left py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-secondary)' }}>Influencer</th>
-                    <th className="text-left py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-secondary)' }}>Caption</th>
+                    <th className="text-left py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-secondary)' }}>Platform</th>
+                    <th className="text-left py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-secondary)' }}>Title / Caption</th>
                     {[
                       { key: 'posted_at', label: 'Posted' },
                       { key: 'likes', label: 'Likes' },
@@ -143,16 +177,31 @@ export default function Content() {
                       </th>
                     ))}
                     <th className="text-left py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-secondary)' }}>Views</th>
-                    <th className="text-left py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-secondary)' }}>Reposts</th>
+                    <th
+                      className="text-left py-2.5 px-3 font-medium cursor-help"
+                      style={{ color: 'var(--color-text-secondary)' }}
+                      title="Instagram only -- YouTube's public API exposes no share/repost count for any video, so this is always blank there, not a bug."
+                    >
+                      Reposts
+                    </th>
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {posts.map((p) => (
                     <tr key={p.id} className="hover:bg-[var(--color-bg-card-hover)]" style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                      <td className="py-2.5 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-primary)' }}>@{p.handle}</td>
-                      <td className="py-2.5 px-3 max-w-[320px] truncate" style={{ color: 'var(--color-text-secondary)' }} title={p.caption ?? undefined}>
-                        {p.caption || '—'}
+                      <td className="py-2.5 px-3 whitespace-nowrap font-medium" style={{ color: 'var(--color-text-primary)' }}>
+                        {formatHandle(p.handle, p.platform)}
+                      </td>
+                      <td className="py-2.5 px-3 whitespace-nowrap">
+                        <PlatformBadge platform={p.platform} />
+                      </td>
+                      <td
+                        className="py-2.5 px-3 max-w-[320px] truncate"
+                        style={{ color: 'var(--color-text-secondary)' }}
+                        title={p.title ? `${p.title}\n\n${p.caption ?? ''}` : (p.caption ?? undefined)}
+                      >
+                        {p.title || p.caption || '—'}
                       </td>
                       <td className="py-2.5 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
                         {format(new Date(p.posted_at), 'MMM d, yyyy')}
@@ -160,7 +209,13 @@ export default function Content() {
                       <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.likes?.toLocaleString() ?? '—'}</td>
                       <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.comments?.toLocaleString() ?? '—'}</td>
                       <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.views?.toLocaleString() ?? '—'}</td>
-                      <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.reposts?.toLocaleString() ?? '—'}</td>
+                      <td
+                        className="py-2.5 px-3"
+                        style={{ color: 'var(--color-text-secondary)' }}
+                        title={p.reposts == null ? "Not publicly available on YouTube" : undefined}
+                      >
+                        {p.reposts?.toLocaleString() ?? '—'}
+                      </td>
                       <td className="py-2.5 px-3">
                         {p.permalink && (
                           <a href={p.permalink} target="_blank" rel="noreferrer">

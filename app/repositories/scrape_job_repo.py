@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlalchemy import Row, case, exists, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import func
 
 from app.core.exceptions import JobNotCancellableError, ScrapeJobNotFoundError
@@ -12,13 +13,29 @@ from app.models.scrape_job import ScrapeJob
 
 ACTIVE_JOB_STATUSES = ("queued", "running", "retry_pending")
 
+# ScrapeJob.scraper_account (a plain Python property, not a mapped column)
+# reads .instagram_account/.youtube_api_key directly -- in async SQLAlchemy
+# an unloaded relationship raises MissingGreenlet instead of lazy-loading,
+# so every query that returns a ScrapeJob to a caller that might read
+# scraper_account (i.e. anything mapped through ScrapeJobOut) must eager-load
+# both here.
+_WITH_SCRAPER_ACCOUNT = (
+    selectinload(ScrapeJob.instagram_account),
+    selectinload(ScrapeJob.youtube_api_key),
+)
+
 
 class ScrapeJobRepo:
     def __init__(self, session: AsyncSession):
         self.session = session
 
     async def get_all(self) -> Sequence[ScrapeJob]:
-        result = await self.session.execute(select(ScrapeJob).order_by(ScrapeJob.created_at.desc()))
+        stmt = (
+            select(ScrapeJob)
+            .options(*_WITH_SCRAPER_ACCOUNT)
+            .order_by(ScrapeJob.created_at.desc())
+        )
+        result = await self.session.execute(stmt)
         return result.scalars().all()
 
     async def create(self, influencer_id: UUID) -> ScrapeJob:
@@ -132,6 +149,7 @@ class ScrapeJobRepo:
     async def get_by_influencer(self, influencer_id: UUID, limit: int = 50) -> Sequence[ScrapeJob]:
         stmt = (
             select(ScrapeJob)
+            .options(*_WITH_SCRAPER_ACCOUNT)
             .where(ScrapeJob.influencer_id == influencer_id)
             .order_by(ScrapeJob.created_at.desc())
             .limit(limit)
@@ -151,6 +169,7 @@ class ScrapeJobRepo:
         """
         stmt = (
             select(ScrapeJob)
+            .options(*_WITH_SCRAPER_ACCOUNT)
             .distinct(ScrapeJob.influencer_id)
             .order_by(ScrapeJob.influencer_id, ScrapeJob.created_at.desc())
         )
@@ -164,18 +183,35 @@ class ScrapeJobRepo:
         range_start = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=timezone.utc)
         range_end = datetime.combine(end_date, datetime.min.time()).replace(tzinfo=timezone.utc) + timedelta(days=1)
         day = func.date_trunc("day", ScrapeJob.created_at).label("day")
+        # Joined to Influencer for platform -- one row per (day, status,
+        # platform) triple, so the dashboard can show a per-platform
+        # breakdown (jobs/throughput split by Instagram vs YouTube) instead
+        # of only ever an all-platforms-combined total.
         stmt = (
             select(
                 day,
                 ScrapeJob.status,
+                Influencer.platform,
                 func.count().label("job_count"),
                 func.avg(ScrapeJob.duration_s).label("avg_duration_s"),
+                # min/max alongside avg -- a day where avg looks fine can
+                # still hide a handful of jobs that took far longer, which
+                # the average alone can't surface.
+                func.min(ScrapeJob.duration_s).label("min_duration_s"),
+                func.max(ScrapeJob.duration_s).label("max_duration_s"),
                 func.coalesce(func.sum(ScrapeJob.posts_processed), 0).label("posts_processed"),
                 func.coalesce(func.sum(ScrapeJob.comments_processed), 0).label("comments_processed"),
+                # NULL (not 0) for an all-Instagram group -- quota_units_used
+                # is only ever set on YouTube jobs, and sum() over an
+                # all-NULL group already returns NULL, which is exactly the
+                # "not applicable" signal this should carry.
+                func.sum(ScrapeJob.quota_units_used).label("quota_units_used"),
             )
+            .select_from(ScrapeJob)
+            .join(Influencer, Influencer.id == ScrapeJob.influencer_id)
             .where(ScrapeJob.created_at >= range_start)
             .where(ScrapeJob.created_at < range_end)
-            .group_by(day, ScrapeJob.status)
+            .group_by(day, ScrapeJob.status, Influencer.platform)
             .order_by(day)
         )
         result = await self.session.execute(stmt)

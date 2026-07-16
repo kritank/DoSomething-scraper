@@ -12,6 +12,20 @@ export async function getDashboardMetrics(startDate, endDate) {
   return data;
 }
 
+export async function getCredentialHealth(startDate, endDate) {
+  const { data } = await apiClient.get('/admin/dashboard/credential-health', {
+    params: { start_date: startDate, end_date: endDate },
+  });
+  return data;
+}
+
+export async function getQueueHistory(startDate, endDate) {
+  const { data } = await apiClient.get('/admin/dashboard/queue-history', {
+    params: { start_date: startDate, end_date: endDate },
+  });
+  return data;
+}
+
 export async function getAlerts() {
   const { data } = await apiClient.get('/admin/alerts');
   return data;

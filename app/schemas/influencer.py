@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
@@ -7,8 +7,14 @@ from pydantic import BaseModel, ConfigDict
 class InfluencerCreate(BaseModel):
     handle: str
     category_id: UUID
+    platform: Literal["instagram", "youtube"] = "instagram"
     # Don't pull posts older than this date (omit/null = full history).
     scrape_posts_since: Optional[date] = None
+    # Free-text creator name -- get-or-create-by-name (see
+    # CreatorRepo.get_or_create_by_name), so registering the same
+    # creator's second platform account under the same name links them
+    # automatically. Omit/blank to leave this platform account unlinked.
+    creator_name: Optional[str] = None
 
 
 class InfluencerScrapeSettingsUpdate(BaseModel):
@@ -16,10 +22,13 @@ class InfluencerScrapeSettingsUpdate(BaseModel):
 
 
 class InfluencerDetailsUpdate(BaseModel):
-    # Both optional/partial -- only the fields actually provided get
-    # applied, same convention as CategoryUpdate.
+    # All optional/partial -- only the fields actually provided get
+    # applied, same convention as CategoryUpdate. creator_name is
+    # tri-state: omitted (None) leaves the link untouched; "" (present but
+    # blank) explicitly unlinks; any other value get-or-creates and links.
     handle: Optional[str] = None
     category_id: Optional[UUID] = None
+    creator_name: Optional[str] = None
 
 
 class InfluencerActiveUpdate(BaseModel):
@@ -30,6 +39,8 @@ class InfluencerOut(BaseModel):
     id: UUID
     handle: str
     category_id: UUID
+    platform: str
+    creator_id: Optional[UUID] = None
     is_active: bool
     scrape_posts_since: Optional[date] = None
     backfill_completed: bool

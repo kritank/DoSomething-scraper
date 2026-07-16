@@ -25,14 +25,21 @@ class Comment(Base):
         nullable=False,
         index=True,
     )
-    comment_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    # String(128) not (64) -- YouTube reply IDs are "parentId.childId" and
+    # can exceed 64 characters combined.
+    comment_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     # Null for top-level comments; set to the parent's comment_id for a reply.
-    parent_comment_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    parent_comment_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
 
     username: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_from_creator: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    # Platform-stable author identifier (YouTube author channel ID). Display
+    # names aren't unique on YouTube, so is_from_creator there compares this
+    # against Influencer.platform_user_id, not username. Null for Instagram
+    # rows, which compare usernames instead (see JobProcessor._comment_row).
+    author_external_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     author_profile_pic_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     author_is_private: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 

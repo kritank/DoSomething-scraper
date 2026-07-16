@@ -2,17 +2,21 @@ import React, { useMemo, useState } from 'react';
 import { ArrowUpDown, Search } from 'lucide-react';
 import { format } from 'date-fns';
 import StatusBadge from '../common/StatusBadge';
+import PlatformBadge from '../common/PlatformBadge';
 import Input from '../common/Input';
 import EmptyState from '../common/EmptyState';
+import { formatHandle } from '../../utils/platform';
 
 const COLUMNS = [
   { key: 'category_name', label: 'Category' },
   { key: 'handle', label: 'Influencer' },
+  { key: 'platform', label: 'Platform' },
   { key: 'last_job_status', label: 'Last Scrape' },
   { key: 'last_job_finished_at', label: 'When' },
   { key: 'last_job_duration_s', label: 'Duration' },
   { key: 'last_job_posts_processed', label: 'Posts' },
   { key: 'last_job_comments_processed', label: 'Comments' },
+  { key: 'last_job_scraper_account', label: 'Account' },
 ];
 
 function formatDuration(s) {
@@ -123,7 +127,12 @@ export default function StatusTable({ rows }) {
                   title={row.last_job_error_message ?? undefined}
                 >
                   <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{row.category_name}</td>
-                  <td className="py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-primary)' }}>@{row.handle}</td>
+                  <td className="py-2.5 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-primary)' }}>
+                    {formatHandle(row.handle, row.platform)}
+                  </td>
+                  <td className="py-2.5 px-3">
+                    <PlatformBadge platform={row.platform} />
+                  </td>
                   <td className="py-2.5 px-3"><StatusBadge status={row.last_job_status} /></td>
                   <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>
                     {row.last_job_finished_at ? format(new Date(row.last_job_finished_at), 'MMM d, HH:mm') : '—'}
@@ -136,6 +145,9 @@ export default function StatusTable({ rows }) {
                   </td>
                   <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>
                     {row.last_job_comments_processed ?? '—'}
+                  </td>
+                  <td className="py-2.5 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
+                    {row.last_job_scraper_account ?? '—'}
                   </td>
                   <td className="py-2.5 px-3 text-xs" style={{ color: 'var(--color-text-muted)' }}>
                     {!row.is_active && <span className="mr-2">paused</span>}

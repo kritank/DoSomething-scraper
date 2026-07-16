@@ -3,7 +3,7 @@ import { format, subDays } from 'date-fns';
 import Input from '../common/Input';
 import { cn } from '../../utils/cn';
 
-const PRESETS = [7, 14, 30, 60, 90];
+const PRESETS = [1, 7, 14, 30, 60, 90];
 
 function toIso(d) {
   return format(d, 'yyyy-MM-dd');
@@ -60,7 +60,15 @@ export default function DateRangeSelector({ startDate, endDate, onChange }) {
             type="date"
             value={startDate}
             max={endDate}
-            onChange={(e) => onChange(e.target.value, endDate)}
+            onChange={(e) => {
+              // A native date input fires onChange with an empty string
+              // while the user is still mid-typing (e.g. only the month
+              // segment filled in) -- propagating that immediately set
+              // startDate to '' and fired a fetch with an invalid date
+              // before the user had finished picking one at all. Only
+              // forward a complete value.
+              if (e.target.value) onChange(e.target.value, endDate);
+            }}
             className="w-[150px]"
           />
           <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>to</span>
@@ -69,7 +77,9 @@ export default function DateRangeSelector({ startDate, endDate, onChange }) {
             value={endDate}
             min={startDate}
             max={toIso(new Date())}
-            onChange={(e) => onChange(startDate, e.target.value)}
+            onChange={(e) => {
+              if (e.target.value) onChange(startDate, e.target.value);
+            }}
             className="w-[150px]"
           />
         </div>

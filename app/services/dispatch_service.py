@@ -25,6 +25,7 @@ class DispatchService:
             job_id=job.id,
             influencer_id=influencer.id,
             handle=influencer.handle,
+            platform=influencer.platform,
         )
         await queue.enqueue(message)
         

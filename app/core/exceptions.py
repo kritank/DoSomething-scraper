@@ -50,6 +50,13 @@ class CategoryNotFoundError(NotFoundError):
         super().__init__(f"Category not found: {name_or_id}")
 
 
+class CreatorNotFoundError(NotFoundError):
+    code = "CREATOR_NOT_FOUND"
+
+    def __init__(self, name_or_id: str) -> None:
+        super().__init__(f"Creator not found: {name_or_id}")
+
+
 class ScrapeJobNotFoundError(NotFoundError):
     code = "SCRAPE_JOB_NOT_FOUND"
 
@@ -62,6 +69,13 @@ class InstagramAccountNotFoundError(NotFoundError):
 
     def __init__(self, account_id: str) -> None:
         super().__init__(f"Instagram account not found: {account_id}")
+
+
+class YouTubeApiKeyNotFoundError(NotFoundError):
+    code = "YOUTUBE_API_KEY_NOT_FOUND"
+
+    def __init__(self, key_id: str) -> None:
+        super().__init__(f"YouTube API key not found: {key_id}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -85,6 +99,13 @@ class DuplicateCategoryError(ValidationError):
 
     def __init__(self, name: str) -> None:
         super().__init__(f"Category already exists: {name}")
+
+
+class DuplicateCreatorError(ValidationError):
+    code = "DUPLICATE_CREATOR"
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"Creator already exists: {name}")
 
 
 class QueryNotAllowedError(ValidationError):
@@ -169,6 +190,33 @@ class ScraperTimeoutError(ScraperError):
 
     def __init__(self, handle: str = "") -> None:
         super().__init__(f"Scrape timed out{f' for {handle}' if handle else ''}.")
+
+
+class NoUsableYouTubeKeyError(ScraperError):
+    """Every registered YouTube API key is exhausted, invalid, or disabled --
+    mirrors "no healthy Instagram accounts available": the job never got to
+    attempt anything, so JobProcessor-equivalents route this to
+    retry_pending uncounted against SCRAPER_MAX_RETRIES rather than treating
+    it as a real scrape failure."""
+    code = "NO_USABLE_YOUTUBE_KEY"
+
+    def __init__(self) -> None:
+        super().__init__("No usable YouTube API key available (all exhausted, invalid, or disabled).")
+
+
+class YouTubeResourceGoneError(ScraperError):
+    """A specific YouTube resource is permanently unavailable for a reason
+    that isn't a session/quota problem -- e.g. comments disabled on a
+    video, or a deleted/private channel. Callers decide per-reason whether
+    to skip just that resource or fail the whole job."""
+    code = "YOUTUBE_RESOURCE_GONE"
+
+    def __init__(self, reason: str, resource: str = "") -> None:
+        super().__init__(
+            f"YouTube resource unavailable{f' ({resource})' if resource else ''}: {reason}",
+            reason=reason,
+            resource=resource,
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

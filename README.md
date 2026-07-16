@@ -1,6 +1,6 @@
 # Viralytics
 
-**Viralytics** is a production-grade Instagram Influencer Intelligence Platform. It continuously collects public data from Instagram, computes category-specific benchmarks (e.g., Fitness, Finance, Food), and generates actionable recommendations for creators to improve their content strategy.
+**Viralytics** is a production-grade Influencer Intelligence Platform covering Instagram and YouTube. It continuously collects public data from both platforms, computes category-specific benchmarks (e.g., Fitness, Finance, Food), and generates actionable recommendations for creators to improve their content strategy.
 
 *Note: This is an intelligence and analytics platform, not an influencer marketplace.*
 
@@ -11,8 +11,8 @@
 Viralytics is composed of three primary services running concurrently:
 
 1. **API Service (`main.py`)**: A high-performance FastAPI server providing REST endpoints for dashboards, admin controls, and fetching computed recommendations.
-2. **Worker Process (`app/workers/worker_runner.py`)**: Asynchronous workers consuming the job queue, scraping Instagram via HTTPX, running NLP feature extraction, and updating the database.
-3. **Scheduler (`app/scheduler/runner.py`)**: A lightweight cron-based trigger (APScheduler) that dispatches daily scraping jobs for all active influencers.
+2. **Worker Process (`app/workers/worker_runner.py`)**: Asynchronous workers consuming the job queue and running one of two platform-specific processors per job -- `JobProcessor` (Instagram, scraped via a pooled browser session) or `YouTubeJobProcessor` (YouTube, via the official Data API v3) -- followed by shared NLP feature extraction and database writes. Both platforms write into the same core tables (influencers, posts, comments, snapshots, feature_store), so benchmarking/recommendations work identically across either.
+3. **Scheduler (`app/scheduler/runner.py`)**: A lightweight cron-based trigger (APScheduler) that dispatches daily scraping jobs for all active influencers, regardless of platform.
 
 ### Tech Stack
 - **Web Framework**: FastAPI (Python 3.13)
@@ -86,6 +86,28 @@ You'll be prompted for the password (prefer this over `--password` on the comman
 which lands in shell history). Register more than one account to spread load across the
 pool -- each gets its own persistent user-agent and locale/timezone pairing.
 
+### 5b. Register YouTube API Keys (optional -- only needed to scrape YouTube)
+YouTube channels are scraped via the official YouTube Data API v3, not a browser session --
+no login, no proxies, no 2FA. Generate an API key in a Google Cloud project (APIs & Services
+> Credentials, with "YouTube Data API v3" enabled), then register it:
+```bash
+uv run python scripts/register_youtube_api_key.py --label my-gcp-project
+```
+You'll be prompted for the key (prefer this over `--api-key` on the command line). The script
+validates it with one live call before saving. Each key gets 10,000 quota units/day
+(configurable via `YOUTUBE_DAILY_QUOTA_PER_KEY`); register more than one key to raise the
+number of channels you can scrape per day -- `YouTubeJobProcessor` rotates across the pool
+automatically as keys run low. When registering an influencer, pass `"platform": "youtube"`
+to `POST /api/v1/admin/influencers` (handle accepts a bare name, `@name`, or a full channel
+URL). See `docs/YOUTUBE_SCRAPER_DESIGN.md` for the full design.
+
+**Known accuracy limits (YouTube Data API, not fixable client-side):**
+- Subscriber counts are rounded to 3 significant figures by the API itself.
+- No dislike count, no share/repost count, no save count -- these are not public; stored as
+  `NULL`, never a fabricated `0`.
+- No verification-badge flag and no creator-hearted-comment flag (not exposed by the API).
+- "Shorts" classification is a duration heuristic (≤183s), not an authoritative flag.
+
 ### 6. Run the Application
 You can run the entire stack (API, Worker, Scheduler, DB, Queue, Nginx) via Docker Compose:
 ```bash
@@ -116,8 +138,9 @@ Interactive Swagger documentation is available at `http://localhost:8000/docs`.
 
 - `GET /health` & `GET /ready`: Infrastructure health checks.
 - `POST /api/v1/admin/categories`: Create a new influencer category.
-- `POST /api/v1/admin/influencers`: Register a new influencer handle.
-- `POST /api/v1/admin/scrape?influencer_id=...`: Manually trigger a scrape job for an influencer.
+- `POST /api/v1/admin/influencers`: Register a new influencer handle (`platform`: `"instagram"` | `"youtube"`, defaults to Instagram).
+- `POST /api/v1/admin/scrape?influencer_id=...`: Manually trigger a scrape job for an influencer -- routes to the Instagram or YouTube scraper based on the influencer's `platform`.
+- `GET /api/v1/admin/youtube-keys` / `POST /api/v1/admin/youtube-keys`: Manage the YouTube API key pool.
 - `GET /api/v1/benchmarks/{category_id}`: Fetch the latest computed benchmark for a category.
 - `GET /api/v1/recommendations/{influencer_id}`: Fetch personalized recommendations for an influencer.
 

@@ -60,6 +60,18 @@ class ProfileSnapshot(Base):
     has_ar_effects: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     business_category_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
+    # YouTube-only: a channel's lifetime view count has no Instagram
+    # equivalent. BigInteger -- large channels exceed Integer's ~2.1B range.
+    total_views: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # True when statistics.hiddenSubscriberCount is set -- distinguishes
+    # "0 subscribers" (followers=0, this false) from "count not disclosed"
+    # (followers=0, this true), so it's never mistaken for a dead channel.
+    subscribers_hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Platform-specific extras that don't warrant their own column (channel
+    # creation date, country, keywords, madeForKids, topic categories) --
+    # see docs/YOUTUBE_SCRAPER_DESIGN.md §3.1. Null for Instagram rows.
+    platform_metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -92,16 +104,21 @@ class PostMetricsSnapshot(Base):
     )
     scraped_at: Mapped[date] = mapped_column(Date, nullable=False, server_default=func.current_date())
 
-    likes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    comments: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # NULL (not 0) whenever the platform doesn't publicly expose the metric
+    # for this item -- e.g. a YouTube video with likes hidden by the
+    # creator, or comments disabled. Instagram rows always have real
+    # (possibly zero) values here; only YouTube rows are expected to be NULL.
+    likes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    comments: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # NULL (not 0) for media types with no public view metric at all --
     # see JobProcessor._record_metrics_snapshot. BigInteger since a viral
     # reel's play count routinely exceeds Integer's ~2.1B range.
     views: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     # Instagram exposes no save_count for other accounts' posts (fully
-    # private to the owner via Insights). reshare_count is the closest
-    # real, public metric: how many times this reel has been reshared.
-    reposts: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    # private to the owner via Insights); reshare_count is the closest
+    # real, public metric there. YouTube exposes no public share count at
+    # all -- NULL for every YouTube row, never a fabricated 0.
+    reposts: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

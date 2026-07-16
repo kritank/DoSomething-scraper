@@ -10,11 +10,13 @@ export async function createCategory(name) {
   return data;
 }
 
-export async function createInfluencer(handle, categoryId, scrapePostsSince) {
+export async function createInfluencer(handle, categoryId, scrapePostsSince, platform = 'instagram', creatorName = '') {
   const { data } = await apiClient.post('/admin/influencers', {
     handle,
     category_id: categoryId,
     scrape_posts_since: scrapePostsSince || null,
+    platform,
+    creator_name: creatorName || undefined,
   });
   return data;
 }
@@ -42,11 +44,15 @@ export async function updateInfluencerActive(influencerId, isActive) {
   return data;
 }
 
-export async function updateInfluencerDetails(influencerId, { handle, categoryId }) {
-  const { data } = await apiClient.patch(`/admin/influencers/${influencerId}/details`, {
-    handle,
-    category_id: categoryId,
-  });
+export async function updateInfluencerDetails(influencerId, { handle, categoryId, creatorName }) {
+  const payload = { handle, category_id: categoryId };
+  // Tri-state on the backend: omit the key entirely to leave the creator
+  // link untouched (undefined here, not sent) -- only include it when the
+  // caller explicitly passed a value (including "" to unlink).
+  if (creatorName !== undefined) {
+    payload.creator_name = creatorName;
+  }
+  const { data } = await apiClient.patch(`/admin/influencers/${influencerId}/details`, payload);
   return data;
 }
 

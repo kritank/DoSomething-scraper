@@ -11,6 +11,7 @@ from app.models.category import Category
 from app.models.influencer import Influencer
 from app.models.post import Post
 from app.models.snapshot import PostMetricsSnapshot, ProfileSnapshot
+from app.repositories.creator_repo import CreatorRepo
 from app.schemas.influencer import (
     InfluencerActiveUpdate,
     InfluencerCreate,
@@ -33,21 +34,62 @@ class InfluencerRepo:
         return result.scalars().all()
 
     async def get_all_with_category(self) -> Sequence[Influencer]:
-        """Eager-loads Influencer.category so the dashboard can read
-        category_name without an N+1 lazy-load per influencer."""
+        """Eager-loads Influencer.category and .creator so the dashboard
+        can read category_name/creator_name without an N+1 lazy-load per
+        influencer."""
         stmt = (
             select(Influencer)
-            .options(selectinload(Influencer.category))
+            .options(selectinload(Influencer.category), selectinload(Influencer.creator))
             .order_by(Influencer.handle)
         )
         result = await self.session.execute(stmt)
         return result.scalars().all()
 
+    @staticmethod
+    def normalize_handle(platform: str, raw_handle: str) -> str:
+        """YouTube accepts a bare name, an "@name" handle, or a full
+        channel URL at registration time -- normalized here to the single
+        "@name" form the API's forHandle param expects (see
+        YouTubeClient.get_channel), so downstream code never has to guess
+        which form a given influencer row was created with. Instagram
+        handles are passed through untouched -- InstagramClient uses them
+        directly as a username path segment, no "@" involved."""
+        if platform != "youtube":
+            return raw_handle
+
+        handle = raw_handle.strip()
+        for prefix in (
+            "https://www.youtube.com/",
+            "http://www.youtube.com/",
+            "https://youtube.com/",
+            "http://youtube.com/",
+            "www.youtube.com/",
+            "youtube.com/",
+        ):
+            if handle.startswith(prefix):
+                handle = handle[len(prefix):]
+                break
+        handle = handle.strip("/")
+        if not handle.startswith("@"):
+            handle = f"@{handle}"
+        return handle
+
     async def create(self, data: InfluencerCreate) -> Influencer:
+        handle = self.normalize_handle(data.platform, data.handle)
+        # Resolved before constructing the Influencer row -- if the
+        # get-or-create races another request on a duplicate name and
+        # rolls back, nothing else in this transaction is lost yet.
+        creator_id = None
+        if data.creator_name and data.creator_name.strip():
+            creator = await CreatorRepo(self.session).get_or_create_by_name(data.creator_name)
+            creator_id = creator.id
+
         influencer = Influencer(
-            handle=data.handle,
+            handle=handle,
             category_id=data.category_id,
+            platform=data.platform,
             scrape_posts_since=data.scrape_posts_since,
+            creator_id=creator_id,
         )
         self.session.add(influencer)
         try:
@@ -55,7 +97,7 @@ class InfluencerRepo:
             return influencer
         except IntegrityError:
             await self.session.rollback()
-            raise DuplicateInfluencerError(data.handle)
+            raise DuplicateInfluencerError(handle)
 
     async def update_scrape_settings(
         self, influencer_id: UUID, data: InfluencerScrapeSettingsUpdate
@@ -82,9 +124,15 @@ class InfluencerRepo:
         SQL fix for a mistyped handle earlier."""
         influencer = await self.get_by_id(influencer_id)
         if data.handle is not None:
-            influencer.handle = data.handle
+            influencer.handle = self.normalize_handle(influencer.platform, data.handle)
         if data.category_id is not None:
             influencer.category_id = data.category_id
+        if data.creator_name is not None:
+            if data.creator_name.strip():
+                creator = await CreatorRepo(self.session).get_or_create_by_name(data.creator_name)
+                influencer.creator_id = creator.id
+            else:
+                influencer.creator_id = None
         try:
             await self.session.commit()
         except IntegrityError:

@@ -8,6 +8,10 @@ class ScrapeJobMessage(BaseModel):
     job_id: UUID
     influencer_id: UUID
     handle: str
+    # "instagram" | "youtube" -- routes to the matching JobProcessor in
+    # worker_runner._run_one. Defaulted so a message already in flight
+    # during a deploy still decodes on the new worker image.
+    platform: str = "instagram"
 
 
 class QueueBackend(Protocol):

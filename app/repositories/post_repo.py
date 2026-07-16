@@ -35,6 +35,7 @@ class PostRepo:
         self,
         influencer_id: Optional[UUID] = None,
         category_id: Optional[UUID] = None,
+        platforms: Optional[list[str]] = None,
         sort: str = "posted_at",
         sort_dir: str = "desc",
         limit: int = 50,
@@ -42,12 +43,16 @@ class PostRepo:
     ) -> tuple[list[dict], int]:
         latest = self._latest_snapshot_subquery()
 
-        base = select(Post).join(Influencer, Influencer.id == Post.influencer_id)
-        if influencer_id is not None:
-            base = base.where(Post.influencer_id == influencer_id)
-        if category_id is not None:
-            base = base.where(Influencer.category_id == category_id)
+        def _apply_filters(stmt):
+            if influencer_id is not None:
+                stmt = stmt.where(Post.influencer_id == influencer_id)
+            if category_id is not None:
+                stmt = stmt.where(Influencer.category_id == category_id)
+            if platforms:
+                stmt = stmt.where(Influencer.platform.in_(platforms))
+            return stmt
 
+        base = _apply_filters(select(Post).join(Influencer, Influencer.id == Post.influencer_id))
         count_stmt = select(func.count()).select_from(base.subquery())
         total = (await self.session.execute(count_stmt)).scalar_one()
 
@@ -56,12 +61,14 @@ class PostRepo:
         )
         order = sort_col.desc() if sort_dir == "desc" else sort_col.asc()
 
-        stmt = (
+        stmt = _apply_filters(
             select(
                 Post.id,
                 Post.influencer_id,
                 Influencer.handle,
+                Influencer.platform,
                 Post.shortcode,
+                Post.title,
                 Post.caption,
                 Post.permalink,
                 Post.posted_at,
@@ -73,12 +80,7 @@ class PostRepo:
             .select_from(Post)
             .join(Influencer, Influencer.id == Post.influencer_id)
             .outerjoin(latest, latest.c.post_id == Post.id)
-        )
-        if influencer_id is not None:
-            stmt = stmt.where(Post.influencer_id == influencer_id)
-        if category_id is not None:
-            stmt = stmt.where(Influencer.category_id == category_id)
-        stmt = stmt.order_by(order).limit(limit).offset(offset)
+        ).order_by(order).limit(limit).offset(offset)
 
         result = await self.session.execute(stmt)
         rows = [dict(r._mapping) for r in result.all()]

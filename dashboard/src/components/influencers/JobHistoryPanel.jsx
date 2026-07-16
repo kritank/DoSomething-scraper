@@ -86,7 +86,7 @@ export default function JobHistoryPanel({ influencerId }) {
       <table className="w-full text-xs">
         <thead>
           <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-            {['Status', 'Started', 'Duration', 'Posts', 'Comments', 'Retries', 'Error', ''].map((h) => (
+            {['Status', 'Started', 'Duration', 'Posts', 'Comments', 'Account', 'Retries', 'Error', ''].map((h) => (
               <th key={h} className="text-left py-2 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
                 {h}
               </th>
@@ -103,6 +103,7 @@ export default function JobHistoryPanel({ influencerId }) {
               <td className="py-2 px-3" style={{ color: 'var(--color-text-secondary)' }}>{formatDuration(job.duration_s)}</td>
               <td className="py-2 px-3" style={{ color: 'var(--color-text-secondary)' }}>{job.posts_processed}</td>
               <td className="py-2 px-3" style={{ color: 'var(--color-text-secondary)' }}>{job.comments_processed}</td>
+              <td className="py-2 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>{job.scraper_account ?? '—'}</td>
               <td className="py-2 px-3" style={{ color: 'var(--color-text-secondary)' }}>{job.retry_count}</td>
               <td className="py-2 px-3 max-w-[240px] truncate" style={{ color: 'var(--color-text-muted)' }} title={job.error_message ?? undefined}>
                 {job.error_message ?? '—'}

@@ -9,7 +9,9 @@ class PostOut(BaseModel):
     id: UUID
     influencer_id: UUID
     handle: str
+    platform: str
     shortcode: str
+    title: Optional[str] = None
     caption: Optional[str] = None
     permalink: Optional[str] = None
     posted_at: datetime

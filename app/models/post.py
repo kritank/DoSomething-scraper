@@ -35,9 +35,14 @@ class Post(Base):
     media_pk: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     caption: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # YouTube separates a video's title from its description -- null for
+    # Instagram rows, where caption already covers both. Deliberately not
+    # concatenated into caption: that would corrupt caption_length/
+    # word_count feature-store benchmarks shared across platforms.
+    title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     hashtags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     mentions: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
-    
+
     posted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     permalink: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -51,6 +56,11 @@ class Post(Base):
     coauthor_producers: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     tagged_usernames: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     counts_disabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Platform-specific fields that don't warrant their own column (YouTube
+    # tags, definition/dimension, category/topics, madeForKids, etc.) --
+    # see docs/YOUTUBE_SCRAPER_DESIGN.md §3.2. Null for Instagram rows.
+    platform_metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
