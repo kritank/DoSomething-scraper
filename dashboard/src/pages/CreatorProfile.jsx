@@ -554,7 +554,15 @@ function Th({ children, infoTip }) {
     <th className="text-left py-2.5 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
       <span className="inline-flex items-center gap-1">
         {children}
-        {infoTip && <InfoTip text={infoTip} />}
+        {/* side="bottom" -- this header sits at the top of a table wrapped
+            in overflow-x-auto, which (per the CSS overflow spec) computes
+            overflow-y to auto too even though it's never set explicitly.
+            InfoTip's default side="top" pops the tooltip up above the
+            header, past the wrapper's top edge, where that implicit
+            overflow-y:auto clips it -- invisible even though it's
+            technically rendered. Popping down instead keeps it inside the
+            scrollable area. */}
+        {infoTip && <InfoTip text={infoTip} side="bottom" />}
       </span>
     </th>
   );

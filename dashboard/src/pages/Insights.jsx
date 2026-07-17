@@ -4,6 +4,7 @@ import { getDashboardStatus } from '../services/dashboardService';
 import { getBenchmark, getRecommendations } from '../services/insightsService';
 import EmptyState from '../components/common/EmptyState';
 import KPICard from '../components/common/KPICard';
+import { formatHandle } from '../utils/platform';
 
 const PRIORITY_COLOR = {
   high: 'var(--color-danger)',
@@ -44,7 +45,7 @@ export default function Insights() {
     (async () => {
       const [cats, status] = await Promise.all([getCategories(), getDashboardStatus()]);
       setCategories(cats);
-      setInfluencers(status.map((r) => ({ id: r.influencer_id, handle: r.handle })));
+      setInfluencers(status.map((r) => ({ id: r.influencer_id, handle: r.handle, platform: r.platform })));
     })();
   }, []);
 
@@ -137,7 +138,7 @@ export default function Insights() {
           <SelectBox
             value={influencerId}
             onChange={handleInfluencerChange}
-            options={influencers.map((i) => ({ id: i.id, label: `@${i.handle}` }))}
+            options={influencers.map((i) => ({ id: i.id, label: formatHandle(i.handle, i.platform) }))}
             placeholder="Select an influencer…"
           />
         </div>

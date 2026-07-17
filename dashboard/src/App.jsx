@@ -10,6 +10,7 @@ import CreatorProfile from './pages/CreatorProfile';
 import Content from './pages/Content';
 import Insights from './pages/Insights';
 import Export from './pages/Export';
+import CommandPalette from './components/common/CommandPalette';
 
 export default function App() {
   return (
@@ -28,6 +29,7 @@ export default function App() {
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        <CommandPalette />
       </ApiKeyGate>
     </BrowserRouter>
   );
