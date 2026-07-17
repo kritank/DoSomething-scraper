@@ -5,6 +5,11 @@ export async function getCreators() {
   return data;
 }
 
+export async function getCreator(creatorId) {
+  const { data } = await apiClient.get(`/admin/creators/${creatorId}`);
+  return data;
+}
+
 export async function renameCreator(creatorId, name) {
   const { data } = await apiClient.patch(`/admin/creators/${creatorId}`, { name });
   return data;

@@ -31,7 +31,7 @@ from app.schemas.youtube_api_key import (
     YouTubeApiKeyStatusUpdate,
 )
 from app.schemas.category import CategoryCreate, CategoryOut, CategoryUpdate
-from app.schemas.creator import CreatorOut, CreatorRename
+from app.schemas.creator import CreatorDetailOut, CreatorInfluencerRef, CreatorOut, CreatorRename
 from app.schemas.dashboard import (
     CredentialHealthOut,
     DashboardMetricsOut,
@@ -46,7 +46,7 @@ from app.schemas.influencer import (
     InfluencerOut,
     InfluencerScrapeSettingsUpdate,
 )
-from app.core.exceptions import ActiveJobExistsError
+from app.core.exceptions import ActiveJobExistsError, CreatorNotFoundError
 from app.schemas.alert import AlertOut
 from app.schemas.instagram_account import AccountStatusUpdate, InstagramAccountOut
 from app.schemas.post import PostListOut, PostOut
@@ -108,6 +108,26 @@ async def list_creators(db: AsyncSession = Depends(get_db)):
         )
         for c in creators
     ]
+
+
+@router.get("/creators/{creator_id}", response_model=CreatorDetailOut)
+async def get_creator(creator_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Powers the combined cross-platform creator view -- just the name and
+    each linked influencer's id/platform/handle, so the frontend can fetch
+    each one's full stats through the existing single-influencer endpoints
+    rather than this duplicating that aggregation."""
+    creators = await CreatorRepo(db).get_all_with_influencers()
+    creator = next((c for c in creators if c.id == creator_id), None)
+    if creator is None:
+        raise CreatorNotFoundError(str(creator_id))
+    return CreatorDetailOut(
+        id=creator.id,
+        name=creator.name,
+        influencers=[
+            CreatorInfluencerRef(influencer_id=i.id, platform=i.platform, handle=i.handle)
+            for i in creator.influencers
+        ],
+    )
 
 
 @router.patch("/creators/{creator_id}", response_model=CreatorOut)

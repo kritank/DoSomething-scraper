@@ -4,7 +4,7 @@ import { format } from 'date-fns';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { getDashboardStatus } from '../services/dashboardService';
-import { getCreators } from '../services/creatorService';
+import { getCreators, renameCreator, deleteCreator } from '../services/creatorService';
 import {
   getCategories,
   triggerScrape,
@@ -74,6 +74,8 @@ export default function Influencers() {
   const [expandedHistory, setExpandedHistory] = useState(() => new Set());
   const [editingCategoryId, setEditingCategoryId] = useState(null);
   const [categoryNameDraft, setCategoryNameDraft] = useState('');
+  const [editingCreatorId, setEditingCreatorId] = useState(null);
+  const [creatorNameDraft, setCreatorNameDraft] = useState('');
   const [editingInfluencerId, setEditingInfluencerId] = useState(null);
   const [influencerDraft, setInfluencerDraft] = useState({ handle: '', categoryId: '', scrapePostsSince: '', creatorName: '' });
   const [savingEdit, setSavingEdit] = useState(false);
@@ -230,6 +232,49 @@ export default function Influencers() {
       // apiClient's interceptor already toasts the error detail.
     } finally {
       setSavingEdit(false);
+    }
+  };
+
+  const startEditCreator = (creatorId, currentName) => {
+    setEditingCreatorId(creatorId);
+    setCreatorNameDraft(currentName);
+  };
+
+  const cancelEditCreator = () => {
+    setEditingCreatorId(null);
+    setCreatorNameDraft('');
+  };
+
+  const handleSaveCreator = async (creatorId, currentName) => {
+    const name = creatorNameDraft.trim();
+    if (!name || savingEdit) return;
+    if (name === currentName) {
+      cancelEditCreator();
+      return;
+    }
+    setSavingEdit(true);
+    try {
+      await renameCreator(creatorId, name);
+      toast.success(`Renamed to "${name}"`);
+      cancelEditCreator();
+      load();
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const handleDeleteCreator = async (creatorId, name, influencerCount) => {
+    if (!window.confirm(`Unlink "${name}"'s ${influencerCount} platform accounts from each other? Each account and all its scraped data stays untouched -- this only removes the cross-platform grouping.`)) {
+      return;
+    }
+    try {
+      await deleteCreator(creatorId);
+      toast.success(`"${name}" unlinked`);
+      load();
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
     }
   };
 
@@ -393,10 +438,55 @@ export default function Influencers() {
                         style={{ background: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
                       >
                         <div className="flex items-center gap-1.5 px-1 pb-1">
-                          <Link2 className="w-3 h-3" style={{ color: 'var(--color-accent)' }} />
-                          <span className="text-xs font-semibold" style={{ color: 'var(--color-accent)' }}>
-                            {group.creatorName} <span style={{ color: 'var(--color-text-muted)', fontWeight: 400 }}>— linked across {group.rows.length} platforms</span>
-                          </span>
+                          <Link2 className="w-3 h-3 shrink-0" style={{ color: 'var(--color-accent)' }} />
+                          {editingCreatorId === group.rows[0].creator_id ? (
+                            <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                              <Input
+                                value={creatorNameDraft}
+                                onChange={(e) => setCreatorNameDraft(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && handleSaveCreator(group.rows[0].creator_id, group.creatorName)}
+                                autoFocus
+                                className="h-7 text-xs"
+                              />
+                              <Button variant="ghost" size="sm" title="Save" onClick={() => handleSaveCreator(group.rows[0].creator_id, group.creatorName)} loading={savingEdit}>
+                                <Check className="w-3.5 h-3.5" style={{ color: 'var(--color-success)' }} />
+                              </Button>
+                              <Button variant="ghost" size="sm" title="Cancel" onClick={cancelEditCreator}>
+                                <X className="w-3.5 h-3.5" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <>
+                              <Link
+                                to={`/creators/${group.rows[0].creator_id}`}
+                                className="text-xs font-semibold hover:underline"
+                                style={{ color: 'var(--color-accent)' }}
+                              >
+                                {group.creatorName}
+                              </Link>
+                              <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                                — linked across {group.rows.length} platforms
+                              </span>
+                              <div className="flex items-center gap-0.5 ml-auto">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  title="Rename creator"
+                                  onClick={() => startEditCreator(group.rows[0].creator_id, group.creatorName)}
+                                >
+                                  <Pencil className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  title="Unlink creator (keeps both accounts)"
+                                  onClick={() => handleDeleteCreator(group.rows[0].creator_id, group.creatorName, group.rows.length)}
+                                >
+                                  <Trash2 className="w-3 h-3" style={{ color: 'var(--color-danger)' }} />
+                                </Button>
+                              </div>
+                            </>
+                          )}
                         </div>
                         <div className="flex flex-col divide-y" style={{ borderColor: 'var(--color-border-subtle)' }}>
                           {group.rows.map((row) => (
