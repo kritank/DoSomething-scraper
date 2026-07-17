@@ -82,7 +82,20 @@ export default function CredentialHealthChart({ buckets }) {
           />
           <Legend wrapperStyle={{ fontSize: 12 }} formatter={(v) => v.replaceAll('_', ' ')} />
           {statuses.map((status) => (
-            <Bar key={status} dataKey={status} stackId="health" fill={STATUS_COLORS[status] ?? 'var(--color-text-muted)'} radius={[0, 0, 0, 0]} />
+            <Bar
+              key={status}
+              dataKey={status}
+              stackId="health"
+              fill={STATUS_COLORS[status] ?? 'var(--color-text-muted)'}
+              radius={[0, 0, 0, 0]}
+              // A brief checkpoint/login-failed blip can be a handful of
+              // snapshots next to a triple-digit "active" count for the
+              // same day -- stacked at true scale that segment renders as
+              // a sub-pixel sliver, hiding exactly the incident this chart
+              // exists to surface. Floor it to a visible minimum height;
+              // the tooltip still reports the real count.
+              minPointSize={3}
+            />
           ))}
         </BarChart>
       </ResponsiveContainer>

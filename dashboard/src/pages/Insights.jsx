@@ -54,7 +54,7 @@ export default function Insights() {
     setBenchmarkMissing(false);
     try {
       setBenchmark(await getBenchmark(id));
-    } catch (err) {
+    } catch {
       setBenchmark(null);
       setBenchmarkMissing(true);
     } finally {

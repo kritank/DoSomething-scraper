@@ -7,7 +7,7 @@ export const ALL_PLATFORMS = ['instagram', 'youtube'];
 
 export const useAppStore = create(
   persist(
-    (set, get) => ({
+    (set) => ({
       apiKey: null,
       setApiKey: (apiKey) => set({ apiKey }),
       clearApiKey: () => set({ apiKey: null }),

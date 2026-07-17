@@ -47,6 +47,17 @@ function CustomTooltip({ active, label, payload, metric, isEarnings, clustersByD
           <div className="flex items-center gap-1.5 font-medium" style={{ color: EVENT_COLORS[e.type] ?? 'var(--color-text-primary)' }}>
             <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: EVENT_COLORS[e.type] ?? 'var(--color-text-muted)' }} />
             {EVENT_TYPE_LABELS[e.type] ?? e.type}
+            {/* Events snap to the nearest chart point (see nearestPointDate
+                above), which can be days or weeks off from when the event
+                actually happened when snapshots are sparse. Show the
+                event's own date whenever it doesn't match the header's
+                axis date, so the tooltip doesn't imply the event happened
+                on a day it didn't. */}
+            {e.date !== label && (
+              <span className="ml-auto font-normal shrink-0" style={{ color: 'var(--color-text-muted)' }}>
+                {format(parseISO(e.date), 'MMM d')}
+              </span>
+            )}
           </div>
           <div style={{ color: 'var(--color-text-primary)' }}>{e.label}</div>
         </div>

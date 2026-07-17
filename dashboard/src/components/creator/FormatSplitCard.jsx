@@ -80,6 +80,12 @@ export default function FormatSplitCard({ breakdown, loading, days, onDaysChange
 }
 
 function FormatColumn({ label, color, share, stats }) {
+  // avg_views can come back non-zero even when total_views is 0 -- some
+  // backend paths fall back to a likes-based average when view counts
+  // aren't available for a format, which reads as broken next to a "Views:
+  // 0" tile right beside it. Suppress the average in that case instead of
+  // showing two numbers that contradict each other.
+  const avgViews = stats?.total_views ? stats.avg_views : null;
   return (
     <div className="rounded-xl p-3 flex flex-col gap-1.5" style={{ background: 'var(--color-bg-secondary)' }}>
       <div className="flex items-center gap-1.5">
@@ -90,7 +96,7 @@ function FormatColumn({ label, color, share, stats }) {
       <div className="grid grid-cols-3 gap-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
         <Stat label="Posts" value={stats?.post_count ?? 0} />
         <Stat label="Views" value={formatCompactNumber(stats?.total_views ?? 0)} />
-        <Stat label="Avg views" value={stats?.avg_views != null ? formatCompactNumber(stats.avg_views) : '—'} />
+        <Stat label="Avg views" value={avgViews != null ? formatCompactNumber(avgViews) : '—'} />
       </div>
     </div>
   );
