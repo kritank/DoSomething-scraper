@@ -8,6 +8,7 @@ growth windows, NULL-vs-0 metric semantics).
 
 from __future__ import annotations
 
+import re
 import statistics
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -18,17 +19,41 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.analytics.earnings import youtube_rpm_range
 from app.models.influencer import Influencer
 from app.models.post import Post
 from app.models.snapshot import PostMetricsSnapshot, ProfileSnapshot
 from app.schemas.creator_stats import (
+    AboutOut,
     CreatorSummary,
     EngagementOut,
+    FormatBreakdownOut,
+    FormatStats,
     GrowthPoint,
+    KeyEvent,
     PostPerformance,
     RankingEntry,
     RankingsOut,
 )
+
+# Instagram Reels ("clips") are short-form; everything else (feed photos,
+# carousels, IGTV) is long_form -- IGTV in particular is long video, not a
+# short. YouTube's product_type is already "video"|"short"|"live" (see
+# YouTubeVideo.media_label in app/schemas/youtube.py), so it maps through
+# almost as-is.
+_INSTAGRAM_SHORT_FORM_PRODUCT_TYPES = {"clips"}
+
+
+def content_format(platform: str, product_type: Optional[str]) -> str:
+    """'long_form' | 'short_form' | 'live'. Pure function, unit-testable --
+    see docs/CREATOR_STATS_V2_PLAN.md Phase A1."""
+    if platform == "youtube":
+        if product_type == "short":
+            return "short_form"
+        if product_type == "live":
+            return "live"
+        return "long_form"
+    return "short_form" if product_type in _INSTAGRAM_SHORT_FORM_PRODUCT_TYPES else "long_form"
 
 # A video/post needs at least this many prior posts with usable metrics
 # before an outlier score is meaningful -- otherwise a channel's 3rd-ever
@@ -103,6 +128,43 @@ def _compute_outlier_and_velocity(
         results[point.post_id] = (outlier_score, velocity)
 
     return results
+
+
+# Round-number follower thresholds milestone events are detected against --
+# see _detect_milestones. Capped at 500M since no tracked account will ever
+# cross higher, keeping the scan bounded.
+MILESTONE_THRESHOLDS = [10_000, 50_000, 100_000, 500_000] + [n * 1_000_000 for n in range(1, 501)]
+
+
+def _format_milestone_label(threshold: int) -> str:
+    value = f"{threshold // 1_000_000}M" if threshold >= 1_000_000 else f"{threshold // 1_000}K"
+    return f"Crossed {value} followers"
+
+
+def _detect_milestones(series: list[GrowthPoint]) -> list[KeyEvent]:
+    """Pure function (no DB access) so this is unit-testable in isolation.
+    `series` must be sorted oldest-first (get_growth_series' contract).
+
+    Compares each point against the highest value seen so far (not just
+    the immediately preceding point) so a threshold only ever fires once
+    -- a sub-count that dips below a crossed threshold and climbs back
+    later must not re-fire the same milestone."""
+    events: list[KeyEvent] = []
+    high_water_mark: Optional[int] = None
+    for point in series:
+        if high_water_mark is not None:
+            for threshold in MILESTONE_THRESHOLDS:
+                if high_water_mark < threshold <= (point.value or 0):
+                    events.append(
+                        KeyEvent(
+                            date=point.date,
+                            type="milestone",
+                            label=_format_milestone_label(threshold),
+                            metric_value=float(threshold),
+                        )
+                    )
+        high_water_mark = max(high_water_mark or 0, point.value or 0)
+    return events
 
 
 class CreatorStatsService:
@@ -301,6 +363,9 @@ class CreatorStatsService:
     async def get_growth_series(
         self, influencer_id: UUID, days: int, metric: str
     ) -> list[GrowthPoint]:
+        if metric == "earnings":
+            return await self._get_earnings_series(influencer_id, days)
+
         column = {
             "followers": ProfileSnapshot.followers,
             "total_views": ProfileSnapshot.total_views,
@@ -349,6 +414,37 @@ class CreatorStatsService:
                 )
             )
             previous_value = value
+        return points
+
+    async def _get_earnings_series(self, influencer_id: UUID, days: int) -> list[GrowthPoint]:
+        """Daily estimated-earnings band: each point is that day's view
+        growth times the channel's country RPM range -- a per-day
+        estimate, not a cumulative total. YouTube only (Instagram earnings
+        are per-post, not time-based -- see get_about's docstring in
+        docs/CREATOR_STATS_V2_PLAN.md Phase B1); returns [] for Instagram.
+        """
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None or influencer.platform != "youtube":
+            return []
+
+        latest = await self._closest_snapshot(influencer_id, date.today())
+        country = (latest.platform_metadata or {}).get("country") if latest else None
+        low_rpm, high_rpm = youtube_rpm_range(country)
+
+        views_series = await self.get_growth_series(influencer_id, days=days, metric="total_views")
+        points: list[GrowthPoint] = []
+        for point in views_series:
+            if point.daily_delta is None or point.daily_delta < 0:
+                continue  # first point has no delta yet; a negative delta means a data anomaly, not real "negative views"
+            points.append(
+                GrowthPoint(
+                    date=point.date,
+                    value_low=round(point.daily_delta * low_rpm / 1000, 2),
+                    value_high=round(point.daily_delta * high_rpm / 1000, 2),
+                )
+            )
         return points
 
     async def get_engagement_rate(
@@ -401,7 +497,9 @@ class CreatorStatsService:
             engagement_rate=round(rate, 4), sample_size=len(usable), lookback_posts=last_n_posts
         )
 
-    async def get_post_performance(self, influencer_id: UUID, limit: int = 20) -> list[PostPerformance]:
+    async def get_post_performance(
+        self, influencer_id: UUID, limit: int = 20, content_format_filter: Optional[str] = None
+    ) -> list[PostPerformance]:
         influencer = (
             await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
         ).scalar_one_or_none()
@@ -424,10 +522,13 @@ class CreatorStatsService:
             .subquery("latest_metric")
         )
 
-        # Fetch enough history to seed the outlier rolling median for the
-        # oldest post we'll actually return, then only report on the
-        # newest `limit` of them.
-        fetch_count = limit + OUTLIER_LOOKBACK_POSTS
+        # Outlier medians are always computed over ALL formats (a Short's
+        # views are still compared against the channel's overall median,
+        # matching vidiq) -- content_format_filter only narrows what's
+        # returned, applied client-side after scoring. When filtering,
+        # fetch a much larger candidate pool so `limit` filtered posts can
+        # actually be found even on a channel that's mostly one format.
+        fetch_count = (limit * 8 if content_format_filter else limit) + OUTLIER_LOOKBACK_POSTS
         stmt = (
             select(
                 Post.id,
@@ -435,6 +536,7 @@ class CreatorStatsService:
                 Post.caption,
                 Post.permalink,
                 Post.posted_at,
+                Post.product_type,
                 latest_metric_sq.c.views,
                 latest_metric_sq.c.likes,
                 latest_metric_sq.c.comments,
@@ -451,6 +553,9 @@ class CreatorStatsService:
         rows = (await self.session.execute(stmt)).all()
         rows_asc = list(reversed(rows))
 
+        formats_by_post: dict[UUID, str] = {
+            row.id: content_format(influencer.platform, row.product_type) for row in rows_asc
+        }
         points_asc = [
             _PostMetricPoint(
                 post_id=row.id,
@@ -466,7 +571,11 @@ class CreatorStatsService:
         now = datetime.now(timezone.utc)
         scores = _compute_outlier_and_velocity(points_asc, influencer.platform, now)
 
-        newest_first = list(reversed(points_asc))[:limit]
+        newest_first = list(reversed(points_asc))
+        if content_format_filter:
+            newest_first = [p for p in newest_first if formats_by_post[p.post_id] == content_format_filter]
+        newest_first = newest_first[:limit]
+
         return [
             PostPerformance(
                 post_id=p.post_id,
@@ -478,9 +587,182 @@ class CreatorStatsService:
                 comments=p.comments,
                 outlier_score=scores[p.post_id][0],
                 velocity_per_hour=scores[p.post_id][1],
+                format=formats_by_post[p.post_id],
             )
             for p in newest_first
         ]
+
+    async def get_format_breakdown(self, influencer_id: UUID, days: int) -> Optional[FormatBreakdownOut]:
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return None
+
+        latest_metric_sq = (
+            select(
+                PostMetricsSnapshot.post_id,
+                PostMetricsSnapshot.views,
+                PostMetricsSnapshot.likes,
+                PostMetricsSnapshot.comments,
+                func.row_number()
+                .over(
+                    partition_by=PostMetricsSnapshot.post_id,
+                    order_by=PostMetricsSnapshot.scraped_at.desc(),
+                )
+                .label("rn"),
+            )
+            .subquery("latest_metric")
+        )
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        stmt = (
+            select(
+                Post.product_type,
+                latest_metric_sq.c.views,
+                latest_metric_sq.c.likes,
+                latest_metric_sq.c.comments,
+            )
+            .select_from(Post)
+            .outerjoin(
+                latest_metric_sq,
+                (latest_metric_sq.c.post_id == Post.id) & (latest_metric_sq.c.rn == 1),
+            )
+            .where(Post.influencer_id == influencer_id, Post.posted_at >= cutoff)
+        )
+        rows = (await self.session.execute(stmt)).all()
+
+        buckets: dict[str, dict[str, float]] = {
+            "long_form": {"post_count": 0, "total_views": 0, "total_likes": 0, "total_comments": 0, "usable_values": []},
+            "short_form": {"post_count": 0, "total_views": 0, "total_likes": 0, "total_comments": 0, "usable_values": []},
+        }
+        for row in rows:
+            fmt = content_format(influencer.platform, row.product_type)
+            if fmt == "live":
+                fmt = "long_form"  # folded into long_form for this breakdown, see FormatStats
+            bucket = buckets[fmt]
+            bucket["post_count"] += 1
+            bucket["total_views"] += row.views or 0
+            bucket["total_likes"] += row.likes or 0
+            bucket["total_comments"] += row.comments or 0
+            # Same views==0-means-no-metric rule as outlier scoring.
+            usable = row.views if row.views else row.likes
+            if usable is not None:
+                bucket["usable_values"].append(usable)
+
+        total_views = sum(b["total_views"] for b in buckets.values())
+        formats = []
+        for fmt in ("long_form", "short_form"):
+            b = buckets[fmt]
+            avg_views = round(sum(b["usable_values"]) / len(b["usable_values"]), 1) if b["usable_values"] else None
+            formats.append(
+                FormatStats(
+                    format=fmt,
+                    post_count=int(b["post_count"]),
+                    total_views=int(b["total_views"]),
+                    total_likes=int(b["total_likes"]),
+                    total_comments=int(b["total_comments"]),
+                    avg_views=avg_views,
+                    views_share=round(b["total_views"] / total_views, 4) if total_views > 0 else 0.0,
+                )
+            )
+
+        return FormatBreakdownOut(window_days=days, formats=formats, total_views=int(total_views))
+
+    async def get_about(self, influencer_id: UUID) -> Optional[AboutOut]:
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return None
+
+        latest = await self._closest_snapshot(influencer_id, date.today())
+        if latest is None:
+            return AboutOut(platform_user_id=influencer.platform_user_id)
+
+        metadata = latest.platform_metadata or {}
+        topics = [
+            url.rsplit("/", 1)[-1].replace("_", " ")
+            for url in (metadata.get("topic_categories") or [])
+        ]
+        keywords_raw = metadata.get("keywords") or ""
+        # brandingSettings keywords come back as one space-delimited string
+        # with multi-word keywords double-quoted, e.g. `tech "smart home" review`.
+        keywords = [k for k in re.findall(r'"([^"]+)"|(\S+)', keywords_raw) for k in k if k]
+
+        bio_links = [
+            link.get("url")
+            for link in (latest.bio_links or [])
+            if isinstance(link, dict) and link.get("url")
+        ]
+
+        # YouTube stores its customUrl slug ("@handle") in external_url, not
+        # a real link (see YouTubeParser.parse_channel) -- turn it into a
+        # clickable URL here rather than exposing the bare slug to the UI.
+        external_url = latest.external_url
+        if influencer.platform == "youtube" and external_url and not external_url.startswith("http"):
+            external_url = f"https://youtube.com/{external_url}"
+
+        return AboutOut(
+            description=latest.biography,
+            external_url=external_url,
+            bio_links=bio_links,
+            country=metadata.get("country"),
+            created_at_platform=metadata.get("published_at"),
+            topics=topics,
+            keywords=keywords,
+            is_verified=latest.is_verified,
+            is_business_account=latest.is_business_account,
+            business_category=latest.business_category_name or latest.category_name,
+            made_for_kids=metadata.get("made_for_kids") if influencer.platform == "youtube" else None,
+            platform_user_id=influencer.platform_user_id,
+        )
+
+    async def get_key_events(self, influencer_id: UUID, days: int) -> list[KeyEvent]:
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return []
+
+        events: list[KeyEvent] = []
+
+        # -- top_post events: outlier posts (>=2x) published in the window,
+        # capped at 8; if fewer than 3 qualify, fall back to the top 3 by
+        # raw views/likes so a quiet channel still gets some markers.
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days)
+        performance = await self.get_post_performance(influencer_id, limit=200)
+        in_window = [p for p in performance if datetime.fromisoformat(p.posted_at) >= cutoff_dt]
+        outliers = sorted(
+            [p for p in in_window if (p.outlier_score or 0) >= 2],
+            key=lambda p: p.outlier_score,
+            reverse=True,
+        )[:8]
+        top_posts = outliers if len(outliers) >= 3 else sorted(
+            [p for p in in_window if (p.views or p.likes)],
+            key=lambda p: (p.views or p.likes or 0),
+            reverse=True,
+        )[:3]
+        for p in top_posts:
+            metric_value = p.views if p.views else p.likes
+            label = (p.title or "Untitled post")[:60]
+            events.append(
+                KeyEvent(
+                    date=datetime.fromisoformat(p.posted_at).date(),
+                    type="top_post",
+                    label=label,
+                    post_id=p.post_id,
+                    permalink=p.permalink,
+                    metric_value=metric_value,
+                )
+            )
+
+        # -- milestone events: round-number follower crossings, scanned
+        # across the deduped daily series (see get_growth_series).
+        series = await self.get_growth_series(influencer_id, days=days, metric="followers")
+        events.extend(_detect_milestones(series))
+
+        events.sort(key=lambda e: e.date)
+        return events
 
     async def get_rankings(self, influencer_id: UUID) -> RankingsOut:
         influencer = (

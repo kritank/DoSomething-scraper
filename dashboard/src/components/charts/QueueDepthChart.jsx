@@ -70,6 +70,8 @@ export default function QueueDepthChart({ buckets }) {
               return [value.toFixed(1), 'Queue depth'];
             }}
             contentStyle={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-default)', borderRadius: 10 }}
+            labelStyle={{ color: 'var(--color-text-primary)', fontWeight: 600, marginBottom: 4 }}
+            itemStyle={{ color: 'var(--color-text-secondary)' }}
           />
           <Legend
             wrapperStyle={{ fontSize: 12 }}

@@ -41,9 +41,14 @@ class CreatorSummary(BaseModel):
 
 class GrowthPoint(BaseModel):
     date: date
-    value: int
+    # None for metric="earnings" (a low/high band, not a point value) --
+    # value_low/value_high are populated instead. Populated for every
+    # other metric; value_low/value_high stay None there.
+    value: Optional[int] = None
     # value - previous point's value; None for the series' first point.
     daily_delta: Optional[int] = None
+    value_low: Optional[float] = None
+    value_high: Optional[float] = None
 
 
 class EngagementOut(BaseModel):
@@ -81,6 +86,10 @@ class PostPerformance(BaseModel):
     # velocity -- see docs/CREATOR_STATS_PLAN.md Phase 5 for the real thing.
     velocity_per_hour: Optional[float] = None
 
+    # "long_form" | "short_form" | "live" -- see
+    # app.analytics.creator_stats.content_format.
+    format: str = "long_form"
+
 
 class RankingEntry(BaseModel):
     rank: int
@@ -96,8 +105,63 @@ class RankingsOut(BaseModel):
     by_views_growth_28d_overall: Optional[RankingEntry] = None
 
 
+class FormatStats(BaseModel):
+    # "long_form" | "short_form" -- "live" broadcasts fold into long_form
+    # for this breakdown (see content_format).
+    format: Literal["long_form", "short_form"]
+    post_count: int
+    total_views: int
+    total_likes: int
+    total_comments: int
+    # None when no post in this format/window has a usable view-or-likes
+    # metric (see _PostMetricPoint.outlier_metric for the views==0 rule).
+    avg_views: Optional[float] = None
+    # Share (0..1) of the window's combined long_form + short_form views.
+    views_share: float = 0.0
+
+
+class FormatBreakdownOut(BaseModel):
+    window_days: int
+    formats: list[FormatStats]
+    total_views: int
+
+
+class AboutOut(BaseModel):
+    description: Optional[str] = None
+    external_url: Optional[str] = None
+    bio_links: list[str] = []
+    country: Optional[str] = None
+    # ISO8601 -- YouTube channel creation date (platform_metadata.published_at).
+    # Always None for Instagram (the API doesn't expose account creation date).
+    created_at_platform: Optional[str] = None
+    # YouTube topicCategories Wikipedia URLs, prettified to their last path
+    # segment with underscores replaced by spaces. Always [] for Instagram.
+    topics: list[str] = []
+    # YouTube brandingSettings keywords. Always [] for Instagram.
+    keywords: list[str] = []
+    is_verified: bool = False
+    is_business_account: bool = False
+    business_category: Optional[str] = None
+    # None for Instagram (not exposed by the scraped fields we store).
+    made_for_kids: Optional[bool] = None
+    # YouTube channel ID ("UC...") or Instagram numeric pk.
+    platform_user_id: Optional[str] = None
+
+
+class KeyEvent(BaseModel):
+    date: date
+    # "top_post" (an outlier post published in the window) | "milestone"
+    # (a round-number follower threshold crossed in the window).
+    type: Literal["top_post", "milestone"]
+    label: str
+    post_id: Optional[UUID] = None
+    permalink: Optional[str] = None
+    metric_value: Optional[float] = None
+
+
 class CreatorStatsOut(BaseModel):
     summary: CreatorSummary
     engagement: EngagementOut
     earnings: Optional[EarningsEstimate] = None
     rankings: RankingsOut
+    about: AboutOut

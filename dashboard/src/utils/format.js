@@ -1,3 +1,12 @@
+import { format as formatDateFns, parseISO } from 'date-fns';
+
+// Shared date formatting for chart tooltips/axes across the creator-stats
+// page -- one place to keep the "MMM d, yyyy" convention consistent.
+export function formatDate(isoDateOrDatetime) {
+  if (!isoDateOrDatetime) return '—';
+  return formatDateFns(parseISO(isoDateOrDatetime), 'MMM d, yyyy');
+}
+
 // Compact display for large counts (subscribers, views) -- "34.1M", "11.5B" --
 // matching the style vidiq/Social Blade-type stats pages use, so headline
 // numbers stay readable at a glance instead of wrapping as "34123456".

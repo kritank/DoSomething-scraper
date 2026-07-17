@@ -16,9 +16,23 @@ export async function getCreatorGrowth(influencerId, days, metric) {
   return data;
 }
 
-export async function getCreatorPostPerformance(influencerId, limit = 20) {
+export async function getCreatorPostPerformance(influencerId, limit = 20, format = undefined) {
   const { data } = await apiClient.get(`/influencers/${influencerId}/posts/performance`, {
-    params: { limit },
+    params: { limit, format },
+  });
+  return data;
+}
+
+export async function getCreatorFormatBreakdown(influencerId, days) {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/formats`, {
+    params: { days },
+  });
+  return data;
+}
+
+export async function getCreatorKeyEvents(influencerId, days) {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/events`, {
+    params: { days },
   });
   return data;
 }

@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,7 +8,13 @@ from app.analytics.creator_stats import CreatorStatsService
 from app.analytics.earnings import estimate_instagram_earnings, estimate_youtube_earnings
 from app.core.database import get_db
 from app.core.security import require_api_key
-from app.schemas.creator_stats import CreatorStatsOut, GrowthPoint, PostPerformance
+from app.schemas.creator_stats import (
+    CreatorStatsOut,
+    FormatBreakdownOut,
+    GrowthPoint,
+    KeyEvent,
+    PostPerformance,
+)
 
 router = APIRouter(
     prefix="/influencers", tags=["Creator Stats"], dependencies=[Depends(require_api_key)]
@@ -18,7 +24,7 @@ router = APIRouter(
 @router.get("/{influencer_id}/stats", response_model=CreatorStatsOut)
 async def get_creator_stats(influencer_id: UUID, db: AsyncSession = Depends(get_db)):
     """Composite payload backing the creator profile page's single fetch:
-    summary + engagement + earnings estimate + in-universe rankings."""
+    summary + engagement + earnings estimate + rankings + about."""
     service = CreatorStatsService(db)
     summary = await service.get_summary(influencer_id)
     if summary is None:
@@ -26,6 +32,7 @@ async def get_creator_stats(influencer_id: UUID, db: AsyncSession = Depends(get_
 
     engagement = await service.get_engagement_rate(influencer_id)
     rankings = await service.get_rankings(influencer_id)
+    about = await service.get_about(influencer_id)
 
     earnings = None
     if summary.platform == "youtube":
@@ -35,14 +42,16 @@ async def get_creator_stats(influencer_id: UUID, db: AsyncSession = Depends(get_
             summary.followers, engagement.engagement_rate, summary.subscribers_hidden
         )
 
-    return CreatorStatsOut(summary=summary, engagement=engagement, earnings=earnings, rankings=rankings)
+    return CreatorStatsOut(
+        summary=summary, engagement=engagement, earnings=earnings, rankings=rankings, about=about
+    )
 
 
 @router.get("/{influencer_id}/growth", response_model=list[GrowthPoint])
 async def get_creator_growth(
     influencer_id: UUID,
-    days: int = Query(90, ge=1, le=730),
-    metric: Literal["followers", "total_views", "posts"] = Query("followers"),
+    days: int = Query(90, ge=1, le=3650),
+    metric: Literal["followers", "total_views", "posts", "earnings"] = Query("followers"),
     db: AsyncSession = Depends(get_db),
 ):
     service = CreatorStatsService(db)
@@ -56,10 +65,39 @@ async def get_creator_growth(
 async def get_creator_post_performance(
     influencer_id: UUID,
     limit: int = Query(20, ge=1, le=100),
+    format: Optional[Literal["long_form", "short_form"]] = Query(
+        None, description="Filter to one content format; omit for all formats."
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     service = CreatorStatsService(db)
     summary = await service.get_summary(influencer_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="Influencer not found")
-    return await service.get_post_performance(influencer_id, limit=limit)
+    return await service.get_post_performance(influencer_id, limit=limit, content_format_filter=format)
+
+
+@router.get("/{influencer_id}/formats", response_model=FormatBreakdownOut)
+async def get_creator_format_breakdown(
+    influencer_id: UUID,
+    days: int = Query(28, ge=1, le=3650),
+    db: AsyncSession = Depends(get_db),
+):
+    service = CreatorStatsService(db)
+    breakdown = await service.get_format_breakdown(influencer_id, days=days)
+    if breakdown is None:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    return breakdown
+
+
+@router.get("/{influencer_id}/events", response_model=list[KeyEvent])
+async def get_creator_key_events(
+    influencer_id: UUID,
+    days: int = Query(90, ge=1, le=3650),
+    db: AsyncSession = Depends(get_db),
+):
+    service = CreatorStatsService(db)
+    summary = await service.get_summary(influencer_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    return await service.get_key_events(influencer_id, days=days)
