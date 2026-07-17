@@ -9,6 +9,7 @@ import Influencers from './pages/Influencers';
 import CreatorProfile from './pages/CreatorProfile';
 import Content from './pages/Content';
 import Insights from './pages/Insights';
+import Export from './pages/Export';
 
 export default function App() {
   return (
@@ -23,6 +24,7 @@ export default function App() {
             <Route path="insights" element={<Insights />} />
             <Route path="query" element={<QueryConsole />} />
             <Route path="accounts" element={<Accounts />} />
+            <Route path="export" element={<Export />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

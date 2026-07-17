@@ -85,6 +85,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE", "PATCH"],
     allow_headers=["*"],
+    # Content-Disposition isn't exposed to JS by default under CORS -- without
+    # this, the dashboard's export download (GET /admin/export/dump) can't
+    # read the server-generated filename out of the response headers.
+    expose_headers=["Content-Disposition"],
 )
 
 
