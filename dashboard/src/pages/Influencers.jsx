@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { PlayCircle, RefreshCw, Power, Trash2, History, ChevronDown, ChevronUp, Pencil, Check, X, Link2 } from 'lucide-react';
 import { format } from 'date-fns';
+import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { getDashboardStatus } from '../services/dashboardService';
 import { getCreators } from '../services/creatorService';
@@ -533,9 +534,13 @@ function InfluencerRow({
       ) : (
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-3 min-w-0">
-            <span className="font-medium text-sm truncate" style={{ color: 'var(--color-text-primary)' }}>
+            <Link
+              to={`/influencers/${row.influencer_id}`}
+              className="font-medium text-sm truncate hover:underline"
+              style={{ color: 'var(--color-text-primary)' }}
+            >
               {formatHandle(row.handle, row.platform)}
-            </span>
+            </Link>
             <PlatformBadge platform={row.platform} />
             <StatusBadge status={row.last_job_status} />
             {!row.is_active && (
