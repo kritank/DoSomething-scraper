@@ -76,6 +76,8 @@ export default function JobStatusChart({ buckets }) {
                 return [value, `${platformLabel(platform)} · ${status.replaceAll('_', ' ')}`];
               }}
               contentStyle={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-default)', borderRadius: 10 }}
+              labelStyle={{ color: 'var(--color-text-primary)', fontWeight: 600, marginBottom: 4 }}
+              itemStyle={{ color: 'var(--color-text-secondary)' }}
             />
             {/* One legend entry per status (color is shared across
                 platforms -- platform is distinguished by cluster position,

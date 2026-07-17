@@ -34,14 +34,20 @@ _INSTAGRAM_ER_MULTIPLIER_MIN = 0.5
 _INSTAGRAM_ER_MULTIPLIER_MAX = 3.0
 
 
+def youtube_rpm_range(country: str | None) -> tuple[float, float]:
+    """(low, high) USD RPM for a channel's country -- exposed separately
+    from estimate_youtube_earnings so the growth chart's daily earnings
+    band (app.analytics.creator_stats.get_growth_series) can apply the
+    same per-day RPM without going through the 28d-views-only estimator."""
+    return _YOUTUBE_RPM_BY_COUNTRY.get((country or "").upper(), _YOUTUBE_RPM_BY_COUNTRY["_default"])
+
+
 def estimate_youtube_earnings(views_28d: int | None, country: str | None) -> EarningsEstimate | None:
     """Monthly ad-revenue estimate from trailing-28-day views. None if we
     don't have enough view history yet (see CreatorStatsService.get_summary)."""
     if views_28d is None or views_28d <= 0:
         return None
-    low_rpm, high_rpm = _YOUTUBE_RPM_BY_COUNTRY.get(
-        (country or "").upper(), _YOUTUBE_RPM_BY_COUNTRY["_default"]
-    )
+    low_rpm, high_rpm = youtube_rpm_range(country)
     return EarningsEstimate(
         low_usd=round(views_28d / 1000 * low_rpm, 2),
         high_usd=round(views_28d / 1000 * high_rpm, 2),

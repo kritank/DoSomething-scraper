@@ -7,8 +7,11 @@ from app.analytics.creator_stats import (
     MIN_POSTS_FOR_OUTLIER,
     OUTLIER_LOOKBACK_POSTS,
     _compute_outlier_and_velocity,
+    _detect_milestones,
     _PostMetricPoint,
+    content_format,
 )
+from app.schemas.creator_stats import GrowthPoint
 
 NOW = datetime(2026, 7, 17, tzinfo=timezone.utc)
 
@@ -79,3 +82,57 @@ def test_velocity_none_when_metric_missing():
     point = _point(days_ago=1, views=None, likes=None)
     scores = _compute_outlier_and_velocity([point], "youtube", NOW)
     assert scores[point.post_id] == (None, None)
+
+
+def test_content_format_youtube():
+    assert content_format("youtube", "video") == "long_form"
+    assert content_format("youtube", "short") == "short_form"
+    assert content_format("youtube", "live") == "live"
+    assert content_format("youtube", None) == "long_form"
+
+
+def test_content_format_instagram():
+    assert content_format("instagram", "clips") == "short_form"
+    assert content_format("instagram", "feed") == "long_form"
+    assert content_format("instagram", "carousel_container") == "long_form"
+    assert content_format("instagram", "igtv") == "long_form"
+    assert content_format("instagram", None) == "long_form"
+
+
+def _gp(day: str, value: int) -> GrowthPoint:
+    from datetime import date as date_cls
+
+    return GrowthPoint(date=date_cls.fromisoformat(day), value=value)
+
+
+def test_milestone_detected_on_crossing():
+    series = [_gp("2026-01-01", 9_500), _gp("2026-01-02", 10_500)]
+    events = _detect_milestones(series)
+    assert len(events) == 1
+    assert events[0].label == "Crossed 10K followers"
+    assert events[0].date.isoformat() == "2026-01-02"
+
+
+def test_milestone_none_without_crossing():
+    series = [_gp("2026-01-01", 9_000), _gp("2026-01-02", 9_500)]
+    assert _detect_milestones(series) == []
+
+
+def test_milestone_none_for_single_point():
+    assert _detect_milestones([_gp("2026-01-01", 10_000)]) == []
+
+
+def test_milestone_multiple_thresholds_in_one_jump():
+    series = [_gp("2026-01-01", 90_000), _gp("2026-01-02", 1_200_000)]
+    events = _detect_milestones(series)
+    labels = {e.label for e in events}
+    assert labels == {"Crossed 100K followers", "Crossed 500K followers", "Crossed 1M followers"}
+
+
+def test_milestone_not_re_triggered_by_later_drop_and_regrowth():
+    """A sub-count that dips below a threshold it already crossed and
+    climbs back shouldn't fire the same milestone twice."""
+    series = [_gp("2026-01-01", 9_000), _gp("2026-01-02", 11_000), _gp("2026-01-03", 9_800), _gp("2026-01-04", 10_500)]
+    events = _detect_milestones(series)
+    assert len(events) == 1
+    assert events[0].date.isoformat() == "2026-01-02"

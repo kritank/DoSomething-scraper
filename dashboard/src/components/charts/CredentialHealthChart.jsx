@@ -77,6 +77,8 @@ export default function CredentialHealthChart({ buckets }) {
             labelFormatter={(val) => format(parseISO(val), 'MMM d, yyyy')}
             formatter={(value, name) => [value, name.replaceAll('_', ' ')]}
             contentStyle={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-default)', borderRadius: 10 }}
+            labelStyle={{ color: 'var(--color-text-primary)', fontWeight: 600, marginBottom: 4 }}
+            itemStyle={{ color: 'var(--color-text-secondary)' }}
           />
           <Legend wrapperStyle={{ fontSize: 12 }} formatter={(v) => v.replaceAll('_', ' ')} />
           {statuses.map((status) => (
