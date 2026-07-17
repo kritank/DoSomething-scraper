@@ -41,15 +41,38 @@ export default function GrowthChart({ points, metric, color = 'var(--color-accen
     );
   }
 
-  // Key events are matched to a chart y-position by date. For non-earnings
-  // metrics that's the series value that day; for earnings (a band, no
-  // single value) events sit at the band's midpoint.
+  // Key events are snapped to the NEAREST chart point, not matched by
+  // exact date: an event's date is a post's publish date or a milestone-
+  // crossing day, which will almost never land exactly on a snapshot day
+  // (snapshots are daily at best, and can have gaps) -- an exact-match
+  // lookup silently drops nearly every event. Two things matter here:
+  // (1) the y-value comes from the nearest point's series value, and (2)
+  // the x position MUST also be one of the chart's actual category values
+  // (recharts' XAxis here is a category axis from `date`, not a
+  // continuous time scale) or ReferenceDot can't place it at all.
+  const pointDates = points.map((p) => p.date);
+  const nearestPointDate = (targetDate) => {
+    const targetMs = new Date(targetDate).getTime();
+    let nearest = pointDates[0];
+    let smallestDiffMs = Infinity;
+    for (const d of pointDates) {
+      const diffMs = Math.abs(new Date(d).getTime() - targetMs);
+      if (diffMs < smallestDiffMs) {
+        smallestDiffMs = diffMs;
+        nearest = d;
+      }
+    }
+    return nearest;
+  };
   const valueByDate = new Map(
     points.map((p) => [p.date, isEarnings ? ((p.value_low ?? 0) + (p.value_high ?? 0)) / 2 : p.value]),
   );
   const plottableEvents = events
-    .map((e) => ({ ...e, y: valueByDate.get(e.date) }))
-    .filter((e) => e.y !== undefined);
+    .map((e) => {
+      const snappedDate = nearestPointDate(e.date);
+      return { ...e, snappedDate, y: valueByDate.get(snappedDate) };
+    })
+    .filter((e) => e.y !== undefined && e.y !== null);
 
   return (
     <div className="w-full h-64">
@@ -96,7 +119,7 @@ export default function GrowthChart({ points, metric, color = 'var(--color-accen
           {plottableEvents.map((e) => (
             <ReferenceDot
               key={`${e.type}-${e.date}-${e.label}`}
-              x={e.date}
+              x={e.snappedDate}
               y={e.y}
               r={5}
               fill={EVENT_COLORS[e.type] ?? 'var(--color-accent)'}
