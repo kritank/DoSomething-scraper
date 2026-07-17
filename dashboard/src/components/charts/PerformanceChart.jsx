@@ -29,11 +29,19 @@ function aggregateByDate(buckets) {
   for (const b of buckets) {
     if (!byDate.has(b.date)) byDate.set(b.date, { date: b.date, durations: [], mins: [], maxes: [] });
     const row = byDate.get(b.date);
-    row[`${b.platform}_posts`] = (row[`${b.platform}_posts`] ?? 0) + b.posts_processed;
-    row[`${b.platform}_comments`] = (row[`${b.platform}_comments`] ?? 0) + b.comments_processed;
     if (b.quota_units_used != null) {
+      // Quota is a cost, not throughput -- an API call can burn quota
+      // even when the job ultimately fails, so this counts every status.
       row.youtube_quota = (row.youtube_quota ?? 0) + b.quota_units_used;
     }
+    // A failed job's posts/comments/duration figures are noise, not real
+    // throughput (e.g. a burst of jobs that failed after ~0.1s can still
+    // carry a large posts_processed count from partial work) -- counting
+    // them here made failed days look like strong throughput instead of
+    // an incident, contradicting JobStatusChart right next to this one.
+    if (b.status === 'failed') continue;
+    row[`${b.platform}_posts`] = (row[`${b.platform}_posts`] ?? 0) + b.posts_processed;
+    row[`${b.platform}_comments`] = (row[`${b.platform}_comments`] ?? 0) + b.comments_processed;
     if (b.avg_duration_s != null) row.durations.push(b.avg_duration_s);
     if (b.min_duration_s != null) row.mins.push(b.min_duration_s);
     if (b.max_duration_s != null) row.maxes.push(b.max_duration_s);

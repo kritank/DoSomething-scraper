@@ -30,6 +30,28 @@ const GROWTH_RANGES = [
   { label: 'Max', days: 3650 },
 ];
 
+// A leading 0-value point in the followers series is a broken/seed
+// snapshot, not "tracking started at zero" -- no tracked account actually
+// has 0 followers. Left as-is it draws a vertical cliff on GrowthChart and
+// turns into a misleadingly huge first bar on DailyGrowthChart. Strip any
+// leading zero(s) followed by a >=10x jump, and clear the new first
+// point's daily_delta since it no longer has a real "previous day" to
+// diff against -- DailyGrowthChart already drops null-delta points.
+function stripPhantomZeroLead(points) {
+  if (!points || points.length < 2) return points ?? [];
+  let start = 0;
+  while (
+    start < points.length - 1 &&
+    points[start].value === 0 &&
+    points[start + 1].value >= 1000
+  ) {
+    start++;
+  }
+  if (start === 0) return points;
+  const rest = points.slice(start);
+  return [{ ...rest[0], daily_delta: null }, ...rest.slice(1)];
+}
+
 const TOOLTIPS = {
   followersYoutube: 'Latest scraped count. YouTube rounds subscriber counts to 3 significant figures, so large channels move in visible steps.',
   followersInstagram: 'Latest scraped follower count — exact, updated on each daily scrape.',
@@ -143,7 +165,7 @@ export default function CreatorProfile() {
     ])
       .then(([growthData, eventsData]) => {
         if (cancelled) return;
-        setGrowthPoints(growthData);
+        setGrowthPoints(growthMetric === 'followers' ? stripPhantomZeroLead(growthData) : growthData);
         setEvents(eventsData);
       })
       .finally(() => { if (!cancelled) setGrowthLoading(false); });

@@ -32,8 +32,12 @@ function platformBreakdownFor(status, metricsBuckets, platform) {
   const successes = scraped.filter((r) => r.last_job_status === 'completed').length;
 
   const platformBuckets = metricsBuckets.filter((b) => b.platform === platform);
-  const postsProcessed = platformBuckets.reduce((sum, b) => sum + b.posts_processed, 0);
-  const commentsProcessed = platformBuckets.reduce((sum, b) => sum + b.comments_processed, 0);
+  // Failed jobs' processed counts are noise, not real throughput -- same
+  // exclusion as PerformanceChart's aggregateByDate. Quota below still
+  // counts every status since it's a cost, not throughput.
+  const successBuckets = platformBuckets.filter((b) => b.status !== 'failed');
+  const postsProcessed = successBuckets.reduce((sum, b) => sum + b.posts_processed, 0);
+  const commentsProcessed = successBuckets.reduce((sum, b) => sum + b.comments_processed, 0);
   const quotaBuckets = platformBuckets.filter((b) => b.quota_units_used != null);
   const quotaUsed = quotaBuckets.length ? quotaBuckets.reduce((sum, b) => sum + b.quota_units_used, 0) : null;
 
@@ -124,7 +128,9 @@ export default function Overview() {
   // across every platform on purpose (a quick-scan total) -- the two
   // charts below show the same data split per platform.
   const windowTotals = useMemo(() => {
-    const buckets = metrics?.buckets ?? [];
+    // Failed jobs' processed counts are noise, not real throughput -- same
+    // exclusion as PerformanceChart's aggregateByDate.
+    const buckets = (metrics?.buckets ?? []).filter((b) => b.status !== 'failed');
     const postsProcessed = buckets.reduce((sum, b) => sum + b.posts_processed, 0);
     const commentsProcessed = buckets.reduce((sum, b) => sum + b.comments_processed, 0);
     const avgCommentsPerPost = postsProcessed > 0 ? commentsProcessed / postsProcessed : 0;
