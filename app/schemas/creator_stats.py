@@ -11,6 +11,9 @@ class CreatorSummary(BaseModel):
     platform: str
     category_name: Optional[str] = None
     country: Optional[str] = None
+    # Latest known avatar/channel-thumbnail URL, refreshed on every scrape.
+    # None until the first successful scrape.
+    profile_pic_url: Optional[str] = None
     # Days since the channel/account was created (YouTube: publishedAt from
     # platform_metadata; Instagram: no equivalent, always None).
     account_age_days: Optional[int] = None

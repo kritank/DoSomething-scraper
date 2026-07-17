@@ -225,6 +225,18 @@ class JobProcessor:
         raw_user = await self.client.get_user_info(handle)
         parsed_user = InstagramParser.parse_user_info(raw_user)
 
+        # Resolve platform_user_id from Instagram's numeric pk on first
+        # scrape, same as youtube_job_processor.py does with the channel
+        # ID -- lets a handle rename survive without orphaning this row.
+        # Never overwritten once set, since a pk is permanent for the
+        # account's lifetime (unlike the handle).
+        if influencer.platform_user_id is None and parsed_user.pk:
+            influencer.platform_user_id = str(parsed_user.pk)
+        # Refreshed every scrape, unlike platform_user_id above -- Instagram's
+        # profile_pic_url is a signed, expiring CDN link.
+        if parsed_user.profile_pic_url:
+            influencer.profile_pic_url = parsed_user.profile_pic_url
+
         # Create profile snapshot
         snapshot = ProfileSnapshot(
             influencer_id=self.message.influencer_id,

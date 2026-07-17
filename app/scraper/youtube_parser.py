@@ -52,6 +52,13 @@ class YouTubeParser:
         branding = (channel.get("brandingSettings") or {}).get("channel") or {}
         status = channel.get("status") or {}
         topic_details = channel.get("topicDetails") or {}
+        channel_thumbnails = snippet.get("thumbnails") or {}
+        channel_best_thumb = (
+            channel_thumbnails.get("high")
+            or channel_thumbnails.get("medium")
+            or channel_thumbnails.get("default")
+            or {}
+        )
 
         return YouTubeChannel(
             channel_id=channel.get("id", ""),
@@ -60,6 +67,7 @@ class YouTubeParser:
             custom_url=snippet.get("customUrl"),
             published_at=snippet.get("publishedAt"),
             country=snippet.get("country"),
+            thumbnail_url=channel_best_thumb.get("url"),
             uploads_playlist_id=(
                 content_details.get("relatedPlaylists", {}).get("uploads", "")
             ),
