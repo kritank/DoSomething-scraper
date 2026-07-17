@@ -2,7 +2,11 @@ from datetime import date, timedelta
 from typing import Sequence
 from uuid import UUID
 
+import os
+
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -51,6 +55,7 @@ from app.schemas.scrape_job import ScrapeJobOut
 from app.services.alerts_service import get_alerts
 from app.services.dashboard_service import DashboardService
 from app.services.dispatch_service import DispatchService
+from app.services.db_export_service import create_dump
 from app.services.query_console_service import list_schema_tables, run_readonly_query
 
 
@@ -412,3 +417,20 @@ async def run_query(data: QueryRequest):
 @router.get("/schema", response_model=list[SchemaTable])
 async def get_schema():
     return await list_schema_tables()
+
+
+@router.get("/export/dump")
+async def export_dump():
+    # pg_dump writes to a temp file rather than streaming its stdout straight
+    # into the response -- if pg_dump fails partway, a temp file can just be
+    # deleted and the request answered with a clean 500 (see DumpExportError),
+    # whereas a stream that's already started sending a 200 has no way to
+    # report the failure to the client. The BackgroundTask deletes the temp
+    # file once Starlette has finished sending it either way.
+    path, filename = await create_dump()
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename=filename,
+        background=BackgroundTask(os.remove, path),
+    )

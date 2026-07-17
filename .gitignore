@@ -53,6 +53,9 @@ logs/
 # Docker
 docker-compose.override.yml
 
+# Local DB dumps pulled from prod (may contain PII/credentials)
+dumps/
+
 # Terraform
 infra/.terraform/
 infra/terraform.tfstate

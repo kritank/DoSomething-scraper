@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, TerminalSquare, Users, UserPlus, Image, Sparkles, ChevronLeft, ChevronRight, Radio } from 'lucide-react';
+import { LayoutDashboard, TerminalSquare, Users, UserPlus, Image, Sparkles, ChevronLeft, ChevronRight, Radio, DatabaseBackup } from 'lucide-react';
 import { useAppStore } from '../../store/useAppStore';
 
 const NAV_ITEMS = [
@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { to: '/insights', label: 'Insights', icon: Sparkles },
   { to: '/query', label: 'Query Console', icon: TerminalSquare },
   { to: '/accounts', label: 'Accounts', icon: Users },
+  { to: '/export', label: 'Export', icon: DatabaseBackup },
 ];
 
 export default function Sidebar() {
