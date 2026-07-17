@@ -20,3 +20,19 @@ class CreatorOut(BaseModel):
     # derived from Creator.influencers (a relationship), assembled in the
     # API layer rather than mapped straight off the ORM object, same
     # convention as DashboardStatusRow.
+
+
+class CreatorInfluencerRef(BaseModel):
+    # Just enough to route to /influencers/{influencer_id} per platform --
+    # the combined creator view fetches each one's full stats separately
+    # via the existing single-influencer endpoints rather than duplicating
+    # that aggregation here.
+    influencer_id: UUID
+    platform: str
+    handle: str
+
+
+class CreatorDetailOut(BaseModel):
+    id: UUID
+    name: str
+    influencers: list[CreatorInfluencerRef]
