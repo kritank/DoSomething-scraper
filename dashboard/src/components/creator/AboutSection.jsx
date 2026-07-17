@@ -84,7 +84,11 @@ export default function AboutSection({ about, loading, isYoutube }) {
     );
   }
 
-  const links = [about.external_url, ...about.bio_links].filter(Boolean);
+  // external_url often duplicates one of bio_links (e.g. a single-link bio
+  // where the platform surfaces that same link as both the primary
+  // external_url and a bio link) -- dedupe or it renders (and reacts to)
+  // the same chip twice.
+  const links = [...new Set([about.external_url, ...about.bio_links].filter(Boolean))];
   const description = about.description || '';
   const isLong = description.split('\n').length > 6 || description.length > 400;
 

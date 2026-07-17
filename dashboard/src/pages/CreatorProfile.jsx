@@ -408,7 +408,13 @@ export default function CreatorProfile() {
                         <td className="py-2.5 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
                           {format(parseISO(p.posted_at), 'MMM d, yyyy')}
                         </td>
-                        <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.views != null ? formatCompactNumber(p.views) : '—'}</td>
+                        {/* Falsy check (not != null) is deliberate: Instagram
+                            photo/carousel posts come back with views=0 (not a
+                            real NULL) since they have no public view metric --
+                            same "0 means unavailable" rule the backend already
+                            applies for outlier scoring and the format
+                            breakdown (see _PostMetricPoint.outlier_metric). */}
+                        <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.views ? formatCompactNumber(p.views) : '—'}</td>
                         <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.likes != null ? formatCompactNumber(p.likes) : '—'}</td>
                         <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.comments != null ? formatCompactNumber(p.comments) : '—'}</td>
                         <td className="py-2.5 px-3">
