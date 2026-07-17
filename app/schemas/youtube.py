@@ -10,6 +10,7 @@ class YouTubeChannel(BaseModel):
     custom_url: Optional[str] = None
     published_at: Optional[str] = None  # ISO8601, snippet.publishedAt
     country: Optional[str] = None
+    thumbnail_url: Optional[str] = None  # snippet.thumbnails, best available size
 
     uploads_playlist_id: str = ""
 

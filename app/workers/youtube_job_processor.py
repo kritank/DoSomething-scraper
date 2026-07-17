@@ -202,6 +202,11 @@ class YouTubeJobProcessor:
 
         if influencer.platform_user_id is None:
             influencer.platform_user_id = channel.channel_id
+        # Refreshed every scrape, same as job_processor.py's Instagram
+        # side -- channel thumbnails can change and (like Instagram's) are
+        # served from an expiring-link CDN.
+        if channel.thumbnail_url:
+            influencer.profile_pic_url = channel.thumbnail_url
 
         session.add(
             ProfileSnapshot(

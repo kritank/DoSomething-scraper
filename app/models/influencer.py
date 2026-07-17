@@ -37,6 +37,11 @@ class Influencer(Base):
     # ID "UC...", Instagram numeric pk) -- lets a handle rename survive
     # without orphaning this row. Null until the first successful scrape.
     platform_user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Latest known avatar/channel-thumbnail URL, refreshed on every scrape
+    # (unlike platform_user_id, which is permanent and set once) -- these
+    # URLs are frequently signed/expiring on both platforms, so caching a
+    # stale one indefinitely would eventually 403 in the dashboard.
+    profile_pic_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
     # Optional cross-platform grouping -- see app.models.creator.Creator.
     # ON DELETE SET NULL: deleting the Creator group must never cascade
     # into deleting this row's own scraped data.

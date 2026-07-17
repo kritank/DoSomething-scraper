@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, ExternalLink, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
+import { ArrowLeft, ExternalLink, TrendingUp, TrendingDown, RefreshCw, BadgeCheck } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import {
   getCreatorStats,
@@ -94,6 +94,35 @@ function StatTile({ label, value, delta, deltaLabel, loading, infoTip }) {
             </div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+function Avatar({ src, handle, size = 40 }) {
+  const [errored, setErrored] = useState(false);
+  const showImage = src && !errored;
+  return (
+    <div
+      className="rounded-full overflow-hidden shrink-0 flex items-center justify-center font-semibold"
+      style={{
+        width: size,
+        height: size,
+        background: 'var(--color-accent-dim)',
+        color: 'var(--color-accent)',
+        fontSize: size * 0.4,
+      }}
+    >
+      {showImage ? (
+        <img
+          src={src}
+          alt={handle ? `${handle}'s avatar` : 'avatar'}
+          className="w-full h-full object-cover"
+          referrerPolicy="no-referrer"
+          onError={() => setErrored(true)}
+        />
+      ) : (
+        (handle?.[0] || '?').toUpperCase()
       )}
     </div>
   );
@@ -220,7 +249,14 @@ export default function CreatorProfile() {
   }
 
   return (
-    <div className="flex flex-col gap-6 min-w-0">
+    // gap-10 (40px), not gap-6 (24px) -- the sticky in-page nav below
+    // renders ~44px tall, taller than the old gap. Since it's
+    // position: sticky, it visually sits wherever the current section
+    // boundary happens to be scrolled to, not just below its own DOM
+    // position -- so with a 24px gap it was cutting into the tail end
+    // of whichever section preceded the one you just jumped to via the
+    // nav. 40px comfortably clears the bar's height at every boundary.
+    <div className="flex flex-col gap-10 min-w-0">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <Link to="/influencers">
@@ -229,11 +265,19 @@ export default function CreatorProfile() {
               Back
             </Button>
           </Link>
+          {!loading && <Avatar src={s.profile_pic_url} handle={s.handle} />}
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h2 className="text-xl font-semibold truncate" style={{ color: 'var(--color-text-primary)' }}>
                 {loading ? 'Loading…' : formatHandle(s.handle, s.platform)}
               </h2>
+              {!loading && stats?.about?.is_verified && (
+                <BadgeCheck
+                  className="w-4 h-4 shrink-0"
+                  style={{ color: 'var(--color-accent)' }}
+                  aria-label="Verified"
+                />
+              )}
               {!loading && <PlatformBadge platform={s.platform} />}
             </div>
             {!loading && (
@@ -287,7 +331,7 @@ export default function CreatorProfile() {
           </div>
 
           {/* ── Overview ─────────────────────────────────────────────── */}
-          <div ref={overviewRef} className="flex flex-col gap-4 scroll-mt-16">
+          <div ref={overviewRef} className="flex flex-col gap-4 scroll-mt-24">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <StatTile
                 label={followersLabel}
@@ -367,7 +411,7 @@ export default function CreatorProfile() {
           </div>
 
           {/* ── Content ──────────────────────────────────────────────── */}
-          <div ref={contentRef} className="card p-5 flex flex-col gap-3 min-w-0 scroll-mt-16">
+          <div ref={contentRef} className="card p-5 flex flex-col gap-3 min-w-0 scroll-mt-24">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <SectionHeading>Recent {isYoutube ? 'videos' : 'posts'}</SectionHeading>
               <div className="flex items-center gap-1">
@@ -453,7 +497,16 @@ export default function CreatorProfile() {
                           ) : '—'}
                         </td>
                         <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>
-                          {p.velocity_per_hour != null ? formatCompactNumber(p.velocity_per_hour) : '—'}
+                          {p.velocity_per_hour != null ? (
+                            formatCompactNumber(p.velocity_per_hour)
+                          ) : (
+                            // Not missing data -- velocity_per_hour is only ever
+                            // computed within the freshness window (7d YouTube /
+                            // 48h Instagram, see TOOLTIPS.velocity above), so a
+                            // bare "—" here reads as broken rather than expected
+                            // for any older post.
+                            <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Too old</span>
+                          )}
                         </td>
                         <td className="py-2.5 px-3">
                           {p.permalink && (
@@ -471,7 +524,7 @@ export default function CreatorProfile() {
           </div>
 
           {/* ── Growth ───────────────────────────────────────────────── */}
-          <div ref={growthRef} className="card p-5 flex flex-col gap-4 min-w-0 scroll-mt-16">
+          <div ref={growthRef} className="card p-5 flex flex-col gap-4 min-w-0 scroll-mt-24">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <SectionHeading infoTip={TOOLTIPS.keyEvents}>Growth</SectionHeading>
               <div className="flex items-center gap-4 flex-wrap">
@@ -539,7 +592,7 @@ export default function CreatorProfile() {
           </div>
 
           {/* ── About ────────────────────────────────────────────────── */}
-          <div ref={aboutRef} className="flex flex-col gap-2 scroll-mt-16">
+          <div ref={aboutRef} className="flex flex-col gap-2 scroll-mt-24">
             <SectionHeading>About</SectionHeading>
             <AboutSection about={stats?.about} loading={loading} isYoutube={isYoutube} />
           </div>

@@ -298,6 +298,7 @@ class CreatorStatsService:
                 handle=influencer.handle,
                 platform=influencer.platform,
                 category_name=influencer.category.name if influencer.category else None,
+                profile_pic_url=influencer.profile_pic_url,
                 followers=0,
                 post_count=0,
             )
@@ -346,6 +347,7 @@ class CreatorStatsService:
             handle=influencer.handle,
             platform=influencer.platform,
             category_name=influencer.category.name if influencer.category else None,
+            profile_pic_url=influencer.profile_pic_url,
             country=metadata.get("country"),
             account_age_days=account_age_days,
             followers=latest.followers,
