@@ -32,14 +32,19 @@ export default function Export() {
         className="max-w-xl rounded-2xl p-6 flex flex-col gap-4"
         style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-subtle)' }}
       >
-        <div className="flex items-start gap-3">
+        {/* min-w-0 on both the row and the text column -- flex children
+            default to min-width:auto, so without this the <pre>'s single
+            long line refuses to shrink and blows out the card (and the
+            page) into horizontal scroll instead of scrolling within its
+            own overflow-x-auto box. Same pattern as QueryConsole.jsx. */}
+        <div className="flex items-start gap-3 min-w-0">
           <div
             className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
             style={{ background: 'var(--color-accent-dim)', color: 'var(--color-accent)' }}
           >
             <DatabaseBackup className="w-5 h-5" />
           </div>
-          <div>
+          <div className="min-w-0">
             <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
               Database dump
             </h3>

@@ -1,44 +1,17 @@
 import React, { useMemo } from 'react';
-import {
-  ResponsiveContainer,
-  ComposedChart,
-  Line,
-  Area,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-} from 'recharts';
+import ReactECharts from 'echarts-for-react';
 import { format, parseISO } from 'date-fns';
 import EmptyState from '../common/EmptyState';
 import { platformLabel, PLATFORM_COLORS } from '../../utils/platform';
 
-// One row per (date, status, platform) -> one row per date: posts/comments
-// processed summed per platform (throughput split by platform, not just an
-// all-platforms-combined total), YouTube quota units spent, and job
-// duration -- mean plus a min/max range (a day where the average looks
-// fine can still hide a handful of jobs that ran far longer than usual;
-// the average alone hides that, the range band surfaces it). Duration
-// itself isn't split by platform ("throughput" is about volume; the range
-// band already reveals what averaging would otherwise hide, without a
-// second axis' worth of extra series).
 function aggregateByDate(buckets) {
   const byDate = new Map();
   for (const b of buckets) {
     if (!byDate.has(b.date)) byDate.set(b.date, { date: b.date, durations: [], mins: [], maxes: [] });
     const row = byDate.get(b.date);
     if (b.quota_units_used != null) {
-      // Quota is a cost, not throughput -- an API call can burn quota
-      // even when the job ultimately fails, so this counts every status.
       row.youtube_quota = (row.youtube_quota ?? 0) + b.quota_units_used;
     }
-    // A failed job's posts/comments/duration figures are noise, not real
-    // throughput (e.g. a burst of jobs that failed after ~0.1s can still
-    // carry a large posts_processed count from partial work) -- counting
-    // them here made failed days look like strong throughput instead of
-    // an incident, contradicting JobStatusChart right next to this one.
     if (b.status === 'failed') continue;
     row[`${b.platform}_posts`] = (row[`${b.platform}_posts`] ?? 0) + b.posts_processed;
     row[`${b.platform}_comments`] = (row[`${b.platform}_comments`] ?? 0) + b.comments_processed;
@@ -55,9 +28,8 @@ function aggregateByDate(buckets) {
         avg_duration_s: row.durations.length
           ? row.durations.reduce((a, b) => a + b, 0) / row.durations.length
           : null,
-        // Recharts' range-area idiom: an Area fed a [min, max] tuple per
-        // point renders the band between them.
-        duration_range: min != null && max != null ? [min, max] : null,
+        duration_min: min,
+        duration_max: max,
       };
     })
     .sort((a, b) => a.date.localeCompare(b.date));
@@ -71,110 +43,200 @@ export default function PerformanceChart({ buckets }) {
   );
   const hasQuota = useMemo(() => (buckets ?? []).some((b) => b.quota_units_used != null), [buckets]);
 
-  if (data.length === 0) {
+  // Hooks must run in the same order every render -- see QueueDepthChart.jsx
+  // for why the empty-state check lives inside this useMemo rather than as
+  // an early return before it.
+  const option = useMemo(() => {
+    if (data.length === 0) return null;
+    const xAxisData = data.map(d => d.date);
+    const series = [];
+
+    // Duration Range (Area)
+    series.push({
+      name: 'Duration Max',
+      type: 'line',
+      data: data.map(d => d.duration_max),
+      yAxisIndex: 1,
+      lineStyle: { opacity: 0 },
+      stack: 'duration',
+      symbol: 'none',
+      itemStyle: { color: 'var(--color-chart-4)' }
+    });
+    series.push({
+      name: 'Duration Min',
+      type: 'line',
+      data: data.map(d => d.duration_max - d.duration_min),
+      yAxisIndex: 1,
+      lineStyle: { opacity: 0 },
+      areaStyle: { color: 'var(--color-chart-4)', opacity: 0.15 },
+      stack: 'duration',
+      symbol: 'none'
+    });
+    
+    // Average Duration Line
+    series.push({
+      name: 'Avg duration (s)',
+      type: 'line',
+      data: data.map(d => d.avg_duration_s),
+      yAxisIndex: 1,
+      symbol: 'circle',
+      symbolSize: 6,
+      itemStyle: { color: 'var(--color-chart-4)' },
+      lineStyle: { width: 2 }
+    });
+
+    // YouTube Quota
+    if (hasQuota) {
+      series.push({
+        name: 'YouTube quota used',
+        type: 'line',
+        data: data.map(d => d.youtube_quota),
+        yAxisIndex: 2, // Map to hidden yAxis if needed or main axis
+        symbol: 'circle',
+        symbolSize: 6,
+        itemStyle: { color: 'var(--color-warning)' },
+        lineStyle: { width: 2, type: 'dashed' }
+      });
+    }
+
+    // Platforms Bars & Lines
+    platforms.forEach(p => {
+      // Posts (Bars)
+      series.push({
+        name: `${platformLabel(p)} posts`,
+        type: 'bar',
+        data: data.map(d => d[`${p}_posts`]),
+        stack: 'posts',
+        itemStyle: { color: PLATFORM_COLORS[p], borderRadius: [4, 4, 0, 0] },
+        barMaxWidth: 24,
+      });
+
+      // Comments (Lines)
+      series.push({
+        name: `${platformLabel(p)} comments`,
+        type: 'line',
+        data: data.map(d => d[`${p}_comments`]),
+        yAxisIndex: 3, // Hidden axis for comments to not squish posts
+        symbol: 'circle',
+        symbolSize: 6,
+        itemStyle: { color: PLATFORM_COLORS[p] },
+        lineStyle: { width: 2 }
+      });
+    });
+
+    return {
+      // bottom: 90 (not 65) -- this legend can carry up to 7 series
+      // (2 platforms x posts/comments, avg duration, quota), which wraps to
+      // 2-3 rows at typical card widths. Too little room here means the
+      // legend's later rows overlap the x-axis date labels instead of
+      // sitting below them, and get visually clipped by the chart's fixed
+      // container height (bumped to h-96 below for the same reason).
+      grid: { top: 30, right: 50, bottom: 90, left: 50 },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'cross', label: { backgroundColor: '#1a1a25' } },
+        backgroundColor: 'rgba(26, 26, 37, 0.85)',
+        borderColor: 'rgba(255, 255, 255, 0.1)',
+        textStyle: { color: '#f0f0f5', fontSize: 12 },
+        padding: [10, 14],
+        formatter: (params) => {
+          let date = params[0].axisValue;
+          let html = `<div style="font-weight: 600; margin-bottom: 6px;">${format(parseISO(date), 'MMM d, yyyy')}</div>`;
+          
+          params.forEach(param => {
+            if (param.seriesName === 'Duration Max' || param.seriesName === 'Duration Min') return; // Handled specially or ignore
+            
+            let valStr = param.value != null ? (typeof param.value === 'number' && param.value % 1 !== 0 ? param.value.toFixed(1) : param.value) : 'N/A';
+            if (param.seriesName.includes('duration')) valStr += 's';
+
+            html += `<div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; gap: 12px;">
+              <div style="display: flex; align-items: center; gap: 6px; color: var(--color-text-secondary)">
+                <span style="width: 8px; height: 8px; border-radius: 2px; background: ${param.color}"></span>
+                ${param.seriesName}
+              </div>
+              <div style="font-weight: 500; color: var(--color-text-primary)">${valStr}</div>
+            </div>`;
+          });
+          return html;
+        }
+      },
+      legend: {
+        bottom: 4,
+        textStyle: { color: '#8888a0', fontSize: 11 },
+        icon: 'roundRect',
+        itemGap: 12,
+        itemWidth: 10,
+        itemHeight: 10,
+        data: [
+          ...platforms.map(p => `${platformLabel(p)} posts`),
+          ...platforms.map(p => `${platformLabel(p)} comments`),
+          'Avg duration (s)',
+          ...(hasQuota ? ['YouTube quota used'] : [])
+        ]
+      },
+      dataZoom: [
+        { type: 'inside', start: 0, end: 100 }
+      ],
+      xAxis: {
+        type: 'category',
+        data: xAxisData,
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: {
+          formatter: (val) => format(parseISO(val), 'MMM d'),
+          color: '#8888a0',
+          fontSize: 12
+        },
+        // Without this, the crosshair's own label falls back to the raw
+        // category value instead of matching the tick labels below it.
+        axisPointer: { label: { formatter: (params) => format(parseISO(params.value), 'MMM d, yyyy') } }
+      },
+      yAxis: [
+        {
+          type: 'value',
+          name: 'Posts',
+          nameTextStyle: { color: '#55556a', padding: [0, 20, 0, 0] },
+          splitLine: { lineStyle: { type: 'dashed', color: 'rgba(255,255,255,0.05)' } },
+          axisLabel: { color: '#8888a0', fontSize: 11 }
+        },
+        {
+          type: 'value',
+          name: 'Duration',
+          nameTextStyle: { color: '#55556a', padding: [0, 0, 0, 20] },
+          splitLine: { show: false },
+          axisLabel: {
+            formatter: (v) => `${Math.round(v)}s`,
+            color: '#8888a0',
+            fontSize: 11
+          },
+          // Same as xAxis above -- keeps the crosshair's "s" suffix
+          // consistent with the tick labels instead of a bare number.
+          axisPointer: { label: { formatter: (params) => `${Math.round(params.value)}s` } }
+        },
+        {
+          type: 'value',
+          show: false // Quota
+        },
+        {
+          type: 'value',
+          show: false // Comments
+        }
+      ],
+      series: series
+    };
+  }, [data, platforms, hasQuota]);
+
+  if (!option) {
     return <EmptyState title="No performance data yet" message="Duration and throughput trends show up here." />;
   }
 
   return (
-    <div className="w-full h-64">
-      <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={data} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-border-subtle)" />
-          <XAxis
-            dataKey="date"
-            tickFormatter={(val) => format(parseISO(val), 'MMM d')}
-            axisLine={false}
-            tickLine={false}
-            tick={{ fontSize: 12, fill: 'var(--color-text-muted)' }}
-            dy={10}
-            minTickGap={20}
-          />
-          <YAxis
-            yAxisId="posts"
-            axisLine={false}
-            tickLine={false}
-            tick={{ fontSize: 12, fill: 'var(--color-text-muted)' }}
-            allowDecimals={false}
-          />
-          <YAxis
-            yAxisId="duration"
-            orientation="right"
-            axisLine={false}
-            tickLine={false}
-            tick={{ fontSize: 12, fill: 'var(--color-text-muted)' }}
-            tickFormatter={(v) => `${Math.round(v)}s`}
-          />
-          {/* Own axes, hidden -- comment volume typically runs 100-1000x
-              post volume, and quota units are a different unit entirely;
-              either would flatten against the posts/duration axes if it
-              shared their scale. */}
-          <YAxis yAxisId="comments" hide allowDecimals={false} />
-          <YAxis yAxisId="quota" hide allowDecimals={false} />
-          <Tooltip
-            labelFormatter={(val) => format(parseISO(val), 'MMM d, yyyy')}
-            formatter={(value, name) => {
-              if (name === 'avg_duration_s') return [`${value?.toFixed(1)}s`, 'Avg duration'];
-              if (name === 'duration_range') return [`${value[0].toFixed(1)}s – ${value[1].toFixed(1)}s`, 'Duration range'];
-              if (name === 'youtube_quota') return [value, 'YouTube quota used'];
-              const sepIndex = name.indexOf('_');
-              const platform = name.slice(0, sepIndex);
-              const kind = name.slice(sepIndex + 1);
-              return [value, `${platformLabel(platform)} ${kind}`];
-            }}
-            contentStyle={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-default)', borderRadius: 10 }}
-            labelStyle={{ color: 'var(--color-text-primary)', fontWeight: 600, marginBottom: 4 }}
-            itemStyle={{ color: 'var(--color-text-secondary)' }}
-          />
-          <Legend
-            wrapperStyle={{ fontSize: 12 }}
-            payload={[
-              ...platforms.map((p) => ({ value: `${platformLabel(p)} posts`, type: 'square', color: PLATFORM_COLORS[p] })),
-              ...platforms.map((p) => ({ value: `${platformLabel(p)} comments`, type: 'line', color: PLATFORM_COLORS[p] })),
-              { value: 'Avg duration (s)', type: 'line', color: 'var(--color-chart-4)' },
-              { value: 'Duration range', type: 'rect', color: 'var(--color-chart-4)' },
-              ...(hasQuota ? [{ value: 'YouTube quota used', type: 'line', color: 'var(--color-warning)' }] : []),
-            ]}
-          />
-          {platforms.map((p) => (
-            <Bar key={`${p}_posts`} yAxisId="posts" dataKey={`${p}_posts`} stackId="posts" fill={PLATFORM_COLORS[p]} radius={[4, 4, 0, 0]} barSize={20} />
-          ))}
-          {platforms.map((p) => (
-            <Line
-              key={`${p}_comments`}
-              yAxisId="comments"
-              type="monotone"
-              dataKey={`${p}_comments`}
-              stroke={PLATFORM_COLORS[p]}
-              strokeWidth={2}
-              dot={{ r: 3 }}
-              connectNulls
-            />
-          ))}
-          <Area
-            yAxisId="duration"
-            type="monotone"
-            dataKey="duration_range"
-            stroke="none"
-            fill="var(--color-chart-4)"
-            fillOpacity={0.15}
-            connectNulls
-            isAnimationActive={false}
-          />
-          <Line yAxisId="duration" type="monotone" dataKey="avg_duration_s" stroke="var(--color-chart-4)" strokeWidth={2} dot={{ r: 3 }} connectNulls />
-          {hasQuota && (
-            <Line
-              yAxisId="quota"
-              type="monotone"
-              dataKey="youtube_quota"
-              stroke="var(--color-warning)"
-              strokeWidth={2}
-              strokeDasharray="4 3"
-              dot={{ r: 3 }}
-              connectNulls
-            />
-          )}
-        </ComposedChart>
-      </ResponsiveContainer>
+    <div className="w-full h-96">
+      <ReactECharts 
+        option={option} 
+        style={{ height: '100%', width: '100%' }} 
+        notMerge={true}
+      />
     </div>
   );
 }
