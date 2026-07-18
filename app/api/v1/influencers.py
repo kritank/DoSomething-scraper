@@ -2,7 +2,9 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,3 +56,46 @@ async def get_top_influencers(
         )
         for row in rows
     ]
+
+
+@router.get("/{influencer_id}/avatar")
+async def get_influencer_avatar(influencer_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Proxies an influencer's profile picture through our own origin.
+
+    Instagram's CDN sends `Cross-Origin-Resource-Policy: same-origin` on
+    profile picture responses, which Chrome enforces even for a plain
+    `<img src>` -- the browser silently refuses to paint the image when
+    loaded directly from a different origin (the dashboard), no matter how
+    valid the signed URL is. YouTube's thumbnail CDN sends `cross-origin`
+    and works fine directly; Instagram's doesn't, so it needs this detour.
+    Fetching the bytes server-side (browser CORP enforcement only applies
+    to browser-initiated requests) and re-serving them from our own origin
+    sidesteps that -- there's no way to override Instagram's response
+    headers from the client side.
+
+    No auth required -- same trust level as GET /influencers/top; a
+    profile picture isn't sensitive, and an <img> tag can't attach our
+    admin API key header anyway.
+    """
+    influencer = await InfluencerRepo(db).get_by_id(influencer_id)
+    if influencer is None or not influencer.profile_pic_url:
+        raise HTTPException(status_code=404, detail="No profile picture available")
+
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        try:
+            upstream = await client.get(influencer.profile_pic_url)
+            upstream.raise_for_status()
+        except httpx.HTTPError:
+            raise HTTPException(status_code=502, detail="Could not fetch profile picture")
+
+    return Response(
+        content=upstream.content,
+        media_type=upstream.headers.get("content-type", "image/jpeg"),
+        headers={
+            # Signed CDN URLs expire after days/weeks -- caching moderately
+            # cuts repeat upstream fetches without risking a stale broken
+            # image for too long once a URL does expire.
+            "Cache-Control": "public, max-age=21600",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
