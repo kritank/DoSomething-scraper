@@ -23,6 +23,7 @@ import AboutSection from '../components/creator/AboutSection';
 import PostsTable from '../components/creator/PostsTable';
 import DailyGrowthHistoryTable from '../components/creator/DailyGrowthHistoryTable';
 import HeaderPill from '../components/common/HeaderPill';
+import { avatarUrl } from '../services/apiClient';
 import { formatHandle, platformLabel, PLATFORM_COLORS } from '../utils/platform';
 import { formatCompactNumber, formatSignedCompact, formatUsdRange, formatPercent, countryFlagEmoji, formatAccountAge } from '../utils/format';
 import { GROWTH_RANGES } from '../utils/growthRanges';
@@ -263,7 +264,7 @@ export default function CreatorProfile() {
               Back
             </Button>
           </Link>
-          {!loading && <Avatar src={s.profile_pic_url} handle={s.handle} />}
+          {!loading && <Avatar src={s.profile_pic_url ? avatarUrl(influencerId) : null} handle={s.handle} />}
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h2 className="text-xl font-semibold truncate" style={{ color: 'var(--color-text-primary)' }}>

@@ -29,6 +29,7 @@ import { formatHandle } from '../utils/platform';
 import { formatCompactNumber, formatUsdRange, countryFlagEmoji } from '../utils/format';
 import { GROWTH_RANGES } from '../utils/growthRanges';
 import { mergeGrowthSeries, mergeEarningsSeries, mergeFormatBreakdowns } from '../utils/mergeSeries';
+import { avatarUrl } from '../services/apiClient';
 
 const COMBINED_COLOR = '#8b5cf6';
 
@@ -321,7 +322,8 @@ export default function CombinedCreatorProfile() {
   const updatedDates = statsList.map((d) => d.summary?.updated_at).filter(Boolean).sort();
   const latestUpdated = updatedDates[updatedDates.length - 1];
   const anyVerified = statsList.some((d) => d.about?.is_verified);
-  const primaryAvatar = statsList.find((d) => d.summary?.profile_pic_url)?.summary?.profile_pic_url;
+  const primaryAvatarInfluencerId = statsList.find((d) => d.summary?.profile_pic_url)?.summary?.influencer_id;
+  const primaryAvatar = avatarUrl(primaryAvatarInfluencerId);
 
   const handleEventClick = (event) => {
     if (event.permalink) window.open(event.permalink, '_blank', 'noreferrer');
