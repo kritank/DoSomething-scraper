@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, ExternalLink, TrendingUp, TrendingDown, RefreshCw, BadgeCheck } from 'lucide-react';
+import { ArrowLeft, TrendingUp, TrendingDown, RefreshCw, BadgeCheck, Video, Calendar, Clock } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import {
   getCreatorStats,
@@ -20,16 +20,12 @@ import GrowthChart from '../components/charts/GrowthChart';
 import DailyGrowthChart from '../components/charts/DailyGrowthChart';
 import FormatSplitCard from '../components/creator/FormatSplitCard';
 import AboutSection from '../components/creator/AboutSection';
+import PostsTable from '../components/creator/PostsTable';
+import DailyGrowthHistoryTable from '../components/creator/DailyGrowthHistoryTable';
+import HeaderPill from '../components/common/HeaderPill';
 import { formatHandle, platformLabel, PLATFORM_COLORS } from '../utils/platform';
-import { formatCompactNumber, formatSignedCompact, formatUsdRange, formatPercent } from '../utils/format';
-
-const GROWTH_RANGES = [
-  { label: '7D', days: 7 },
-  { label: '28D', days: 28 },
-  { label: '3M', days: 90 },
-  { label: '1Y', days: 365 },
-  { label: 'Max', days: 3650 },
-];
+import { formatCompactNumber, formatSignedCompact, formatUsdRange, formatPercent, countryFlagEmoji, formatAccountAge } from '../utils/format';
+import { GROWTH_RANGES } from '../utils/growthRanges';
 
 // A leading 0-value point in the followers series is a broken/seed
 // snapshot, not "tracking started at zero" -- no tracked account actually
@@ -63,8 +59,6 @@ const TOOLTIPS = {
   earningsYoutube: 'Rough industry-rate estimate (not real revenue): monthly views × typical ad RPM for the channel’s country.',
   earningsInstagram: 'Estimated price for one sponsored post: follower count × typical rate, adjusted by engagement rate.',
   rank: 'Rank among the accounts tracked in this dashboard only — not a global or industry rank.',
-  outlier: "This post's views (or likes) vs the account's median over its previous 30 posts. 2× = twice the typical post.",
-  velocity: 'Average views (or likes) per hour since publishing. Shown only for posts under 7 days (YouTube) / 48 hours (Instagram) old.',
   formatSplitYoutube: 'Shorts are videos of 3 minutes or less, as classified by YouTube.',
   formatSplitInstagram: 'Reels vs regular posts (photos, carousels).',
   dailyGrowth: 'Day-over-day change between consecutive daily snapshots. Gaps mean no snapshot was captured that day.',
@@ -127,8 +121,14 @@ export default function CreatorProfile() {
   const [formatLoading, setFormatLoading] = useState(true);
 
   const [postsFilter, setPostsFilter] = useState('all');
+  const [postsSort, setPostsSort] = useState('top');
   const [posts, setPosts] = useState([]);
   const [postsLoading, setPostsLoading] = useState(true);
+
+  const [historyFollowers, setHistoryFollowers] = useState([]);
+  const [historyViews, setHistoryViews] = useState([]);
+  const [historyEarnings, setHistoryEarnings] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
 
   const overviewRef = useRef(null);
   const contentRef = useRef(null);
@@ -187,11 +187,37 @@ export default function CreatorProfile() {
     if (!stats) return;
     let cancelled = false;
     setPostsLoading(true);
-    getCreatorPostPerformance(influencerId, 20, postsFilter === 'all' ? undefined : postsFilter)
+    getCreatorPostPerformance(influencerId, 20, postsFilter === 'all' ? undefined : postsFilter, postsSort)
       .then((data) => { if (!cancelled) setPosts(data); })
       .finally(() => { if (!cancelled) setPostsLoading(false); });
     return () => { cancelled = true; };
-  }, [influencerId, postsFilter, stats]);
+  }, [influencerId, postsFilter, postsSort, stats]);
+
+  // Independent of growthMetric (that only drives the chart above) --
+  // the Daily Growth History table always wants followers + views +
+  // earnings side by side, regardless of which single metric is charted.
+  // views/earnings are YouTube-only (see CreatorSummary.total_views
+  // docstring), so they're skipped for Instagram rather than firing
+  // requests that would just come back empty.
+  useEffect(() => {
+    if (!stats) return;
+    const isYt = stats.summary.platform === 'youtube';
+    let cancelled = false;
+    setHistoryLoading(true);
+    Promise.all([
+      getCreatorGrowth(influencerId, growthDays, 'followers'),
+      isYt ? getCreatorGrowth(influencerId, growthDays, 'total_views') : Promise.resolve([]),
+      isYt ? getCreatorGrowth(influencerId, growthDays, 'earnings') : Promise.resolve([]),
+    ])
+      .then(([followers, views, earnings]) => {
+        if (cancelled) return;
+        setHistoryFollowers(stripPhantomZeroLead(followers));
+        setHistoryViews(views);
+        setHistoryEarnings(earnings);
+      })
+      .finally(() => { if (!cancelled) setHistoryLoading(false); });
+    return () => { cancelled = true; };
+  }, [influencerId, growthDays, stats]);
 
   const scrollTo = (ref) => ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
@@ -253,11 +279,21 @@ export default function CreatorProfile() {
               {!loading && <PlatformBadge platform={s.platform} />}
             </div>
             {!loading && (
-              <p className="text-sm mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-                {[s.category_name, s.country, s.account_age_days != null ? `${Math.floor(s.account_age_days / 365)}y old` : null]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </p>
+              <div className="flex items-center flex-wrap gap-1.5 mt-1.5">
+                {s.category_name && <HeaderPill>{s.category_name}</HeaderPill>}
+                <HeaderPill icon={Video}>{formatCompactNumber(s.post_count)} {longFormLabel.toLowerCase()}</HeaderPill>
+                {formatAccountAge(s.account_age_days) && (
+                  <HeaderPill icon={Calendar}>{formatAccountAge(s.account_age_days)}</HeaderPill>
+                )}
+                {countryFlagEmoji(s.country) && (
+                  <HeaderPill>
+                    <span>{countryFlagEmoji(s.country)}</span> {s.country}
+                  </HeaderPill>
+                )}
+                {s.updated_at && (
+                  <HeaderPill icon={Clock}>Updated {format(parseISO(s.updated_at), 'MMM d, yyyy')}</HeaderPill>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -384,115 +420,17 @@ export default function CreatorProfile() {
 
           {/* ── Content ──────────────────────────────────────────────── */}
           <div ref={contentRef} className="card p-5 flex flex-col gap-3 min-w-0 scroll-mt-24">
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <SectionHeading>Recent {isYoutube ? 'videos' : 'posts'}</SectionHeading>
-              <div className="flex items-center gap-1">
-                {[
-                  { value: 'all', label: 'All' },
-                  { value: 'long_form', label: longFormLabel },
-                  { value: 'short_form', label: shortFormLabel },
-                ].map((opt) => (
-                  <button
-                    key={opt.value}
-                    onClick={() => setPostsFilter(opt.value)}
-                    className="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors"
-                    style={{
-                      background: postsFilter === opt.value ? 'var(--color-accent-dim)' : 'transparent',
-                      color: postsFilter === opt.value ? 'var(--color-accent)' : 'var(--color-text-muted)',
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            {postsLoading ? (
-              <Skeleton className="h-48 w-full" />
-            ) : posts.length === 0 ? (
-              <EmptyState title="No posts yet" message="Posts will show up here after the next scrape." />
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                      <Th>Title</Th>
-                      <Th>Type</Th>
-                      <Th>Posted</Th>
-                      <Th>Views</Th>
-                      <Th>Likes</Th>
-                      <Th>Comments</Th>
-                      <Th infoTip={TOOLTIPS.outlier}>Outlier</Th>
-                      <Th infoTip={TOOLTIPS.velocity}>Velocity/hr</Th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {posts.map((p) => (
-                      <tr key={p.post_id} className="hover:bg-[var(--color-bg-card-hover)]" style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                        <td className="py-2.5 px-3 max-w-xs truncate" style={{ color: 'var(--color-text-primary)' }} title={p.title ?? ''}>
-                          {p.title || '(untitled)'}
-                        </td>
-                        <td className="py-2.5 px-3 whitespace-nowrap">
-                          <span
-                            className="px-2 py-0.5 rounded-full text-xs"
-                            style={{
-                              background: p.format === 'short_form' ? 'rgba(6,182,212,0.12)' : 'var(--color-accent-dim)',
-                              color: p.format === 'short_form' ? 'var(--color-chart-2)' : 'var(--color-accent)',
-                            }}
-                          >
-                            {p.format === 'short_form' ? shortFormLabel.replace(/s$/, '') : longFormLabel.replace(/s$/, '')}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
-                          {format(parseISO(p.posted_at), 'MMM d, yyyy')}
-                        </td>
-                        {/* Falsy check (not != null) is deliberate: Instagram
-                            photo/carousel posts come back with views=0 (not a
-                            real NULL) since they have no public view metric --
-                            same "0 means unavailable" rule the backend already
-                            applies for outlier scoring and the format
-                            breakdown (see _PostMetricPoint.outlier_metric). */}
-                        <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.views ? formatCompactNumber(p.views) : '—'}</td>
-                        <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.likes != null ? formatCompactNumber(p.likes) : '—'}</td>
-                        <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.comments != null ? formatCompactNumber(p.comments) : '—'}</td>
-                        <td className="py-2.5 px-3">
-                          {p.outlier_score != null ? (
-                            <span
-                              className="px-2 py-0.5 rounded-full text-xs font-semibold"
-                              style={{
-                                background: p.outlier_score >= 2 ? 'var(--color-success-muted)' : 'var(--color-bg-card-hover)',
-                                color: p.outlier_score >= 2 ? 'var(--color-success)' : 'var(--color-text-muted)',
-                              }}
-                            >
-                              {p.outlier_score.toFixed(1)}×
-                            </span>
-                          ) : '—'}
-                        </td>
-                        <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>
-                          {p.velocity_per_hour != null ? (
-                            formatCompactNumber(p.velocity_per_hour)
-                          ) : (
-                            // Not missing data -- velocity_per_hour is only ever
-                            // computed within the freshness window (7d YouTube /
-                            // 48h Instagram, see TOOLTIPS.velocity above), so a
-                            // bare "—" here reads as broken rather than expected
-                            // for any older post.
-                            <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Too old</span>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-3">
-                          {p.permalink && (
-                            <a href={p.permalink} target="_blank" rel="noreferrer">
-                              <ExternalLink className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
-                            </a>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            <SectionHeading>{isYoutube ? 'Videos' : 'Posts'}</SectionHeading>
+            <PostsTable
+              posts={posts}
+              loading={postsLoading}
+              sortMode={postsSort}
+              onSortModeChange={setPostsSort}
+              formatFilter={postsFilter}
+              onFormatFilterChange={setPostsFilter}
+              longFormLabel={longFormLabel}
+              shortFormLabel={shortFormLabel}
+            />
           </div>
 
           {/* ── Growth ───────────────────────────────────────────────── */}
@@ -561,6 +499,19 @@ export default function CreatorProfile() {
                 )}
               </>
             )}
+
+            <div className="flex items-center gap-1.5 pt-2" style={{ borderTop: '1px solid var(--color-border-subtle)' }}>
+              <h4 className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-muted)' }}>
+                Daily {followersLabel.toLowerCase()} growth & view history
+              </h4>
+            </div>
+            <DailyGrowthHistoryTable
+              followersSeries={historyFollowers}
+              viewsSeries={historyViews}
+              earningsSeries={historyEarnings}
+              followersLabel={followersLabel}
+              loading={historyLoading}
+            />
           </div>
 
           {/* ── About ────────────────────────────────────────────────── */}
@@ -571,25 +522,6 @@ export default function CreatorProfile() {
         </>
       )}
     </div>
-  );
-}
-
-function Th({ children, infoTip }) {
-  return (
-    <th className="text-left py-2.5 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
-      <span className="inline-flex items-center gap-1">
-        {children}
-        {/* side="bottom" -- this header sits at the top of a table wrapped
-            in overflow-x-auto, which (per the CSS overflow spec) computes
-            overflow-y to auto too even though it's never set explicitly.
-            InfoTip's default side="top" pops the tooltip up above the
-            header, past the wrapper's top edge, where that implicit
-            overflow-y:auto clips it -- invisible even though it's
-            technically rendered. Popping down instead keeps it inside the
-            scrollable area. */}
-        {infoTip && <InfoTip text={infoTip} side="bottom" />}
-      </span>
-    </th>
   );
 }
 

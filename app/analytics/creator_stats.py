@@ -63,6 +63,9 @@ MIN_POSTS_FOR_OUTLIER = 5
 # measured against. Matches vidiq's "vs channel average" framing without
 # being diluted by years of history on long-running channels.
 OUTLIER_LOOKBACK_POSTS = 30
+# Candidate pool scanned for sort="top" in get_post_performance -- see the
+# comment at its call site for the tradeoff this size encodes.
+TOP_SORT_CANDIDATE_POOL = 400
 # A post is "fresh" enough for a velocity/hour figure within this window --
 # past it, lifetime-average views/hour stops meaning much (see
 # PostPerformance.velocity_per_hour docstring).
@@ -360,6 +363,7 @@ class CreatorStatsService:
             actual_window_days_28=actual_window_days_28,
             views_28d=views_28d,
             posts_per_week=round(posts_28d / 4, 2),
+            updated_at=latest.scraped_at,
         )
 
     async def get_growth_series(
@@ -500,7 +504,11 @@ class CreatorStatsService:
         )
 
     async def get_post_performance(
-        self, influencer_id: UUID, limit: int = 20, content_format_filter: Optional[str] = None
+        self,
+        influencer_id: UUID,
+        limit: int = 20,
+        content_format_filter: Optional[str] = None,
+        sort: str = "latest",
     ) -> list[PostPerformance]:
         influencer = (
             await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
@@ -530,7 +538,20 @@ class CreatorStatsService:
         # returned, applied client-side after scoring. When filtering,
         # fetch a much larger candidate pool so `limit` filtered posts can
         # actually be found even on a channel that's mostly one format.
-        fetch_count = (limit * 8 if content_format_filter else limit) + OUTLIER_LOOKBACK_POSTS
+        #
+        # sort="top" re-ranks by outlier_score/views instead of recency, so
+        # it needs a much wider candidate pool than "latest" -- otherwise
+        # it could only ever find "top of the last `limit` posts" rather
+        # than anything resembling top-of-all-time. TOP_SORT_CANDIDATE_POOL
+        # trades off against outlier_score staying correct (it needs the
+        # OUTLIER_LOOKBACK_POSTS immediately preceding each candidate,
+        # which this single posted_at-ordered fetch already provides) vs.
+        # not scanning a channel's entire multi-thousand-post history on
+        # every request.
+        if sort == "top":
+            fetch_count = TOP_SORT_CANDIDATE_POOL * (2 if content_format_filter else 1)
+        else:
+            fetch_count = (limit * 8 if content_format_filter else limit) + OUTLIER_LOOKBACK_POSTS
         stmt = (
             select(
                 Post.id,
@@ -573,10 +594,16 @@ class CreatorStatsService:
         now = datetime.now(timezone.utc)
         scores = _compute_outlier_and_velocity(points_asc, influencer.platform, now)
 
-        newest_first = list(reversed(points_asc))
+        ordered = list(reversed(points_asc))
         if content_format_filter:
-            newest_first = [p for p in newest_first if formats_by_post[p.post_id] == content_format_filter]
-        newest_first = newest_first[:limit]
+            ordered = [p for p in ordered if formats_by_post[p.post_id] == content_format_filter]
+        if sort == "top":
+            ordered = sorted(
+                ordered,
+                key=lambda p: (scores[p.post_id][0] if scores[p.post_id][0] is not None else -1, p.views or p.likes or 0),
+                reverse=True,
+            )
+        newest_first = ordered[:limit]
 
         return [
             PostPerformance(
@@ -755,6 +782,7 @@ class CreatorStatsService:
                     post_id=p.post_id,
                     permalink=p.permalink,
                     metric_value=metric_value,
+                    format=p.format,
                 )
             )
 

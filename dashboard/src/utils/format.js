@@ -31,3 +31,27 @@ export function formatPercent(value, digits = 2) {
   if (value === null || value === undefined) return '—';
   return `${(value * 100).toFixed(digits)}%`;
 }
+
+// ISO 3166-1 alpha-2 ("IN", "US") -> flag emoji, by composing the two
+// regional-indicator Unicode code points -- covers every country without
+// needing a flag sprite/icon set. YouTube's snippet.country is already
+// this format (see youtube_parser.py); anything else (missing, or not a
+// clean 2-letter code) returns null so callers can skip the pill entirely.
+export function countryFlagEmoji(countryCode) {
+  if (!countryCode || countryCode.length !== 2) return null;
+  const code = countryCode.toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) return null;
+  const codePoints = [...code].map((c) => 0x1f1e6 + (c.charCodeAt(0) - 65));
+  return String.fromCodePoint(...codePoints);
+}
+
+// "4 years" / "8 months" -- coarse account-age pill, matching vidiq's
+// header badge. Falls back to months under a year so a brand-new channel
+// doesn't just show "0 years".
+export function formatAccountAge(days) {
+  if (days === null || days === undefined || days < 0) return null;
+  const years = Math.floor(days / 365);
+  if (years >= 1) return `${years} year${years === 1 ? '' : 's'}`;
+  const months = Math.max(1, Math.floor(days / 30));
+  return `${months} month${months === 1 ? '' : 's'}`;
+}

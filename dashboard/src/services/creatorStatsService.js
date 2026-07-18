@@ -16,9 +16,9 @@ export async function getCreatorGrowth(influencerId, days, metric) {
   return data;
 }
 
-export async function getCreatorPostPerformance(influencerId, limit = 20, format = undefined) {
+export async function getCreatorPostPerformance(influencerId, limit = 20, format = undefined, sort = 'latest') {
   const { data } = await apiClient.get(`/influencers/${influencerId}/posts/performance`, {
-    params: { limit, format },
+    params: { limit, format, sort },
   });
   return data;
 }

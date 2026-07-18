@@ -68,13 +68,16 @@ async def get_creator_post_performance(
     format: Optional[Literal["long_form", "short_form"]] = Query(
         None, description="Filter to one content format; omit for all formats."
     ),
+    sort: Literal["latest", "top"] = Query("latest", description="'latest' = most recent first, 'top' = highest outlier/views first."),
     db: AsyncSession = Depends(get_db),
 ):
     service = CreatorStatsService(db)
     summary = await service.get_summary(influencer_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="Influencer not found")
-    return await service.get_post_performance(influencer_id, limit=limit, content_format_filter=format)
+    return await service.get_post_performance(
+        influencer_id, limit=limit, content_format_filter=format, sort=sort
+    )
 
 
 @router.get("/{influencer_id}/formats", response_model=FormatBreakdownOut)
