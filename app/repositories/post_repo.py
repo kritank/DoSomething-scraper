@@ -8,11 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.influencer import Influencer
 from app.models.post import Post
+from app.models.post_outlier_metrics import PostOutlierMetrics
 from app.models.snapshot import PostMetricsSnapshot
-
-_SORT_COLUMNS = {
-    "posted_at": Post.posted_at,
-}
 
 
 class PostRepo:
@@ -36,6 +33,9 @@ class PostRepo:
         influencer_id: Optional[UUID] = None,
         category_id: Optional[UUID] = None,
         platforms: Optional[list[str]] = None,
+        # Cross-creator outliers feed (docs/OUTLIERS_PLAN.md Phase 3) --
+        # posts below min_score, or with no score yet, are excluded when set.
+        min_score: Optional[float] = None,
         sort: str = "posted_at",
         sort_dir: str = "desc",
         limit: int = 50,
@@ -50,16 +50,33 @@ class PostRepo:
                 stmt = stmt.where(Influencer.category_id == category_id)
             if platforms:
                 stmt = stmt.where(Influencer.platform.in_(platforms))
+            if min_score is not None:
+                stmt = stmt.where(PostOutlierMetrics.outlier_score >= min_score)
             return stmt
 
-        base = _apply_filters(select(Post).join(Influencer, Influencer.id == Post.influencer_id))
+        base = _apply_filters(
+            select(Post)
+            .join(Influencer, Influencer.id == Post.influencer_id)
+            .outerjoin(PostOutlierMetrics, PostOutlierMetrics.post_id == Post.id)
+        )
         count_stmt = select(func.count()).select_from(base.subquery())
         total = (await self.session.execute(count_stmt)).scalar_one()
 
-        sort_col = {"posted_at": Post.posted_at, "likes": latest.c.likes, "comments": latest.c.comments}.get(
-            sort, Post.posted_at
+        sort_col = {
+            "posted_at": Post.posted_at,
+            "likes": latest.c.likes,
+            "comments": latest.c.comments,
+            "outlier_score": PostOutlierMetrics.outlier_score,
+            "vph_current": PostOutlierMetrics.vph_current,
+        }.get(sort, Post.posted_at)
+        # NULLs (posts not yet scored) always sort last, regardless of
+        # direction -- otherwise "sort by outlier score desc" would put
+        # every unscored post above every real 5x outlier.
+        order = (
+            [sort_col.desc().nullslast(), Post.posted_at.desc()]
+            if sort_dir == "desc"
+            else [sort_col.asc().nullslast(), Post.posted_at.desc()]
         )
-        order = sort_col.desc() if sort_dir == "desc" else sort_col.asc()
 
         stmt = _apply_filters(
             select(
@@ -76,11 +93,15 @@ class PostRepo:
                 latest.c.comments,
                 latest.c.views,
                 latest.c.reposts,
+                PostOutlierMetrics.outlier_score,
+                PostOutlierMetrics.baseline_multiple,
+                PostOutlierMetrics.vph_current,
             )
             .select_from(Post)
             .join(Influencer, Influencer.id == Post.influencer_id)
             .outerjoin(latest, latest.c.post_id == Post.id)
-        ).order_by(order).limit(limit).offset(offset)
+            .outerjoin(PostOutlierMetrics, PostOutlierMetrics.post_id == Post.id)
+        ).order_by(*order).limit(limit).offset(offset)
 
         result = await self.session.execute(stmt)
         rows = [dict(r._mapping) for r in result.all()]

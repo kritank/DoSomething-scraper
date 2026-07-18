@@ -7,6 +7,7 @@ import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from app.analytics.creator_stats import CreatorStatsService
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.database import get_session
@@ -112,6 +113,7 @@ class YouTubeJobProcessor:
                     await self._run_scrape(session, job)
                     job.status = "completed"
                     job.error_message = None
+                    await self._recompute_outlier_metrics(session)
                 except JobCancelledError:
                     logger.info("Scrape cancelled", job_id=job.id)
                     outcome = "cancelled"
@@ -155,6 +157,24 @@ class YouTubeJobProcessor:
                     await heartbeat_task
                 except asyncio.CancelledError:
                     pass
+
+    async def _recompute_outlier_metrics(self, session: AsyncSession) -> None:
+        """Best-effort: re-score and persist this channel's recent videos'
+        outlier metrics (docs/OUTLIERS_PLAN.md Phase 1) now that new
+        PostMetricsSnapshot rows landed. Never fails the scrape job -- an
+        outlier-scoring bug shouldn't take down data collection."""
+        try:
+            await CreatorStatsService(session).recompute_outlier_metrics(
+                self.message.influencer_id
+            )
+            await session.commit()
+        except Exception:
+            logger.warning(
+                "Outlier metrics recompute failed",
+                influencer_id=self.message.influencer_id,
+                exc_info=True,
+            )
+            await session.rollback()
 
     async def _heartbeat(self, job_id: UUID) -> None:
         """Same liveness ticker as JobProcessor._heartbeat, minus account

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from app.models.influencer import Influencer
     from app.models.snapshot import PostMetricsSnapshot
     from app.models.feature_store import FeatureStore
+    from app.models.post_outlier_metrics import PostOutlierMetrics
 
 
 class Post(Base):
@@ -80,6 +81,9 @@ class Post(Base):
     )
     feature_store: Mapped[Optional["FeatureStore"]] = relationship(
         "FeatureStore", back_populates="post", uselist=False, cascade="all, delete-orphan"
+    )
+    outlier_metrics: Mapped[Optional["PostOutlierMetrics"]] = relationship(
+        "PostOutlierMetrics", back_populates="post", uselist=False, cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:
