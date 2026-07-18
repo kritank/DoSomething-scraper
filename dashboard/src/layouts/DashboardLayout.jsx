@@ -14,8 +14,16 @@ export default function DashboardLayout() {
           instead of scrolling within its own container. */}
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <Header />
-        <main className="flex-1 min-w-0 overflow-y-auto p-6">
-          <Outlet />
+        {/* Padding lives on this inner div, not on the scrolling `main`
+            itself -- a `position: sticky` descendant (e.g. CreatorProfile's
+            in-page section nav) sticks relative to main's scrollport, and
+            if main itself carried the padding, that padding would leave a
+            gap above the stuck element instead of scrolling away with the
+            rest of the content. */}
+        <main className="flex-1 min-w-0 overflow-y-auto">
+          <div className="p-6">
+            <Outlet />
+          </div>
         </main>
       </div>
       <Toaster theme="dark" position="bottom-right" richColors />

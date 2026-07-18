@@ -11,8 +11,8 @@ import {
   getCreatorPostPerformance,
 } from '../services/creatorStatsService';
 import Avatar from '../components/common/Avatar';
-import PlatformBadge from '../components/common/PlatformBadge';
 import PlatformIcon from '../components/common/PlatformIcon';
+import PlatformVerifiedBadge from '../components/common/PlatformVerifiedBadge';
 import HeaderPill from '../components/common/HeaderPill';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
@@ -321,7 +321,6 @@ export default function CombinedCreatorProfile() {
   const countries = [...new Set(statsList.map((d) => d.about?.country || d.summary?.country).filter(Boolean))];
   const updatedDates = statsList.map((d) => d.summary?.updated_at).filter(Boolean).sort();
   const latestUpdated = updatedDates[updatedDates.length - 1];
-  const anyVerified = statsList.some((d) => d.about?.is_verified);
   const primaryAvatarInfluencerId = statsList.find((d) => d.summary?.profile_pic_url)?.summary?.influencer_id;
   const primaryAvatar = avatarUrl(primaryAvatarInfluencerId);
 
@@ -361,10 +360,13 @@ export default function CombinedCreatorProfile() {
                 <h2 className="text-xl font-semibold truncate" style={{ color: 'var(--color-text-primary)' }}>
                   {loading ? 'Loading…' : creator?.name}
                 </h2>
-                {!loading && anyVerified && (
-                  <BadgeCheck className="w-4 h-4 shrink-0" style={{ color: 'var(--color-accent)' }} aria-label="Verified" />
-                )}
-                {!loading && creator?.influencers.map((ref) => <PlatformBadge key={ref.influencer_id} platform={ref.platform} />)}
+                {!loading && creator?.influencers.map((ref) => (
+                  <PlatformVerifiedBadge
+                    key={ref.influencer_id}
+                    platform={ref.platform}
+                    verified={statsByInfluencer[ref.influencer_id]?.about?.is_verified}
+                  />
+                ))}
               </div>
               {!loading && creator && (
                 <div className="flex items-center flex-wrap gap-1.5 mt-1.5">

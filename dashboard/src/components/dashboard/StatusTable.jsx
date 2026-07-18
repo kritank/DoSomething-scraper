@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { ArrowUpDown, Search } from 'lucide-react';
 import { format } from 'date-fns';
+import { Link } from 'react-router-dom';
 import StatusBadge from '../common/StatusBadge';
 import PlatformBadge from '../common/PlatformBadge';
 import Input from '../common/Input';
@@ -127,8 +128,14 @@ export default function StatusTable({ rows }) {
                   title={row.last_job_error_message ?? undefined}
                 >
                   <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{row.category_name}</td>
-                  <td className="py-2.5 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-primary)' }}>
-                    {formatHandle(row.handle, row.platform)}
+                  <td className="py-2.5 px-3 font-medium whitespace-nowrap">
+                    <Link
+                      to={row.creator_id ? `/creators/${row.creator_id}` : `/influencers/${row.influencer_id}`}
+                      className="hover:underline"
+                      style={{ color: 'var(--color-text-primary)' }}
+                    >
+                      {formatHandle(row.handle, row.platform)}
+                    </Link>
                   </td>
                   <td className="py-2.5 px-3">
                     <PlatformBadge platform={row.platform} />
