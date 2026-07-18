@@ -131,9 +131,15 @@ export default function Influencers() {
     return grouped
       .map(({ category, influencers }) => ({
         category,
-        influencers: influencers.filter(
-          (row) => row.handle.toLowerCase().includes(q) || row.creator_name?.toLowerCase().includes(q),
-        ),
+        // A category-name match keeps every influencer in that category
+        // (that's the whole point of searching "Beauty") rather than
+        // filtering them down to rows whose handle/creator also happens
+        // to contain the query.
+        influencers: category.name.toLowerCase().includes(q)
+          ? influencers
+          : influencers.filter(
+              (row) => row.handle.toLowerCase().includes(q) || row.creator_name?.toLowerCase().includes(q),
+            ),
       }))
       .filter(({ influencers }) => influencers.length > 0);
   }, [grouped, search]);
@@ -356,7 +362,7 @@ export default function Influencers() {
       <div className="flex items-center justify-between gap-3 flex-wrap">
         {!loading && grouped.length > 0 && (
           <Input
-            placeholder="Search by handle or creator name..."
+            placeholder="Search by handle, creator, or category..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="max-w-xs"
@@ -372,7 +378,7 @@ export default function Influencers() {
       ) : grouped.length === 0 ? (
         <EmptyState title="No categories yet" message="Add your first category above to get started." />
       ) : filteredGrouped.length === 0 ? (
-        <EmptyState title="No matches" message={`No influencer handles match "${search}".`} />
+        <EmptyState title="No matches" message={`No handle, creator, or category matches "${search}".`} />
       ) : (
         <div className="flex flex-col gap-4">
           {filteredGrouped.map(({ category, influencers }) => (
