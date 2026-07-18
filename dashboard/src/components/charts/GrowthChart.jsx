@@ -21,6 +21,17 @@ const EVENT_TYPE_LABELS = {
   milestone: 'Follower milestone',
 };
 
+// Shape (not just color) distinguishes what kind of content a top_post
+// marker is about -- a Short and a long-form video both score as
+// "standout posts" but read very differently on a growth chart, same as
+// vidiq using distinct iconography for each. Milestones aren't tied to a
+// single post/format, so they stay circles.
+const EVENT_SYMBOLS = {
+  short_form: 'diamond',
+  long_form: 'circle',
+  live: 'triangle',
+};
+
 export default function GrowthChart({ points, metric, color = '#6366f1', events = [], onEventClick }) {
   const chartRef = useRef(null);
   const isEarnings = metric === 'earnings';
@@ -64,8 +75,8 @@ export default function GrowthChart({ points, metric, color = '#6366f1', events 
 
     const xAxisData = points_.map(p => p.date);
 
-    let series = [];
-    
+    let series;
+
     if (isEarnings) {
       series = [
         {
@@ -135,6 +146,15 @@ export default function GrowthChart({ points, metric, color = '#6366f1', events 
           },
           borderColor: '#1a1a25',
           borderWidth: 2
+        },
+        symbol: (value, params) => {
+          const cluster = params.data[2];
+          const singleFormat = cluster.items.every(
+            (e) => e.type === 'top_post' && e.format === cluster.items[0].format,
+          )
+            ? cluster.items[0].format
+            : null;
+          return (singleFormat && EVENT_SYMBOLS[singleFormat]) || 'circle';
         },
         symbolSize: (data) => {
           const cluster = data[2];
@@ -279,6 +299,10 @@ export default function GrowthChart({ points, metric, color = '#6366f1', events 
           <span className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full" style={{ background: EVENT_COLORS.milestone }} />
             Follower milestone
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2" style={{ background: '#8888a0', transform: 'rotate(45deg)' }} />
+            = Short · ● = Video
           </span>
           <span>· drag bottom handle to zoom, click points for details</span>
         </div>

@@ -41,6 +41,10 @@ class CreatorSummary(BaseModel):
 
     posts_per_week: Optional[float] = None
 
+    # Date of the most recent successful scrape (ProfileSnapshot.scraped_at)
+    # backing this summary. None only when there's no snapshot at all yet.
+    updated_at: Optional[date] = None
+
 
 class GrowthPoint(BaseModel):
     date: date
@@ -160,6 +164,10 @@ class KeyEvent(BaseModel):
     post_id: Optional[UUID] = None
     permalink: Optional[str] = None
     metric_value: Optional[float] = None
+    # "long_form" | "short_form" | "live" -- only set for type="top_post"
+    # (sourced from the underlying PostPerformance.format). None for
+    # "milestone" events, which aren't tied to any single post.
+    format: Optional[str] = None
 
 
 class CreatorStatsOut(BaseModel):
