@@ -10,6 +10,7 @@ from app.models.feature_store import FeatureStore
 from app.models.influencer import Influencer
 from app.models.instagram_account import InstagramAccount
 from app.models.post import Post
+from app.models.post_outlier_metrics import PostOutlierMetrics
 from app.models.queue_depth_snapshot import QueueDepthSnapshot
 from app.models.raw_response import RawResponse
 from app.models.recommendation import Recommendation
@@ -32,6 +33,7 @@ __all__ = [
     "InstagramAccount",
     "Post",
     "PostMetricsSnapshot",
+    "PostOutlierMetrics",
     "ProfileSnapshot",
     "QueueDepthSnapshot",
     "RawResponse",

@@ -9,7 +9,7 @@ import { formatCompactNumber } from '../../utils/format';
 
 const TOOLTIPS = {
   outlier: "This post's views (or likes) vs the account's median over its previous 30 posts. 2× = twice the typical post.",
-  velocity: 'Average views (or likes) per hour since publishing. Shown only for posts under 7 days (YouTube) / 48 hours (Instagram) old.',
+  velocity: "Current views (or likes) gained per hour, from the two most recent scrapes -- not restricted to recently-published posts. Shows the lifetime average instead for posts scraped only once so far.",
 };
 
 // Shared "top videos / latest videos" table -- used by both the
@@ -138,7 +138,7 @@ export default function PostsTable({
                     {p.velocity_per_hour != null ? (
                       formatCompactNumber(p.velocity_per_hour)
                     ) : (
-                      <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Too old</span>
+                      <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Not enough data yet</span>
                     )}
                   </td>
                   <td className="py-2.5 px-3">

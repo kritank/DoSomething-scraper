@@ -387,6 +387,9 @@ async def list_posts(
     # filtered server-side (not client-side after fetching everything)
     # since this endpoint is paginated and `total` must reflect the filter.
     platforms: list[str] | None = Query(default=None),
+    # Cross-creator outliers feed (docs/OUTLIERS_PLAN.md Phase 3) -- e.g.
+    # 2.0 to match the "2x+" badge threshold used elsewhere in the UI.
+    min_score: float | None = Query(default=None),
     sort: str = Query(default="posted_at"),
     sort_dir: str = Query(default="desc"),
     limit: int = Query(default=50, ge=1, le=200),
@@ -397,6 +400,7 @@ async def list_posts(
         influencer_id=influencer_id,
         category_id=category_id,
         platforms=platforms,
+        min_score=min_score,
         sort=sort,
         sort_dir=sort_dir,
         limit=limit,

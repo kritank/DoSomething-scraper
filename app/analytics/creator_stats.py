@@ -8,6 +8,7 @@ growth windows, NULL-vs-0 metric semantics).
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from app.analytics.earnings import youtube_rpm_range
 from app.models.influencer import Influencer
 from app.models.post import Post
 from app.models.snapshot import PostMetricsSnapshot, ProfileSnapshot
+from app.repositories.post_outlier_metrics_repo import PostOutlierMetricsRepo
 from app.schemas.creator_stats import (
     AboutOut,
     CreatorSummary,
@@ -66,6 +68,10 @@ OUTLIER_LOOKBACK_POSTS = 30
 # Candidate pool scanned for sort="top" in get_post_performance -- see the
 # comment at its call site for the tradeoff this size encodes.
 TOP_SORT_CANDIDATE_POOL = 400
+# How many of an influencer's most recent posts recompute_outlier_metrics
+# re-scores and persists per call -- see its docstring for why older posts
+# aren't rewritten every time.
+RECENT_RESCORE_WINDOW = 50
 # A post is "fresh" enough for a velocity/hour figure within this window --
 # past it, lifetime-average views/hour stops meaning much (see
 # PostPerformance.velocity_per_hour docstring).
@@ -100,14 +106,39 @@ class _PostMetricPoint:
         return self.views if self.views else self.likes
 
 
-def _compute_outlier_and_velocity(
+@dataclass
+class _OutlierDetail:
+    """Everything the batch persistence path (docs/OUTLIERS_PLAN.md Phase 1)
+    needs beyond the (outlier_score, velocity_per_hour) tuple the live
+    profile endpoint uses -- notably the raw median, kept for explainability
+    tooltips, and engagement_ratio, Phase 2's composite-score input."""
+
+    outlier_score: Optional[float]
+    velocity_per_hour: Optional[float]
+    baseline_median: Optional[float]
+    engagement_ratio: Optional[float]
+
+
+def _point_engagement_rate(point: _PostMetricPoint) -> Optional[float]:
+    """(likes + comments) / outlier_metric for one post -- None when either
+    side is unmeasurable (metric missing/zero, or both likes and comments
+    hidden), never a fabricated 0/0."""
+    metric = point.outlier_metric
+    if not metric:
+        return None
+    if point.likes is None and point.comments is None:
+        return None
+    return ((point.likes or 0) + (point.comments or 0)) / metric
+
+
+def _compute_outlier_details(
     points_asc: list[_PostMetricPoint], platform: str, now: datetime
-) -> dict[UUID, tuple[Optional[float], Optional[float]]]:
+) -> dict[UUID, _OutlierDetail]:
     """Pure function (no DB access) so this logic is unit-testable in
-    isolation. `points_asc` must be sorted oldest-first. Returns
-    {post_id: (outlier_score, velocity_per_hour)}."""
+    isolation. `points_asc` must be sorted oldest-first."""
     fresh_window = YOUTUBE_FRESH_WINDOW if platform == "youtube" else INSTAGRAM_FRESH_WINDOW
-    results: dict[UUID, tuple[Optional[float], Optional[float]]] = {}
+    results: dict[UUID, _OutlierDetail] = {}
+    point_ers = [_point_engagement_rate(p) for p in points_asc]
 
     for i, point in enumerate(points_asc):
         prior = [
@@ -116,8 +147,10 @@ def _compute_outlier_and_velocity(
             if p.outlier_metric is not None
         ]
         outlier_score: Optional[float] = None
+        baseline_median: Optional[float] = None
         if len(prior) >= MIN_POSTS_FOR_OUTLIER and point.outlier_metric is not None:
             median = statistics.median(prior)
+            baseline_median = median
             if median > 0:
                 outlier_score = round(point.outlier_metric / median, 2)
 
@@ -128,9 +161,111 @@ def _compute_outlier_and_velocity(
                 hours = max(age.total_seconds() / 3600, 1 / 60)
                 velocity = round(point.outlier_metric / hours, 2)
 
-        results[point.post_id] = (outlier_score, velocity)
+        prior_ers = [
+            er for er in point_ers[max(0, i - OUTLIER_LOOKBACK_POSTS) : i] if er is not None
+        ]
+        engagement_ratio: Optional[float] = None
+        if len(prior_ers) >= MIN_POSTS_FOR_OUTLIER and point_ers[i] is not None:
+            baseline_er = statistics.median(prior_ers)
+            if baseline_er > 0:
+                engagement_ratio = round(point_ers[i] / baseline_er, 2)
+
+        results[point.post_id] = _OutlierDetail(
+            outlier_score=outlier_score,
+            velocity_per_hour=velocity,
+            baseline_median=baseline_median,
+            engagement_ratio=engagement_ratio,
+        )
 
     return results
+
+
+def _compute_vph_current(
+    current_metric: Optional[int],
+    current_date: date,
+    previous_metric: Optional[int],
+    previous_date: date,
+) -> Optional[float]:
+    """True views(or likes)-per-hour derived from the two most recent daily
+    snapshots -- unlike vph_lifetime (metric / age-since-posted), this
+    reflects *current* momentum and isn't restricted to freshly-posted
+    content (a 2-year-old video suddenly picking up views scores here).
+    Snapshots are day-granular, so the rate is coarse but real. A negative
+    delta (platform recount/correction) yields None rather than a negative
+    rate; same-day pairs (days <= 0) can't produce a rate at all."""
+    if current_metric is None or previous_metric is None:
+        return None
+    days = (current_date - previous_date).days
+    if days <= 0:
+        return None
+    delta = current_metric - previous_metric
+    if delta < 0:
+        return None
+    return round(delta / (days * 24), 2)
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _select_metric_pair(
+    platform: str,
+    current_views: Optional[int],
+    current_likes: Optional[int],
+    previous_views: Optional[int],
+    previous_likes: Optional[int],
+) -> tuple[Optional[int], Optional[int]]:
+    """Picks the same metric (views, or likes on the Instagram
+    no-view-count-for-this-post-type case) for both snapshots in a pair --
+    computing vph_current from views on one day and likes on the next would
+    produce a meaningless delta. Mirrors _PostMetricPoint.outlier_metric's
+    views-else-likes rule, decided from the *current* snapshot's views."""
+    if platform == "instagram" and not current_views:
+        return current_likes, previous_likes
+    return current_views, previous_views
+
+
+def _compute_composite_outlier_score(
+    baseline_multiple: Optional[float],
+    vph_current: Optional[float],
+    vph_lifetime: Optional[float],
+    engagement_ratio: Optional[float],
+) -> Optional[float]:
+    """Blends the baseline multiplier with current-momentum and engagement
+    signals into one ranking score for the cross-creator outliers feed (see
+    docs/OUTLIERS_PLAN.md Phase 2). Degrades gracefully to baseline_multiple
+    alone when velocity/engagement can't be computed -- an Instagram photo
+    post or a post with only one snapshot still gets a usable score, and
+    baseline_multiple is still exposed separately as the explainable "Nx"
+    figure the UI badges on.
+
+    Velocity is measured as vph_current relative to the post's *own*
+    vph_lifetime (is it accelerating past its own average pace?) rather
+    than a cross-post median -- self-relative, always defined once both
+    figures exist, and avoids a second full-lookback pass just to build a
+    fresh-post velocity distribution.
+    """
+    if baseline_multiple is None:
+        return None
+    score = baseline_multiple
+    if vph_current is not None and vph_lifetime and vph_lifetime > 0:
+        velocity_ratio = vph_current / vph_lifetime
+        if velocity_ratio > 1:
+            score *= 1 + 0.5 * math.log2(velocity_ratio)
+    if engagement_ratio is not None:
+        score *= _clamp(engagement_ratio, 0.75, 1.25)
+    return round(score, 2)
+
+
+def _compute_outlier_and_velocity(
+    points_asc: list[_PostMetricPoint], platform: str, now: datetime
+) -> dict[UUID, tuple[Optional[float], Optional[float]]]:
+    """Thin wrapper over `_compute_outlier_details` preserving the
+    (outlier_score, velocity_per_hour) tuple contract the live profile
+    endpoint (and existing tests) rely on. Returns
+    {post_id: (outlier_score, velocity_per_hour)}."""
+    details = _compute_outlier_details(points_asc, platform, now)
+    return {pid: (d.outlier_score, d.velocity_per_hour) for pid, d in details.items()}
 
 
 # Round-number follower thresholds milestone events are detected against --
@@ -503,19 +638,14 @@ class CreatorStatsService:
             engagement_rate=round(rate, 4), sample_size=len(usable), lookback_posts=last_n_posts
         )
 
-    async def get_post_performance(
-        self,
-        influencer_id: UUID,
-        limit: int = 20,
-        content_format_filter: Optional[str] = None,
-        sort: str = "latest",
-    ) -> list[PostPerformance]:
-        influencer = (
-            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
-        ).scalar_one_or_none()
-        if influencer is None:
-            return []
-
+    async def _fetch_metric_points_asc(
+        self, influencer_id: UUID, fetch_count: int
+    ) -> tuple[list[_PostMetricPoint], list]:
+        """Shared by get_post_performance and recompute_outlier_metrics --
+        the last `fetch_count` posts (by posted_at) with their latest
+        metrics snapshot, oldest-first. Returns (points_asc, raw_rows_asc)
+        -- callers that need Post.product_type (for content_format) use the
+        raw rows; the pure-function scoring path only needs points_asc."""
         latest_metric_sq = (
             select(
                 PostMetricsSnapshot.post_id,
@@ -531,27 +661,6 @@ class CreatorStatsService:
             )
             .subquery("latest_metric")
         )
-
-        # Outlier medians are always computed over ALL formats (a Short's
-        # views are still compared against the channel's overall median,
-        # matching vidiq) -- content_format_filter only narrows what's
-        # returned, applied client-side after scoring. When filtering,
-        # fetch a much larger candidate pool so `limit` filtered posts can
-        # actually be found even on a channel that's mostly one format.
-        #
-        # sort="top" re-ranks by outlier_score/views instead of recency, so
-        # it needs a much wider candidate pool than "latest" -- otherwise
-        # it could only ever find "top of the last `limit` posts" rather
-        # than anything resembling top-of-all-time. TOP_SORT_CANDIDATE_POOL
-        # trades off against outlier_score staying correct (it needs the
-        # OUTLIER_LOOKBACK_POSTS immediately preceding each candidate,
-        # which this single posted_at-ordered fetch already provides) vs.
-        # not scanning a channel's entire multi-thousand-post history on
-        # every request.
-        if sort == "top":
-            fetch_count = TOP_SORT_CANDIDATE_POOL * (2 if content_format_filter else 1)
-        else:
-            fetch_count = (limit * 8 if content_format_filter else limit) + OUTLIER_LOOKBACK_POSTS
         stmt = (
             select(
                 Post.id,
@@ -575,11 +684,7 @@ class CreatorStatsService:
         )
         rows = (await self.session.execute(stmt)).all()
         rows_asc = list(reversed(rows))
-
-        formats_by_post: dict[UUID, str] = {
-            row.id: content_format(influencer.platform, row.product_type) for row in rows_asc
-        }
-        points_asc = [
+        return [
             _PostMetricPoint(
                 post_id=row.id,
                 posted_at=row.posted_at,
@@ -590,7 +695,46 @@ class CreatorStatsService:
                 comments=row.comments,
             )
             for row in rows_asc
-        ]
+        ], rows_asc
+
+    async def get_post_performance(
+        self,
+        influencer_id: UUID,
+        limit: int = 20,
+        content_format_filter: Optional[str] = None,
+        sort: str = "latest",
+    ) -> list[PostPerformance]:
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return []
+
+        # Outlier medians are always computed over ALL formats (a Short's
+        # views are still compared against the channel's overall median,
+        # matching vidiq) -- content_format_filter only narrows what's
+        # returned, applied client-side after scoring. When filtering,
+        # fetch a much larger candidate pool so `limit` filtered posts can
+        # actually be found even on a channel that's mostly one format.
+        #
+        # sort="top" re-ranks by outlier_score/views instead of recency, so
+        # it needs a much wider candidate pool than "latest" -- otherwise
+        # it could only ever find "top of the last `limit` posts" rather
+        # than anything resembling top-of-all-time. TOP_SORT_CANDIDATE_POOL
+        # trades off against outlier_score staying correct (it needs the
+        # OUTLIER_LOOKBACK_POSTS immediately preceding each candidate,
+        # which this single posted_at-ordered fetch already provides) vs.
+        # not scanning a channel's entire multi-thousand-post history on
+        # every request.
+        if sort == "top":
+            fetch_count = TOP_SORT_CANDIDATE_POOL * (2 if content_format_filter else 1)
+        else:
+            fetch_count = (limit * 8 if content_format_filter else limit) + OUTLIER_LOOKBACK_POSTS
+
+        points_asc, rows_asc = await self._fetch_metric_points_asc(influencer_id, fetch_count)
+        formats_by_post: dict[UUID, str] = {
+            row.id: content_format(influencer.platform, row.product_type) for row in rows_asc
+        }
         now = datetime.now(timezone.utc)
         scores = _compute_outlier_and_velocity(points_asc, influencer.platform, now)
 
@@ -605,6 +749,17 @@ class CreatorStatsService:
             )
         newest_first = ordered[:limit]
 
+        # True current velocity (docs/OUTLIERS_PLAN.md Phase 2) -- only
+        # computed for the page actually being returned (<= limit posts),
+        # not the whole candidate pool, since it needs a snapshot-pair
+        # query per post. Falls back to the age-restricted lifetime-average
+        # figure (scores[...][1]) for posts with only one snapshot so far
+        # (freshly posted, no delta yet) -- otherwise None, meaning "not
+        # enough scrape history yet", not "too old".
+        vph_by_post = await self._compute_vph_current_by_post(
+            [p.post_id for p in newest_first], influencer.platform
+        )
+
         return [
             PostPerformance(
                 post_id=p.post_id,
@@ -615,11 +770,148 @@ class CreatorStatsService:
                 likes=p.likes,
                 comments=p.comments,
                 outlier_score=scores[p.post_id][0],
-                velocity_per_hour=scores[p.post_id][1],
+                velocity_per_hour=(
+                    vph_by_post[p.post_id]
+                    if vph_by_post[p.post_id] is not None
+                    else scores[p.post_id][1]
+                ),
                 format=formats_by_post[p.post_id],
             )
             for p in newest_first
         ]
+
+    async def _fetch_last_two_snapshots(
+        self, post_ids: list[UUID]
+    ) -> dict[UUID, list[tuple[date, Optional[int], Optional[int]]]]:
+        """For each post_id, its up-to-2 most recent *distinct-day* metrics
+        snapshots (views, likes), newest first -- the raw material for true
+        VPH (docs/OUTLIERS_PLAN.md Phase 2). Same-day duplicate snapshots
+        are deduped by created_at DESC first, matching the convention used
+        elsewhere in this module."""
+        if not post_ids:
+            return {}
+        daily = (
+            select(
+                PostMetricsSnapshot.post_id,
+                PostMetricsSnapshot.scraped_at,
+                PostMetricsSnapshot.views,
+                PostMetricsSnapshot.likes,
+                func.row_number()
+                .over(
+                    partition_by=(PostMetricsSnapshot.post_id, PostMetricsSnapshot.scraped_at),
+                    order_by=PostMetricsSnapshot.created_at.desc(),
+                )
+                .label("day_rn"),
+            )
+            .where(PostMetricsSnapshot.post_id.in_(post_ids))
+            .subquery("daily")
+        )
+        ranked = (
+            select(
+                daily.c.post_id,
+                daily.c.scraped_at,
+                daily.c.views,
+                daily.c.likes,
+                func.row_number()
+                .over(partition_by=daily.c.post_id, order_by=daily.c.scraped_at.desc())
+                .label("rn"),
+            )
+            .where(daily.c.day_rn == 1)
+            .subquery("ranked")
+        )
+        stmt = select(ranked).where(ranked.c.rn <= 2)
+        rows = (await self.session.execute(stmt)).all()
+
+        result: dict[UUID, list[tuple[date, Optional[int], Optional[int]]]] = {}
+        for row in rows:
+            result.setdefault(row.post_id, []).append((row.scraped_at, row.views, row.likes))
+        for pid, snaps in result.items():
+            snaps.sort(key=lambda s: s[0], reverse=True)
+        return result
+
+    async def _compute_vph_current_by_post(
+        self, post_ids: list[UUID], platform: str
+    ) -> dict[UUID, Optional[float]]:
+        """True current velocity (docs/OUTLIERS_PLAN.md Phase 2) for a batch
+        of posts, keyed by post_id -- None where fewer than 2 distinct-day
+        snapshots exist yet. Shared by recompute_outlier_metrics (batch
+        persistence) and get_post_performance (the live profile endpoint),
+        so a post's velocity doesn't drift depending on which path
+        computed it."""
+        snapshots_by_post = await self._fetch_last_two_snapshots(post_ids)
+        result: dict[UUID, Optional[float]] = {}
+        for post_id in post_ids:
+            snaps = snapshots_by_post.get(post_id, [])
+            if len(snaps) < 2:
+                result[post_id] = None
+                continue
+            (cur_date, cur_views, cur_likes), (prev_date, prev_views, prev_likes) = snaps[0], snaps[1]
+            cur_metric, prev_metric = _select_metric_pair(platform, cur_views, cur_likes, prev_views, prev_likes)
+            result[post_id] = _compute_vph_current(cur_metric, cur_date, prev_metric, prev_date)
+        return result
+
+    async def recompute_outlier_metrics(self, influencer_id: UUID) -> int:
+        """Batch counterpart to get_post_performance's live scoring --
+        persists baseline_multiple/vph_current/vph_lifetime/engagement_ratio
+        and a blended composite outlier_score into post_outlier_metrics for
+        an influencer's recent posts. Called after a scrape lands new
+        PostMetricsSnapshot rows (see JobProcessor._record_metrics_snapshot)
+        and by scripts/backfill_outlier_metrics.py. See
+        docs/OUTLIERS_PLAN.md Phase 1/2. Returns the number of posts
+        upserted.
+
+        Only re-scores the last RECENT_RESCORE_WINDOW posts, not full
+        history: older posts' medians don't meaningfully shift once their
+        surrounding window is stable, and rescanning a channel's entire
+        multi-thousand-post history on every scrape doesn't pay for itself.
+        """
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return 0
+
+        points_asc, _ = await self._fetch_metric_points_asc(
+            influencer_id, RECENT_RESCORE_WINDOW + OUTLIER_LOOKBACK_POSTS
+        )
+        if not points_asc:
+            return 0
+
+        now = datetime.now(timezone.utc)
+        details = _compute_outlier_details(points_asc, influencer.platform, now)
+
+        # Only the most recent RECENT_RESCORE_WINDOW posts are written --
+        # the leading OUTLIER_LOOKBACK_POSTS exist purely to feed those
+        # posts' rolling medians and don't need their own rows rewritten.
+        to_persist = points_asc[-RECENT_RESCORE_WINDOW:]
+        vph_by_post = await self._compute_vph_current_by_post(
+            [p.post_id for p in to_persist], influencer.platform
+        )
+
+        rows = []
+        for p in to_persist:
+            detail = details[p.post_id]
+            vph_current = vph_by_post[p.post_id]
+
+            outlier_score = _compute_composite_outlier_score(
+                baseline_multiple=detail.outlier_score,
+                vph_current=vph_current,
+                vph_lifetime=detail.velocity_per_hour,
+                engagement_ratio=detail.engagement_ratio,
+            )
+            rows.append(
+                {
+                    "post_id": p.post_id,
+                    "outlier_score": outlier_score,
+                    "baseline_multiple": detail.outlier_score,
+                    "vph_current": vph_current,
+                    "vph_lifetime": detail.velocity_per_hour,
+                    "engagement_ratio": detail.engagement_ratio,
+                    "baseline_median": detail.baseline_median,
+                }
+            )
+        await PostOutlierMetricsRepo(self.session).upsert_many(rows)
+        return len(rows)
 
     async def get_format_breakdown(self, influencer_id: UUID, days: int) -> Optional[FormatBreakdownOut]:
         influencer = (

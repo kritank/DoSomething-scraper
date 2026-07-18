@@ -19,6 +19,11 @@ class PostOut(BaseModel):
     comments: Optional[int] = None
     views: Optional[int] = None
     reposts: Optional[int] = None
+    # Cross-creator outliers feed (docs/OUTLIERS_PLAN.md Phase 3) -- from
+    # post_outlier_metrics, NULL until enough post history exists to score.
+    outlier_score: Optional[float] = None
+    baseline_multiple: Optional[float] = None
+    vph_current: Optional[float] = None
 
 
 class PostListOut(BaseModel):
