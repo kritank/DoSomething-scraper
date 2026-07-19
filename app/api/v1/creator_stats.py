@@ -9,10 +9,14 @@ from app.analytics.earnings import estimate_instagram_earnings, estimate_youtube
 from app.core.database import get_db
 from app.core.security import require_api_key
 from app.schemas.creator_stats import (
+    CommentEngagementOut,
     CreatorStatsOut,
+    EngagementTrendPoint,
+    FollowerRatioPoint,
     FormatBreakdownOut,
     GrowthPoint,
     KeyEvent,
+    PerformanceDecayOut,
     PostingFrequencyPoint,
     PostingTimeDistribution,
     PostPerformance,
@@ -148,6 +152,59 @@ async def get_creator_reply_time_heatmap(
     if summary is None:
         raise HTTPException(status_code=404, detail="Influencer not found")
     return await service.get_reply_time_heatmap(influencer_id, days=days)
+
+
+@router.get("/{influencer_id}/engagement-trend", response_model=list[EngagementTrendPoint])
+async def get_creator_engagement_trend(
+    influencer_id: UUID,
+    days: int = Query(90, ge=1, le=3650),
+    bucket: Literal["day", "week"] = Query("week"),
+    db: AsyncSession = Depends(get_db),
+):
+    service = CreatorStatsService(db)
+    summary = await service.get_summary(influencer_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    return await service.get_engagement_trend(influencer_id, days=days, bucket=bucket)
+
+
+@router.get("/{influencer_id}/performance-decay", response_model=PerformanceDecayOut)
+async def get_creator_performance_decay(
+    influencer_id: UUID,
+    days: int = Query(90, ge=1, le=3650),
+    db: AsyncSession = Depends(get_db),
+):
+    service = CreatorStatsService(db)
+    result = await service.get_performance_decay(influencer_id, days=days)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    return result
+
+
+@router.get("/{influencer_id}/comment-engagement", response_model=CommentEngagementOut)
+async def get_creator_comment_engagement(
+    influencer_id: UUID,
+    days: int = Query(90, ge=1, le=3650),
+    db: AsyncSession = Depends(get_db),
+):
+    service = CreatorStatsService(db)
+    result = await service.get_comment_engagement(influencer_id, days=days)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    return result
+
+
+@router.get("/{influencer_id}/follower-ratio", response_model=list[FollowerRatioPoint])
+async def get_creator_follower_ratio(
+    influencer_id: UUID,
+    days: int = Query(90, ge=1, le=3650),
+    db: AsyncSession = Depends(get_db),
+):
+    service = CreatorStatsService(db)
+    summary = await service.get_summary(influencer_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    return await service.get_follower_ratio_series(influencer_id, days=days)
 
 
 @router.get("/{influencer_id}/events", response_model=list[KeyEvent])
