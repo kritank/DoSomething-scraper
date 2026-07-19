@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, ChevronDown, ChevronUp, RefreshCw, Link2, Briefcase, User, Users } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronUp, RefreshCw, Link2, Briefcase, User, Users, PowerOff } from 'lucide-react';
 import { format } from 'date-fns';
 import { getCategories } from '../services/influencerService';
 import { getDashboardStatus } from '../services/dashboardService';
@@ -107,7 +107,7 @@ export default function CategoryProfile() {
                 <HeaderPill icon={Briefcase}>{byType.business.length} business</HeaderPill>
                 <HeaderPill icon={User}>{byType.individual.length} individual</HeaderPill>
                 {category.is_active === false && (
-                  <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>(inactive)</span>
+                  <HeaderPill icon={PowerOff}>inactive</HeaderPill>
                 )}
               </div>
             )}
@@ -211,9 +211,9 @@ function CategoryAccountGroup({ group, expanded, onToggleExpanded }) {
               <PlatformBadge platform={row.platform} handle={row.handle} />
               <StatusBadge status={row.last_job_status} />
               {!row.is_active && (
-                <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
-                  {row.paused_by_category ? '(held with category)' : '(inactive)'}
-                </span>
+                <HeaderPill icon={PowerOff}>
+                  {row.paused_by_category ? 'held with category' : 'inactive'}
+                </HeaderPill>
               )}
             </div>
             <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { PlayCircle, RefreshCw, Power, Trash2, History, ChevronDown, ChevronUp, Pencil, Check, X, Link2, Users, AtSign } from 'lucide-react';
+import { PlayCircle, RefreshCw, Power, PowerOff, Trash2, History, ChevronDown, ChevronUp, Pencil, Check, X, Link2, Users, AtSign, AlertTriangle } from 'lucide-react';
 import { format } from 'date-fns';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -467,7 +467,7 @@ export default function Influencers() {
                       {influencers.length} account{influencers.length === 1 ? '' : 's'}
                     </HeaderPill>
                     {category.is_active === false && (
-                      <span className="text-xs font-normal" style={{ color: 'var(--color-text-muted)' }}>(inactive)</span>
+                      <HeaderPill icon={PowerOff}>inactive</HeaderPill>
                     )}
                   </div>
                 )}
@@ -751,8 +751,6 @@ function InfluencerRow({
             <StatusBadge status={row.last_job_status} />
             {!row.is_active && (
               <span
-                className="text-xs"
-                style={{ color: row.deactivation_reason === 'handle_not_found' ? 'var(--color-danger)' : 'var(--color-text-muted)' }}
                 title={
                   row.deactivation_reason === 'handle_not_found'
                     ? "Auto-deactivated: this platform confirmed the handle doesn't exist. Edit the handle (pencil icon) to fix it, then reactivate."
@@ -761,11 +759,16 @@ function InfluencerRow({
                       : undefined
                 }
               >
-                {row.deactivation_reason === 'handle_not_found'
-                  ? '(handle not found -- recheck)'
-                  : row.paused_by_category
-                    ? '(held with category)'
-                    : '(inactive)'}
+                <HeaderPill
+                  icon={row.deactivation_reason === 'handle_not_found' ? AlertTriangle : PowerOff}
+                  color={row.deactivation_reason === 'handle_not_found' ? 'var(--color-danger)' : undefined}
+                >
+                  {row.deactivation_reason === 'handle_not_found'
+                    ? 'handle not found -- recheck'
+                    : row.paused_by_category
+                      ? 'held with category'
+                      : 'inactive'}
+                </HeaderPill>
               </span>
             )}
           </div>
