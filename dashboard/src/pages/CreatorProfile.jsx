@@ -235,18 +235,16 @@ export default function CreatorProfile() {
   // Independent of growthMetric (that only drives the chart above) --
   // the Daily Growth History table always wants followers + views +
   // earnings side by side, regardless of which single metric is charted.
-  // views/earnings are YouTube-only (see CreatorSummary.total_views
-  // docstring), so they're skipped for Instagram rather than firing
-  // requests that would just come back empty.
+  // Fetched for both platforms -- see growthMetricOptions above for why
+  // Instagram's views/earnings are just as real as YouTube's here.
   useEffect(() => {
     if (!stats) return;
-    const isYt = stats.summary.platform === 'youtube';
     let cancelled = false;
     setHistoryLoading(true);
     Promise.all([
       getCreatorGrowth(influencerId, growthDays, 'followers'),
-      isYt ? getCreatorGrowth(influencerId, growthDays, 'total_views') : Promise.resolve([]),
-      isYt ? getCreatorGrowth(influencerId, growthDays, 'earnings') : Promise.resolve([]),
+      getCreatorGrowth(influencerId, growthDays, 'total_views'),
+      getCreatorGrowth(influencerId, growthDays, 'earnings'),
     ])
       .then(([followers, views, earnings]) => {
         if (cancelled) return;
@@ -272,14 +270,16 @@ export default function CreatorProfile() {
   // Hooks must run unconditionally on every render -- this stays above
   // the `notFound` early return below, even though its result is unused
   // in that branch.
-  const growthMetricOptions = useMemo(() => {
-    if (!isYoutube) return [{ value: 'followers', label: followersLabel }];
-    return [
-      { value: 'followers', label: followersLabel },
-      { value: 'total_views', label: 'Views' },
-      { value: 'earnings', label: 'Earnings' },
-    ];
-  }, [isYoutube, followersLabel]);
+  //
+  // Views/Earnings are available for both platforms: YouTube reads a real
+  // channel view counter, Instagram reconstructs one from per-post
+  // snapshots (see CreatorStatsService._instagram_views_daily_series) --
+  // both are honest daily series, just derived differently server-side.
+  const growthMetricOptions = useMemo(() => [
+    { value: 'followers', label: followersLabel },
+    { value: 'total_views', label: 'Views' },
+    { value: 'earnings', label: 'Earnings' },
+  ], [followersLabel]);
 
   if (notFound) {
     return <EmptyState title="Influencer not found" message="This influencer may have been deleted." />;

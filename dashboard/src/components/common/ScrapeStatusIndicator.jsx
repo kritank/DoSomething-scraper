@@ -1,21 +1,23 @@
 import React from 'react';
 
-// Compact dot summarizing whether the most recent scrape for one platform
+// Compact dot summarizing whether the most recent update for one platform
 // account succeeded -- for spots (creator profile headers) where a full
 // StatusBadge pill would be too wide next to a platform logo/handle, but
 // "is this platform actually working" still needs to be visible without
-// digging into job history.
+// digging into job history. Labels deliberately avoid the word "scrape" --
+// this is user-facing chrome on a public-account view, not an internal
+// ops tool.
 const STYLES = {
-  completed: { color: 'var(--color-success)', label: 'Last scrape succeeded' },
-  failed: { color: 'var(--color-danger)', label: 'Last scrape failed' },
-  running: { color: 'var(--color-accent)', label: 'Scrape running now' },
-  queued: { color: 'var(--color-warning)', label: 'Scrape queued' },
-  retry_pending: { color: 'var(--color-warning)', label: 'Last scrape failed -- retrying' },
-  cancelled: { color: 'var(--color-text-muted)', label: 'Last scrape was cancelled' },
+  completed: { color: 'var(--color-success)', label: 'Up to date' },
+  failed: { color: 'var(--color-danger)', label: 'Update failed' },
+  running: { color: 'var(--color-accent)', label: 'Updating now' },
+  queued: { color: 'var(--color-warning)', label: 'Update queued' },
+  retry_pending: { color: 'var(--color-warning)', label: 'Update failed -- retrying' },
+  cancelled: { color: 'var(--color-text-muted)', label: 'Update cancelled' },
 };
 
 export default function ScrapeStatusIndicator({ status, className }) {
-  const style = STYLES[status] ?? { color: 'var(--color-text-muted)', label: 'Never scraped yet' };
+  const style = STYLES[status] ?? { color: 'var(--color-text-muted)', label: 'Not yet synced' };
   return (
     <span
       className={className}

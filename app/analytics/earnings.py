@@ -33,6 +33,15 @@ _INSTAGRAM_NEUTRAL_ER = 0.02
 _INSTAGRAM_ER_MULTIPLIER_MIN = 0.5
 _INSTAGRAM_ER_MULTIPLIER_MAX = 3.0
 
+# Instagram: (low, high) USD estimated content value per 1,000 views, for
+# the daily earnings band on the growth chart (see
+# CreatorStatsService._get_earnings_series). Unlike YouTube, Instagram has
+# no platform ad-revenue-share program at this granularity -- this
+# approximates a creator's per-view content value from typical brand/
+# sponsorship rate benchmarks instead, same rough-heuristic caveat as
+# every other estimate in this module.
+_INSTAGRAM_VALUE_PER_1K_VIEWS: tuple[float, float] = (3.0, 10.0)
+
 
 def youtube_rpm_range(country: str | None) -> tuple[float, float]:
     """(low, high) USD RPM for a channel's country -- exposed separately
@@ -40,6 +49,14 @@ def youtube_rpm_range(country: str | None) -> tuple[float, float]:
     band (app.analytics.creator_stats.get_growth_series) can apply the
     same per-day RPM without going through the 28d-views-only estimator."""
     return _YOUTUBE_RPM_BY_COUNTRY.get((country or "").upper(), _YOUTUBE_RPM_BY_COUNTRY["_default"])
+
+
+def instagram_value_per_1k_views_range() -> tuple[float, float]:
+    """(low, high) USD estimated content value per 1,000 views for
+    Instagram -- exposed separately (mirroring youtube_rpm_range) so the
+    growth chart's daily earnings band can apply it without going through
+    the per-sponsored-post estimator."""
+    return _INSTAGRAM_VALUE_PER_1K_VIEWS
 
 
 def estimate_youtube_earnings(views_28d: int | None, country: str | None) -> EarningsEstimate | None:

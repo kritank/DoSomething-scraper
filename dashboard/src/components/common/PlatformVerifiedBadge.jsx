@@ -3,17 +3,20 @@ import { BadgeCheck } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import { platformLabel, profileUrl } from '../../utils/platform';
 import PlatformIcon from './PlatformIcon';
+import ScrapeStatusIndicator from './ScrapeStatusIndicator';
 
 // Compact square platform-logo badge with a small verified checkmark
-// overlaid on its corner when `verified` is true -- replaces the old wide
-// text pill (PlatformBadge) in spots where several platforms sit side by
-// side and per-platform verification status matters (e.g. the combined
-// creator header), since a name+icon pill can't show "verified on this
-// platform" without also spelling out the platform name every time.
+// overlaid on its bottom-right corner when `verified` is true, and (when
+// `scrapeStatus` is passed) a status dot overlaid on the top-right corner
+// -- replaces the old wide text pill (PlatformBadge) in spots where
+// several platforms sit side by side and per-platform verification/sync
+// status matters (e.g. the combined creator header), since a name+icon
+// pill can't show either without also spelling out the platform name
+// every time.
 //
 // `handle`, when passed, turns the logo into a link out to the real
 // Instagram profile / YouTube channel.
-export default function PlatformVerifiedBadge({ platform, verified, className, handle }) {
+export default function PlatformVerifiedBadge({ platform, verified, className, handle, scrapeStatus }) {
   const label = verified ? `Verified on ${platformLabel(platform)}` : platformLabel(platform);
   const url = profileUrl(handle, platform);
   const Wrapper = url ? 'a' : 'span';
@@ -34,6 +37,14 @@ export default function PlatformVerifiedBadge({ platform, verified, className, h
           style={{ background: 'var(--color-bg-card)', padding: 1 }}
         >
           <BadgeCheck className="w-3 h-3" style={{ color: 'var(--color-accent)' }} />
+        </span>
+      )}
+      {scrapeStatus !== undefined && (
+        <span
+          className="absolute -top-1 -right-1 flex items-center justify-center rounded-full"
+          style={{ background: 'var(--color-bg-card)', padding: 2 }}
+        >
+          <ScrapeStatusIndicator status={scrapeStatus} />
         </span>
       )}
     </Wrapper>

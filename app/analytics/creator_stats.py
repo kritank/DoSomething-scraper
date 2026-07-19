@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.analytics.earnings import youtube_rpm_range
+from app.analytics.earnings import instagram_value_per_1k_views_range, youtube_rpm_range
 from app.models.influencer import Influencer
 from app.models.post import Post
 from app.models.snapshot import PostMetricsSnapshot, ProfileSnapshot
@@ -515,6 +515,60 @@ def _aggregate_sponsorship_breakdown(
     )
 
 
+@dataclass
+class _InstagramMetricSnapshotRow:
+    post_id: UUID
+    scraped_at: date
+    views: Optional[int]
+    likes: Optional[int]
+
+
+def _reconstruct_daily_views_series(
+    baseline_values: dict[UUID, int], window_rows: list[_InstagramMetricSnapshotRow]
+) -> list[GrowthPoint]:
+    """Pure function (no DB access) so this is unit-testable in isolation.
+
+    Instagram has no channel-level lifetime view counter (unlike YouTube's
+    ProfileSnapshot.total_views), so a daily views series has to be
+    reconstructed bottom-up from per-post snapshots -- the daily-series
+    analog of _instagram_views_in_window's single-window total. Forward-
+    fills each post's last known usable-metric value (views-else-likes,
+    same convention as elsewhere in this module) across days it wasn't
+    re-scraped, summing across posts per day to get that day's cumulative
+    reconstructed total, then diffs consecutive days for daily_delta.
+
+    `baseline_values` seeds each pre-existing post's contribution with its
+    last known value from before the window, so a post that already had
+    views doesn't appear to "start from 0" -- a genuinely new post with no
+    baseline starts at 0 and jumps to its full value on its first
+    snapshot, which is correct: that value is all real growth within the
+    window."""
+    if not window_rows:
+        return []
+    current_value = dict(baseline_values)
+    by_date: dict[date, list[_InstagramMetricSnapshotRow]] = {}
+    for row in window_rows:
+        by_date.setdefault(row.scraped_at, []).append(row)
+
+    points: list[GrowthPoint] = []
+    previous_total: Optional[int] = None
+    for day in sorted(by_date):
+        for row in by_date[day]:
+            v = row.views if row.views else row.likes
+            if v is not None:
+                current_value[row.post_id] = v
+        total = sum(current_value.values())
+        points.append(
+            GrowthPoint(
+                date=day,
+                value=total,
+                daily_delta=(total - previous_total) if previous_total is not None else None,
+            )
+        )
+        previous_total = total
+    return points
+
+
 class CreatorStatsService:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -628,6 +682,63 @@ class CreatorStatsService:
                 total += row.latest_likes - (row.start_likes or 0)
         return max(total, 0)
 
+    async def _instagram_views_daily_series(
+        self, influencer_id: UUID, days: int
+    ) -> list[GrowthPoint]:
+        """Reconstructs a daily cumulative-views series for Instagram from
+        per-post PostMetricsSnapshot rows -- the daily-series analog of
+        _instagram_views_in_window's single-window total. See
+        _reconstruct_daily_views_series for the actual aggregation (kept
+        as a pure function so it's unit-testable without a DB)."""
+        cutoff = date.today() - timedelta(days=days)
+
+        baseline_sq = (
+            select(
+                PostMetricsSnapshot.post_id,
+                PostMetricsSnapshot.views,
+                PostMetricsSnapshot.likes,
+                func.row_number()
+                .over(
+                    partition_by=PostMetricsSnapshot.post_id,
+                    order_by=PostMetricsSnapshot.scraped_at.desc(),
+                )
+                .label("rn"),
+            )
+            .where(PostMetricsSnapshot.scraped_at < cutoff)
+            .subquery("baseline")
+        )
+        baseline_stmt = (
+            select(baseline_sq.c.post_id, baseline_sq.c.views, baseline_sq.c.likes)
+            .select_from(baseline_sq)
+            .join(Post, Post.id == baseline_sq.c.post_id)
+            .where(baseline_sq.c.rn == 1, Post.influencer_id == influencer_id)
+        )
+        baseline_rows = (await self.session.execute(baseline_stmt)).all()
+        baseline_values = {
+            row.post_id: (row.views if row.views else row.likes) or 0 for row in baseline_rows
+        }
+
+        window_stmt = (
+            select(
+                PostMetricsSnapshot.post_id,
+                PostMetricsSnapshot.scraped_at,
+                PostMetricsSnapshot.views,
+                PostMetricsSnapshot.likes,
+            )
+            .select_from(PostMetricsSnapshot)
+            .join(Post, Post.id == PostMetricsSnapshot.post_id)
+            .where(Post.influencer_id == influencer_id, PostMetricsSnapshot.scraped_at >= cutoff)
+            .order_by(PostMetricsSnapshot.scraped_at.asc())
+        )
+        window_rows_raw = (await self.session.execute(window_stmt)).all()
+        window_rows = [
+            _InstagramMetricSnapshotRow(
+                post_id=r.post_id, scraped_at=r.scraped_at, views=r.views, likes=r.likes
+            )
+            for r in window_rows_raw
+        ]
+        return _reconstruct_daily_views_series(baseline_values, window_rows)
+
     async def get_summary(self, influencer_id: UUID) -> Optional[CreatorSummary]:
         influencer = (
             await self.session.execute(
@@ -717,6 +828,17 @@ class CreatorStatsService:
         if metric == "earnings":
             return await self._get_earnings_series(influencer_id, days)
 
+        if metric == "total_views":
+            influencer = (
+                await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+            ).scalar_one_or_none()
+            if influencer is not None and influencer.platform != "youtube":
+                # No channel-level view counter on Instagram -- reconstruct
+                # from post snapshots instead of reading ProfileSnapshot.
+                # total_views, which is always NULL there.
+                points = await self._instagram_views_daily_series(influencer_id, days)
+                return _strip_phantom_zero_lead(points)
+
         column = {
             "followers": ProfileSnapshot.followers,
             "total_views": ProfileSnapshot.total_views,
@@ -774,20 +896,28 @@ class CreatorStatsService:
 
     async def _get_earnings_series(self, influencer_id: UUID, days: int) -> list[GrowthPoint]:
         """Daily estimated-earnings band: each point is that day's view
-        growth times the channel's country RPM range -- a per-day
-        estimate, not a cumulative total. YouTube only (Instagram earnings
-        are per-post, not time-based -- see get_about's docstring in
-        docs/CREATOR_STATS_V2_PLAN.md Phase B1); returns [] for Instagram.
+        growth times a platform-appropriate per-1000-views rate -- a
+        per-day estimate, not a cumulative total. YouTube uses real
+        country AdSense RPM benchmarks; Instagram (no ad-revenue-share
+        program at this granularity -- see estimate_instagram_earnings'
+        docstring for the platform's actual per-sponsored-post economics)
+        uses a rough per-view content-value heuristic instead. Both roll
+        up from the same total_views daily series -- real for YouTube,
+        reconstructed from post snapshots for Instagram (see
+        get_growth_series / _instagram_views_daily_series).
         """
         influencer = (
             await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
         ).scalar_one_or_none()
-        if influencer is None or influencer.platform != "youtube":
+        if influencer is None:
             return []
 
-        latest = await self._closest_snapshot(influencer_id, date.today())
-        country = (latest.platform_metadata or {}).get("country") if latest else None
-        low_rpm, high_rpm = youtube_rpm_range(country)
+        if influencer.platform == "youtube":
+            latest = await self._closest_snapshot(influencer_id, date.today())
+            country = (latest.platform_metadata or {}).get("country") if latest else None
+            low_rate, high_rate = youtube_rpm_range(country)
+        else:
+            low_rate, high_rate = instagram_value_per_1k_views_range()
 
         views_series = await self.get_growth_series(influencer_id, days=days, metric="total_views")
         points: list[GrowthPoint] = []
@@ -797,8 +927,8 @@ class CreatorStatsService:
             points.append(
                 GrowthPoint(
                     date=point.date,
-                    value_low=round(point.daily_delta * low_rpm / 1000, 2),
-                    value_high=round(point.daily_delta * high_rpm / 1000, 2),
+                    value_low=round(point.daily_delta * low_rate / 1000, 2),
+                    value_high=round(point.daily_delta * high_rate / 1000, 2),
                 )
             )
         return points

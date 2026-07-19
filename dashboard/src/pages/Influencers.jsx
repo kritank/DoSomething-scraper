@@ -26,6 +26,7 @@ import ErrorState from '../components/common/ErrorState';
 import EmptyState from '../components/common/EmptyState';
 import AddCategoryForm from '../components/influencers/AddCategoryForm';
 import AddInfluencerForm from '../components/influencers/AddInfluencerForm';
+import MassImportInfluencersForm from '../components/influencers/MassImportInfluencersForm';
 import JobHistoryPanel from '../components/influencers/JobHistoryPanel';
 import { useAppStore } from '../store/useAppStore';
 import { formatHandle } from '../utils/platform';
@@ -344,6 +345,8 @@ export default function Influencers() {
         <AddCategoryForm onCreated={load} />
         <div style={{ borderTop: '1px solid var(--color-border-subtle)' }} />
         <AddInfluencerForm categories={categories} creators={creators} onCreated={load} />
+        <div style={{ borderTop: '1px solid var(--color-border-subtle)' }} />
+        <MassImportInfluencersForm onImported={load} />
       </div>
 
       <div className="flex items-center justify-between gap-3 flex-wrap">

@@ -70,3 +70,28 @@ export async function updateInfluencerScrapeSettings(influencerId, scrapePostsSi
 export async function deleteInfluencer(influencerId) {
   await apiClient.delete(`/admin/influencers/${influencerId}`);
 }
+
+export async function bulkImportInfluencers(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  const { data } = await apiClient.post('/admin/influencers/bulk', formData, {
+    // Override the instance's default 'Content-Type: application/json' so
+    // the browser can set its own 'multipart/form-data; boundary=...'
+    // header for this one request -- axios/the browser only does that
+    // automatically when no Content-Type is already forced.
+    headers: { 'Content-Type': undefined },
+  });
+  return data;
+}
+
+export async function downloadBulkImportTemplate() {
+  const response = await apiClient.get('/admin/influencers/bulk/template', { responseType: 'blob' });
+  const url = window.URL.createObjectURL(new Blob([response.data]));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'influencer_bulk_import_template.xlsx';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}

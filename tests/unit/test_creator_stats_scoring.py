@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.analytics.creator_stats import (
@@ -16,7 +16,9 @@ from app.analytics.creator_stats import (
     _compute_vph_current,
     _detect_milestones,
     _FormatRow,
+    _InstagramMetricSnapshotRow,
     _PostMetricPoint,
+    _reconstruct_daily_views_series,
     _select_metric_pair,
     _SponsorshipRow,
     _strip_phantom_zero_lead,
@@ -508,4 +510,64 @@ def test_format_breakdown_empty_input():
         assert f.post_count == 0
         assert f.avg_views is None
         assert f.avg_engagement_rate is None
+
+
+def _isr(post_id, day: str, views=None, likes=None):
+    return _InstagramMetricSnapshotRow(
+        post_id=post_id, scraped_at=date.fromisoformat(day), views=views, likes=likes
+    )
+
+
+def test_reconstruct_daily_views_forward_fills_and_sums_across_posts():
+    post_a, post_b = uuid4(), uuid4()
+    rows = [
+        _isr(post_a, "2026-01-01", views=1000),
+        _isr(post_b, "2026-01-01", views=500),
+        _isr(post_b, "2026-01-02", views=600),
+        # post_a has no 2026-01-02 snapshot -- must forward-fill its 1000.
+        _isr(post_a, "2026-01-03", views=1100),
+        _isr(post_b, "2026-01-03", views=700),
+    ]
+    points = _reconstruct_daily_views_series({}, rows)
+    by_date = {p.date.isoformat(): p for p in points}
+    assert by_date["2026-01-01"].value == 1500  # 1000 + 500
+    assert by_date["2026-01-02"].value == 1600  # 1000 (forward-filled) + 600
+    assert by_date["2026-01-03"].value == 1800  # 1100 + 700
+    assert by_date["2026-01-01"].daily_delta is None  # first point, no prior day
+    assert by_date["2026-01-02"].daily_delta == 100
+    assert by_date["2026-01-03"].daily_delta == 200
+
+
+def test_reconstruct_daily_views_uses_baseline_for_preexisting_post():
+    post_a = uuid4()
+    baseline = {post_a: 5000}  # last known value from before the window
+    rows = [_isr(post_a, "2026-01-01", views=5200)]
+    points = _reconstruct_daily_views_series(baseline, rows)
+    assert points[0].value == 5200
+    # No daily_delta on the very first emitted point regardless of baseline
+    # (there's no prior *point* to diff against, even though there's a
+    # prior *value*) -- matches every other series' "first point has no
+    # delta" convention.
+    assert points[0].daily_delta is None
+
+
+def test_reconstruct_daily_views_new_post_jumps_from_full_value():
+    post_a = uuid4()
+    # No baseline entry at all -- post_a is brand new inside the window.
+    rows = [_isr(post_a, "2026-01-01", views=100), _isr(post_a, "2026-01-02", views=250)]
+    points = _reconstruct_daily_views_series({}, rows)
+    assert points[0].value == 100
+    assert points[1].value == 250
+    assert points[1].daily_delta == 150
+
+
+def test_reconstruct_daily_views_falls_back_to_likes_when_views_unavailable():
+    post_a = uuid4()
+    rows = [_isr(post_a, "2026-01-01", views=0, likes=42)]
+    points = _reconstruct_daily_views_series({}, rows)
+    assert points[0].value == 42
+
+
+def test_reconstruct_daily_views_empty_input():
+    assert _reconstruct_daily_views_series({}, []) == []
     assert _strip_phantom_zero_lead([_gp("2026-01-01", 0)]) == [_gp("2026-01-01", 0)]

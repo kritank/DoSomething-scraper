@@ -1,7 +1,7 @@
 from typing import Sequence
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
@@ -33,6 +33,18 @@ class CategoryRepo:
         category = await self.session.get(Category, category_id)
         if not category:
             raise CategoryNotFoundError(str(category_id))
+        return category
+
+    async def get_by_name(self, name: str) -> Category:
+        """Case-insensitive exact match -- used by the influencer
+        bulk-import flow (app/services/influencer_bulk_import.py), where a
+        spreadsheet's free-text "category" column has to resolve to a real
+        category without requiring the uploader to match capitalization
+        exactly."""
+        stmt = select(Category).where(func.lower(Category.name) == name.strip().lower())
+        category = (await self.session.execute(stmt)).scalar_one_or_none()
+        if not category:
+            raise CategoryNotFoundError(name)
         return category
 
     async def update(self, category_id: UUID, data: CategoryUpdate) -> Category:
