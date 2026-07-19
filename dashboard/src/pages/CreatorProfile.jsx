@@ -10,6 +10,7 @@ import {
   getCreatorKeyEvents,
   getCreatorPostingFrequency,
   getCreatorPostingTimes,
+  getCreatorSponsorshipBreakdown,
 } from '../services/creatorStatsService';
 import PlatformBadge from '../components/common/PlatformBadge';
 import ScrapeStatusIndicator from '../components/common/ScrapeStatusIndicator';
@@ -24,6 +25,7 @@ import GrowthChart from '../components/charts/GrowthChart';
 import DailyGrowthChart from '../components/charts/DailyGrowthChart';
 import FormatSplitCard from '../components/creator/FormatSplitCard';
 import PostingFrequencyCard from '../components/creator/PostingFrequencyCard';
+import SponsorshipCard from '../components/creator/SponsorshipCard';
 import AboutSection from '../components/creator/AboutSection';
 import PostsTable from '../components/creator/PostsTable';
 import DailyGrowthHistoryTable from '../components/creator/DailyGrowthHistoryTable';
@@ -118,6 +120,10 @@ export default function CreatorProfile() {
   const [postingTimeDistribution, setPostingTimeDistribution] = useState(null);
   const [postingLoading, setPostingLoading] = useState(true);
 
+  const [sponsorshipDays, setSponsorshipDays] = useState(90);
+  const [sponsorshipBreakdown, setSponsorshipBreakdown] = useState(null);
+  const [sponsorshipLoading, setSponsorshipLoading] = useState(true);
+
   const [postsFilter, setPostsFilter] = useState('all');
   const [postsSort, setPostsSort] = useState('top');
   const [posts, setPosts] = useState([]);
@@ -205,6 +211,16 @@ export default function CreatorProfile() {
       .finally(() => { if (!cancelled) setPostingLoading(false); });
     return () => { cancelled = true; };
   }, [influencerId, postingDays, stats]);
+
+  useEffect(() => {
+    if (!stats) return;
+    let cancelled = false;
+    setSponsorshipLoading(true);
+    getCreatorSponsorshipBreakdown(influencerId, sponsorshipDays)
+      .then((data) => { if (!cancelled) setSponsorshipBreakdown(data); })
+      .finally(() => { if (!cancelled) setSponsorshipLoading(false); });
+    return () => { cancelled = true; };
+  }, [influencerId, sponsorshipDays, stats]);
 
   useEffect(() => {
     if (!stats) return;
@@ -412,6 +428,13 @@ export default function CreatorProfile() {
               loading={postingLoading}
               days={postingDays}
               onDaysChange={setPostingDays}
+            />
+
+            <SponsorshipCard
+              breakdown={sponsorshipBreakdown}
+              loading={sponsorshipLoading}
+              days={sponsorshipDays}
+              onDaysChange={setSponsorshipDays}
             />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

@@ -3,7 +3,7 @@ import { Image, Clapperboard, Sparkles } from 'lucide-react';
 import InfoTip from '../common/InfoTip';
 import Banner from '../common/Banner';
 import Skeleton from '../common/Skeleton';
-import { formatCompactNumber } from '../../utils/format';
+import { formatCompactNumber, formatPercent } from '../../utils/format';
 
 const RANGES = [
   { label: '7D', days: 7 },
@@ -189,10 +189,14 @@ function FormatColumn({ format, label, color, icon: Icon, share, stats, hovered,
           {share}% of views
         </span>
       </div>
-      <div className="grid grid-cols-3 gap-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+      <div className="grid grid-cols-2 gap-y-2 gap-x-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
         <Stat label="Posts" value={stats?.post_count ?? 0} />
         <Stat label="Views" value={formatCompactNumber(stats?.total_views ?? 0)} />
         <Stat label="Avg views" value={avgViews != null ? formatCompactNumber(avgViews) : '—'} />
+        <Stat
+          label="Engagement rate"
+          value={stats?.avg_engagement_rate != null ? formatPercent(stats.avg_engagement_rate, 1) : '—'}
+        />
       </div>
     </div>
   );

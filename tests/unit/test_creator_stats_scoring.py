@@ -6,15 +6,19 @@ from uuid import uuid4
 from app.analytics.creator_stats import (
     MIN_POSTS_FOR_OUTLIER,
     OUTLIER_LOOKBACK_POSTS,
+    _aggregate_format_breakdown,
     _aggregate_posting_times,
+    _aggregate_sponsorship_breakdown,
     _bucket_posting_frequency,
     _compute_composite_outlier_score,
     _compute_outlier_and_velocity,
     _compute_outlier_details,
     _compute_vph_current,
     _detect_milestones,
+    _FormatRow,
     _PostMetricPoint,
     _select_metric_pair,
+    _SponsorshipRow,
     _strip_phantom_zero_lead,
     content_format,
 )
@@ -373,4 +377,135 @@ def test_aggregate_posting_times_empty_input():
     assert dist.best_hour is None
     assert dist.weekday_counts == [0] * 7
     assert dist.hour_counts == [0] * 24
+
+
+def _sr(format="long_form", sponsored=False, views=None, likes=None, comments=None):
+    return _SponsorshipRow(
+        format=format, is_paid_partnership=sponsored, views=views, likes=likes, comments=comments
+    )
+
+
+def test_sponsorship_breakdown_splits_organic_and_sponsored():
+    rows = [
+        _sr(sponsored=False, views=1000, likes=100, comments=10),
+        _sr(sponsored=False, views=2000, likes=200, comments=20),
+        _sr(sponsored=True, views=5000, likes=500, comments=50),
+    ]
+    out = _aggregate_sponsorship_breakdown(rows, days=90)
+    assert out.window_days == 90
+    assert out.organic.post_count == 2
+    assert out.organic.avg_views == 1500.0
+    assert out.organic.avg_likes == 150.0
+    assert out.organic.avg_comments == 15.0
+    assert out.sponsored.post_count == 1
+    assert out.sponsored.avg_views == 5000.0
+
+
+def test_sponsorship_breakdown_crossed_with_format():
+    rows = [
+        _sr(format="long_form", sponsored=False, views=1000, likes=100, comments=10),
+        _sr(format="long_form", sponsored=True, views=4000, likes=400, comments=40),
+        _sr(format="short_form", sponsored=False, views=2000, likes=200, comments=20),
+    ]
+    out = _aggregate_sponsorship_breakdown(rows, days=90)
+    by_format = {f.format: f for f in out.formats}
+    assert set(by_format) == {"long_form", "short_form"}
+    assert by_format["long_form"].organic.post_count == 1
+    assert by_format["long_form"].organic.avg_views == 1000.0
+    assert by_format["long_form"].sponsored.post_count == 1
+    assert by_format["long_form"].sponsored.avg_views == 4000.0
+    assert by_format["short_form"].organic.post_count == 1
+    assert by_format["short_form"].sponsored.post_count == 0
+    assert by_format["short_form"].sponsored.avg_views is None
+    # Overall aggregates across both formats regardless of the split.
+    assert out.organic.post_count == 2
+    assert out.sponsored.post_count == 1
+
+
+def test_sponsorship_breakdown_falls_back_to_likes_when_views_unavailable():
+    # Instagram photo posts: views is None/0, likes is the usable metric --
+    # same rule as FormatStats.avg_views / _PostMetricPoint.outlier_metric.
+    rows = [_sr(sponsored=True, views=0, likes=300, comments=30)]
+    out = _aggregate_sponsorship_breakdown(rows, days=28)
+    assert out.sponsored.avg_views == 300.0
+    assert out.sponsored.avg_likes == 300.0
+
+
+def test_sponsorship_breakdown_empty_input():
+    out = _aggregate_sponsorship_breakdown([], days=90)
+    assert out.organic.post_count == 0
+    assert out.organic.avg_views is None
+    assert out.sponsored.post_count == 0
+    assert out.sponsored.avg_views is None
+    for f in out.formats:
+        assert f.organic.post_count == 0
+        assert f.sponsored.post_count == 0
+
+
+def _fr(format="long_form", views=None, likes=None, comments=None):
+    return _FormatRow(format=format, views=views, likes=likes, comments=comments)
+
+
+def test_format_breakdown_engagement_rate_is_mean_of_per_post_rates():
+    # Post A: (100+10)/1000 = 0.11; Post B: (300+30)/3000 = 0.11 -- same
+    # rate despite very different scale, so the average should be exactly
+    # 0.11, not skewed toward the larger post the way a
+    # sum(likes+comments)/sum(views) aggregate would be.
+    rows = [
+        _fr(views=1000, likes=100, comments=10),
+        _fr(views=3000, likes=300, comments=30),
+    ]
+    out = _aggregate_format_breakdown(rows, days=28)
+    long_form = next(f for f in out.formats if f.format == "long_form")
+    assert long_form.avg_engagement_rate == 0.11
+
+
+def test_format_breakdown_engagement_rate_not_dominated_by_viral_post():
+    # A viral outlier (views=1,000,000, low relative engagement) shouldn't
+    # drag a bucket of otherwise-consistent posts' average down toward its
+    # own ratio -- confirms this is an average of per-post rates, not
+    # total_likes+total_comments/total_views.
+    rows = [
+        _fr(views=1000, likes=200, comments=20),  # rate 0.22
+        _fr(views=1000, likes=200, comments=20),  # rate 0.22
+        _fr(views=1_000_000, likes=1000, comments=0),  # rate 0.001
+    ]
+    out = _aggregate_format_breakdown(rows, days=28)
+    long_form = next(f for f in out.formats if f.format == "long_form")
+    # Aggregate ratio would be ~0.0024; average-of-rates should sit much
+    # closer to the two consistent posts' 0.22.
+    assert long_form.avg_engagement_rate > 0.1
+
+
+def test_format_breakdown_engagement_rate_falls_back_to_likes_when_views_unavailable():
+    rows = [_fr(views=0, likes=100, comments=10)]
+    out = _aggregate_format_breakdown(rows, days=28)
+    long_form = next(f for f in out.formats if f.format == "long_form")
+    assert long_form.avg_engagement_rate == round(110 / 100, 4)
+
+
+def test_format_breakdown_engagement_rate_none_without_usable_data():
+    rows = [_fr(views=0, likes=0, comments=0)]
+    out = _aggregate_format_breakdown(rows, days=28)
+    long_form = next(f for f in out.formats if f.format == "long_form")
+    assert long_form.avg_engagement_rate is None
+
+
+def test_format_breakdown_engagement_rate_crossed_with_format():
+    rows = [
+        _fr(format="long_form", views=1000, likes=100, comments=0),
+        _fr(format="short_form", views=1000, likes=500, comments=0),
+    ]
+    out = _aggregate_format_breakdown(rows, days=28)
+    by_format = {f.format: f for f in out.formats}
+    assert by_format["long_form"].avg_engagement_rate == 0.1
+    assert by_format["short_form"].avg_engagement_rate == 0.5
+
+
+def test_format_breakdown_empty_input():
+    out = _aggregate_format_breakdown([], days=28)
+    for f in out.formats:
+        assert f.post_count == 0
+        assert f.avg_views is None
+        assert f.avg_engagement_rate is None
     assert _strip_phantom_zero_lead([_gp("2026-01-01", 0)]) == [_gp("2026-01-01", 0)]

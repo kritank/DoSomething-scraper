@@ -33,11 +33,14 @@ from app.schemas.creator_stats import (
     FormatStats,
     GrowthPoint,
     KeyEvent,
+    FormatSponsorshipStats,
     PostingFrequencyPoint,
     PostingTimeDistribution,
     PostPerformance,
     RankingEntry,
     RankingsOut,
+    SponsorshipBreakdownOut,
+    SponsorshipStats,
 )
 
 # Instagram Reels ("clips") are short-form; everything else (feed photos,
@@ -385,6 +388,130 @@ def _aggregate_posting_times(posted_ats: list[datetime]) -> PostingTimeDistribut
         best_weekday=weekday_counts.index(max(weekday_counts)) if total else None,
         best_hour=hour_counts.index(max(hour_counts)) if total else None,
         total_posts=total,
+    )
+
+
+@dataclass
+class _FormatRow:
+    """Pre-resolved input to _aggregate_format_breakdown -- `format` is
+    already folded ("live" -> "long_form")."""
+
+    format: str  # "long_form" | "short_form"
+    views: Optional[int]
+    likes: Optional[int]
+    comments: Optional[int]
+
+
+def _aggregate_format_breakdown(rows: list[_FormatRow], days: int) -> FormatBreakdownOut:
+    """Pure function (no DB access) so this is unit-testable in isolation."""
+    buckets: dict[str, dict] = {
+        "long_form": {"post_count": 0, "total_views": 0, "total_likes": 0, "total_comments": 0, "usable_values": [], "engagement_rates": []},
+        "short_form": {"post_count": 0, "total_views": 0, "total_likes": 0, "total_comments": 0, "usable_values": [], "engagement_rates": []},
+    }
+    for row in rows:
+        bucket = buckets[row.format]
+        bucket["post_count"] += 1
+        bucket["total_views"] += row.views or 0
+        bucket["total_likes"] += row.likes or 0
+        bucket["total_comments"] += row.comments or 0
+        # Same views==0-means-no-metric rule as outlier scoring.
+        usable = row.views if row.views else row.likes
+        if usable is not None:
+            bucket["usable_values"].append(usable)
+        # Same null-safety as _point_engagement_rate: skip when the usable
+        # metric or both likes/comments are unmeasurable, never a
+        # fabricated 0/0.
+        if usable and (row.likes is not None or row.comments is not None):
+            bucket["engagement_rates"].append(((row.likes or 0) + (row.comments or 0)) / usable)
+
+    total_views = sum(b["total_views"] for b in buckets.values())
+    formats = []
+    for fmt in ("long_form", "short_form"):
+        b = buckets[fmt]
+        avg_views = round(sum(b["usable_values"]) / len(b["usable_values"]), 1) if b["usable_values"] else None
+        avg_engagement_rate = (
+            round(sum(b["engagement_rates"]) / len(b["engagement_rates"]), 4)
+            if b["engagement_rates"]
+            else None
+        )
+        formats.append(
+            FormatStats(
+                format=fmt,
+                post_count=int(b["post_count"]),
+                total_views=int(b["total_views"]),
+                total_likes=int(b["total_likes"]),
+                total_comments=int(b["total_comments"]),
+                avg_views=avg_views,
+                avg_engagement_rate=avg_engagement_rate,
+                views_share=round(b["total_views"] / total_views, 4) if total_views > 0 else 0.0,
+            )
+        )
+
+    return FormatBreakdownOut(window_days=days, formats=formats, total_views=int(total_views))
+
+
+@dataclass
+class _SponsorshipRow:
+    """Pre-resolved input to _aggregate_sponsorship_breakdown -- `format`
+    is already folded ("live" -> "long_form") so the aggregation itself
+    doesn't need the influencer's platform."""
+
+    format: str  # "long_form" | "short_form"
+    is_paid_partnership: bool
+    views: Optional[int]
+    likes: Optional[int]
+    comments: Optional[int]
+
+
+def _empty_sponsorship_bucket() -> dict:
+    return {"post_count": 0, "total_likes": 0, "total_comments": 0, "usable_values": []}
+
+
+def _sponsorship_stats_from_bucket(bucket: dict) -> SponsorshipStats:
+    post_count = bucket["post_count"]
+    return SponsorshipStats(
+        post_count=post_count,
+        avg_views=round(sum(bucket["usable_values"]) / len(bucket["usable_values"]), 1)
+        if bucket["usable_values"]
+        else None,
+        avg_likes=round(bucket["total_likes"] / post_count, 1) if post_count else None,
+        avg_comments=round(bucket["total_comments"] / post_count, 1) if post_count else None,
+    )
+
+
+def _aggregate_sponsorship_breakdown(
+    rows: list[_SponsorshipRow], days: int
+) -> SponsorshipBreakdownOut:
+    """Pure function (no DB access) so this is unit-testable in isolation.
+    Buckets posts by is_paid_partnership both overall and crossed with
+    format, using the same views-else-likes "usable metric" rule as
+    get_format_breakdown."""
+    overall = {False: _empty_sponsorship_bucket(), True: _empty_sponsorship_bucket()}
+    by_format = {
+        "long_form": {False: _empty_sponsorship_bucket(), True: _empty_sponsorship_bucket()},
+        "short_form": {False: _empty_sponsorship_bucket(), True: _empty_sponsorship_bucket()},
+    }
+    for row in rows:
+        usable = row.views if row.views else row.likes
+        for bucket in (overall[row.is_paid_partnership], by_format[row.format][row.is_paid_partnership]):
+            bucket["post_count"] += 1
+            bucket["total_likes"] += row.likes or 0
+            bucket["total_comments"] += row.comments or 0
+            if usable is not None:
+                bucket["usable_values"].append(usable)
+
+    return SponsorshipBreakdownOut(
+        window_days=days,
+        organic=_sponsorship_stats_from_bucket(overall[False]),
+        sponsored=_sponsorship_stats_from_bucket(overall[True]),
+        formats=[
+            FormatSponsorshipStats(
+                format=fmt,
+                organic=_sponsorship_stats_from_bucket(by_format[fmt][False]),
+                sponsored=_sponsorship_stats_from_bucket(by_format[fmt][True]),
+            )
+            for fmt in ("long_form", "short_form")
+        ],
     )
 
 
@@ -1040,42 +1167,80 @@ class CreatorStatsService:
         )
         rows = (await self.session.execute(stmt)).all()
 
-        buckets: dict[str, dict[str, float]] = {
-            "long_form": {"post_count": 0, "total_views": 0, "total_likes": 0, "total_comments": 0, "usable_values": []},
-            "short_form": {"post_count": 0, "total_views": 0, "total_likes": 0, "total_comments": 0, "usable_values": []},
-        }
+        format_rows = []
         for row in rows:
             fmt = content_format(influencer.platform, row.product_type)
             if fmt == "live":
                 fmt = "long_form"  # folded into long_form for this breakdown, see FormatStats
-            bucket = buckets[fmt]
-            bucket["post_count"] += 1
-            bucket["total_views"] += row.views or 0
-            bucket["total_likes"] += row.likes or 0
-            bucket["total_comments"] += row.comments or 0
-            # Same views==0-means-no-metric rule as outlier scoring.
-            usable = row.views if row.views else row.likes
-            if usable is not None:
-                bucket["usable_values"].append(usable)
+            format_rows.append(
+                _FormatRow(format=fmt, views=row.views, likes=row.likes, comments=row.comments)
+            )
 
-        total_views = sum(b["total_views"] for b in buckets.values())
-        formats = []
-        for fmt in ("long_form", "short_form"):
-            b = buckets[fmt]
-            avg_views = round(sum(b["usable_values"]) / len(b["usable_values"]), 1) if b["usable_values"] else None
-            formats.append(
-                FormatStats(
+        return _aggregate_format_breakdown(format_rows, days)
+
+    async def get_sponsorship_breakdown(
+        self, influencer_id: UUID, days: int
+    ) -> Optional[SponsorshipBreakdownOut]:
+        """Officially-disclosed sponsored (Post.is_paid_partnership) vs
+        organic performance, overall and crossed with format. Undercounts
+        real sponsorships -- only catches posts where the creator used the
+        platform's own paid-partnership/paid-promotion disclosure tool --
+        see Post.is_paid_partnership and SponsorshipBreakdownOut's docstring."""
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return None
+
+        latest_metric_sq = (
+            select(
+                PostMetricsSnapshot.post_id,
+                PostMetricsSnapshot.views,
+                PostMetricsSnapshot.likes,
+                PostMetricsSnapshot.comments,
+                func.row_number()
+                .over(
+                    partition_by=PostMetricsSnapshot.post_id,
+                    order_by=PostMetricsSnapshot.scraped_at.desc(),
+                )
+                .label("rn"),
+            )
+            .subquery("latest_metric")
+        )
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        stmt = (
+            select(
+                Post.product_type,
+                Post.is_paid_partnership,
+                latest_metric_sq.c.views,
+                latest_metric_sq.c.likes,
+                latest_metric_sq.c.comments,
+            )
+            .select_from(Post)
+            .outerjoin(
+                latest_metric_sq,
+                (latest_metric_sq.c.post_id == Post.id) & (latest_metric_sq.c.rn == 1),
+            )
+            .where(Post.influencer_id == influencer_id, Post.posted_at >= cutoff)
+        )
+        rows = (await self.session.execute(stmt)).all()
+
+        sponsorship_rows = []
+        for row in rows:
+            fmt = content_format(influencer.platform, row.product_type)
+            if fmt == "live":
+                fmt = "long_form"
+            sponsorship_rows.append(
+                _SponsorshipRow(
                     format=fmt,
-                    post_count=int(b["post_count"]),
-                    total_views=int(b["total_views"]),
-                    total_likes=int(b["total_likes"]),
-                    total_comments=int(b["total_comments"]),
-                    avg_views=avg_views,
-                    views_share=round(b["total_views"] / total_views, 4) if total_views > 0 else 0.0,
+                    is_paid_partnership=row.is_paid_partnership,
+                    views=row.views,
+                    likes=row.likes,
+                    comments=row.comments,
                 )
             )
 
-        return FormatBreakdownOut(window_days=days, formats=formats, total_views=int(total_views))
+        return _aggregate_sponsorship_breakdown(sponsorship_rows, days)
 
     async def get_posting_frequency(
         self, influencer_id: UUID, days: int, bucket: str = "week"

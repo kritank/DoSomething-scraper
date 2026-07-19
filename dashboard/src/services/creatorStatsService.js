@@ -50,3 +50,10 @@ export async function getCreatorPostingTimes(influencerId, days) {
   });
   return data;
 }
+
+export async function getCreatorSponsorshipBreakdown(influencerId, days) {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/sponsorship`, {
+    params: { days },
+  });
+  return data;
+}

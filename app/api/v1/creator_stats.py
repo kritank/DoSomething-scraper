@@ -16,6 +16,7 @@ from app.schemas.creator_stats import (
     PostingFrequencyPoint,
     PostingTimeDistribution,
     PostPerformance,
+    SponsorshipBreakdownOut,
 )
 
 router = APIRouter(
@@ -90,6 +91,19 @@ async def get_creator_format_breakdown(
 ):
     service = CreatorStatsService(db)
     breakdown = await service.get_format_breakdown(influencer_id, days=days)
+    if breakdown is None:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    return breakdown
+
+
+@router.get("/{influencer_id}/sponsorship", response_model=SponsorshipBreakdownOut)
+async def get_creator_sponsorship_breakdown(
+    influencer_id: UUID,
+    days: int = Query(90, ge=1, le=3650),
+    db: AsyncSession = Depends(get_db),
+):
+    service = CreatorStatsService(db)
+    breakdown = await service.get_sponsorship_breakdown(influencer_id, days=days)
     if breakdown is None:
         raise HTTPException(status_code=404, detail="Influencer not found")
     return breakdown

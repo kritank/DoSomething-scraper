@@ -11,6 +11,7 @@ import {
   getCreatorPostPerformance,
   getCreatorPostingFrequency,
   getCreatorPostingTimes,
+  getCreatorSponsorshipBreakdown,
 } from '../services/creatorStatsService';
 import { getInfluencerJobs } from '../services/influencerJobsService';
 import Avatar from '../components/common/Avatar';
@@ -27,13 +28,14 @@ import GrowthChart from '../components/charts/GrowthChart';
 import DailyGrowthChart from '../components/charts/DailyGrowthChart';
 import FormatSplitCard from '../components/creator/FormatSplitCard';
 import PostingFrequencyCard from '../components/creator/PostingFrequencyCard';
+import SponsorshipCard from '../components/creator/SponsorshipCard';
 import PostsTable from '../components/creator/PostsTable';
 import DailyGrowthHistoryTable from '../components/creator/DailyGrowthHistoryTable';
 import AboutSection from '../components/creator/AboutSection';
-import { formatHandle } from '../utils/platform';
+import { formatHandle, platformLabel } from '../utils/platform';
 import { formatCompactNumber, formatUsdRange, countryFlagEmoji } from '../utils/format';
 import { GROWTH_RANGES } from '../utils/growthRanges';
-import { mergeGrowthSeries, mergeEarningsSeries, mergeFormatBreakdowns, mergePostingFrequency, mergePostingTimeDistributions } from '../utils/mergeSeries';
+import { mergeGrowthSeries, mergeEarningsSeries, mergeFormatBreakdowns, mergePostingFrequency, mergePostingTimeDistributions, mergeSponsorshipBreakdowns } from '../utils/mergeSeries';
 import { avatarUrl } from '../services/apiClient';
 
 const COMBINED_COLOR = '#8b5cf6';
@@ -72,6 +74,43 @@ function SegmentedControl({ options, value, onChange }) {
           }}
         >
           {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// "All / YouTube / Instagram" pill toggle -- same visual language as the
+// posting-frequency and sponsorship cards' platform toggles, reused here
+// for Content and Daily growth history since both sections only ever show
+// the "all platforms merged" view otherwise. Hidden for single-platform
+// creators (nothing to toggle between).
+function PlatformFilterToggle({ platforms, selected, onChange }) {
+  if (!platforms || platforms.length <= 1) return null;
+  return (
+    <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: 'var(--color-bg-card-hover)' }}>
+      <button
+        onClick={() => onChange('all')}
+        className="px-2.5 py-1 rounded-md text-xs font-semibold transition-colors"
+        style={{
+          background: selected === 'all' ? 'var(--color-accent)' : 'transparent',
+          color: selected === 'all' ? '#fff' : 'var(--color-text-muted)',
+        }}
+      >
+        All
+      </button>
+      {platforms.map((platform) => (
+        <button
+          key={platform}
+          onClick={() => onChange(platform)}
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors"
+          style={{
+            background: selected === platform ? 'var(--color-accent)' : 'transparent',
+            color: selected === platform ? '#fff' : 'var(--color-text-muted)',
+          }}
+        >
+          <PlatformIcon platform={platform} className="w-3.5 h-3.5 rounded-[3px]" />
+          {platformLabel(platform)}
         </button>
       ))}
     </div>
@@ -131,13 +170,20 @@ export default function CombinedCreatorProfile() {
   const [postingLoading, setPostingLoading] = useState(true);
   const [postingPlatform, setPostingPlatform] = useState('all');
 
+  const [sponsorshipDays, setSponsorshipDays] = useState(90);
+  const [sponsorshipByInfluencer, setSponsorshipByInfluencer] = useState({});
+  const [sponsorshipLoading, setSponsorshipLoading] = useState(true);
+  const [sponsorshipPlatform, setSponsorshipPlatform] = useState('all');
+
   const [postsSort, setPostsSort] = useState('top');
   const [postsFilter, setPostsFilter] = useState('all');
+  const [postsPlatform, setPostsPlatform] = useState('all');
   const [postsByInfluencer, setPostsByInfluencer] = useState({});
   const [postsLoading, setPostsLoading] = useState(true);
 
   const [historyByInfluencer, setHistoryByInfluencer] = useState({});
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyPlatform, setHistoryPlatform] = useState('all');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -246,6 +292,21 @@ export default function CombinedCreatorProfile() {
   useEffect(() => {
     if (!creator) return;
     let cancelled = false;
+    setSponsorshipLoading(true);
+    Promise.all(
+      creator.influencers.map(async (ref) => [
+        ref.influencer_id,
+        await getCreatorSponsorshipBreakdown(ref.influencer_id, sponsorshipDays),
+      ]),
+    )
+      .then((results) => { if (!cancelled) setSponsorshipByInfluencer(Object.fromEntries(results)); })
+      .finally(() => { if (!cancelled) setSponsorshipLoading(false); });
+    return () => { cancelled = true; };
+  }, [creator, sponsorshipDays]);
+
+  useEffect(() => {
+    if (!creator) return;
+    let cancelled = false;
     setPostsLoading(true);
     Promise.all(
       creator.influencers.map(async (ref) => {
@@ -301,7 +362,10 @@ export default function CombinedCreatorProfile() {
     }
     return groups;
   }, [creator]);
-  const postingPlatforms = useMemo(() => Object.keys(influencersByPlatform), [influencersByPlatform]);
+  // Shared by every "All / YouTube / Instagram" toggle on this page
+  // (posting frequency, sponsorship, content, daily history) -- one memo
+  // instead of a duplicate per feature.
+  const linkedPlatforms = useMemo(() => Object.keys(influencersByPlatform), [influencersByPlatform]);
   const postingFrequencyByPlatform = useMemo(() => {
     const result = {};
     for (const [platform, ids] of Object.entries(influencersByPlatform)) {
@@ -318,21 +382,35 @@ export default function CombinedCreatorProfile() {
   }, [influencersByPlatform, postingTimesByInfluencer]);
   const selectedPostingFrequency = postingPlatform === 'all' ? combinedPostingFrequency : postingFrequencyByPlatform[postingPlatform];
   const selectedPostingTimes = postingPlatform === 'all' ? combinedPostingTimes : postingTimesByPlatform[postingPlatform];
+
+  const combinedSponsorship = useMemo(() => mergeSponsorshipBreakdowns(Object.values(sponsorshipByInfluencer)), [sponsorshipByInfluencer]);
+  const sponsorshipByPlatform = useMemo(() => {
+    const result = {};
+    for (const [platform, ids] of Object.entries(influencersByPlatform)) {
+      result[platform] = mergeSponsorshipBreakdowns(ids.map((id) => sponsorshipByInfluencer[id]));
+    }
+    return result;
+  }, [influencersByPlatform, sponsorshipByInfluencer]);
+  const selectedSponsorship = sponsorshipPlatform === 'all' ? combinedSponsorship : sponsorshipByPlatform[sponsorshipPlatform];
   const combinedPosts = useMemo(() => {
     const all = Object.values(postsByInfluencer).flat();
+    const filtered = postsPlatform === 'all' ? all : all.filter((p) => p.platform === postsPlatform);
     const sorted = postsSort === 'top'
-      ? [...all].sort((a, b) => (b.outlier_score ?? -1) - (a.outlier_score ?? -1) || (b.views ?? b.likes ?? 0) - (a.views ?? a.likes ?? 0))
-      : [...all].sort((a, b) => (a.posted_at < b.posted_at ? 1 : -1));
+      ? [...filtered].sort((a, b) => (b.outlier_score ?? -1) - (a.outlier_score ?? -1) || (b.views ?? b.likes ?? 0) - (a.views ?? a.likes ?? 0))
+      : [...filtered].sort((a, b) => (a.posted_at < b.posted_at ? 1 : -1));
     return sorted.slice(0, 20);
-  }, [postsByInfluencer, postsSort]);
-  const combinedHistory = useMemo(() => {
-    const entries = Object.values(historyByInfluencer);
+  }, [postsByInfluencer, postsSort, postsPlatform]);
+  const selectedHistory = useMemo(() => {
+    const ids = historyPlatform === 'all'
+      ? Object.keys(historyByInfluencer)
+      : (influencersByPlatform[historyPlatform] ?? []);
+    const entries = ids.map((id) => historyByInfluencer[id]).filter(Boolean);
     return {
       followers: mergeGrowthSeries(entries.map((e) => e.followers)),
       views: mergeGrowthSeries(entries.map((e) => e.views)),
       earnings: mergeEarningsSeries(entries.map((e) => e.earnings)),
     };
-  }, [historyByInfluencer]);
+  }, [historyByInfluencer, historyPlatform, influencersByPlatform]);
 
   const handleSaveName = async () => {
     const name = nameDraft.trim();
@@ -600,9 +678,19 @@ export default function CombinedCreatorProfile() {
             loading={postingLoading}
             days={postingDays}
             onDaysChange={setPostingDays}
-            platforms={postingPlatforms}
+            platforms={linkedPlatforms}
             selectedPlatform={postingPlatform}
             onPlatformChange={setPostingPlatform}
+          />
+
+          <SponsorshipCard
+            breakdown={selectedSponsorship}
+            loading={sponsorshipLoading}
+            days={sponsorshipDays}
+            onDaysChange={setSponsorshipDays}
+            platforms={linkedPlatforms}
+            selectedPlatform={sponsorshipPlatform}
+            onPlatformChange={setSponsorshipPlatform}
           />
 
           {creator.influencers.length > 1 && (
@@ -625,7 +713,10 @@ export default function CombinedCreatorProfile() {
 
           {/* ── Content ──────────────────────────────────────────────── */}
           <div className="card p-5 flex flex-col gap-3 min-w-0">
-            <SectionHeading>Content</SectionHeading>
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <SectionHeading>Content</SectionHeading>
+              <PlatformFilterToggle platforms={linkedPlatforms} selected={postsPlatform} onChange={setPostsPlatform} />
+            </div>
             <PostsTable
               posts={combinedPosts}
               loading={postsLoading}
@@ -635,18 +726,21 @@ export default function CombinedCreatorProfile() {
               onFormatFilterChange={setPostsFilter}
               longFormLabel="Long-form"
               shortFormLabel="Shorts/Reels"
-              showPlatformColumn
+              showPlatformColumn={postsPlatform === 'all'}
             />
           </div>
 
           {/* ── Daily growth history ────────────────────────────────── */}
           <div className="card p-5 flex flex-col gap-3 min-w-0">
-            <SectionHeading>Daily growth & view history</SectionHeading>
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <SectionHeading>Daily growth & view history</SectionHeading>
+              <PlatformFilterToggle platforms={linkedPlatforms} selected={historyPlatform} onChange={setHistoryPlatform} />
+            </div>
             <DailyGrowthHistoryTable
-              followersSeries={combinedHistory.followers}
-              viewsSeries={combinedHistory.views}
-              earningsSeries={combinedHistory.earnings}
-              followersLabel="Combined followers"
+              followersSeries={selectedHistory.followers}
+              viewsSeries={selectedHistory.views}
+              earningsSeries={selectedHistory.earnings}
+              followersLabel={historyPlatform === 'all' ? 'Combined followers' : `${platformLabel(historyPlatform)} followers`}
               loading={historyLoading}
             />
           </div>
