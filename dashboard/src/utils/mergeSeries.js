@@ -131,6 +131,55 @@ export function mergeFormatBreakdowns(breakdowns) {
   };
 }
 
+// Merges SponsorshipBreakdownOut objects (one per linked platform) into
+// one, re-deriving avg_views/avg_likes/avg_comments as post_count-weighted
+// averages -- same simplification mergeFormatBreakdowns already makes
+// (weighting by post_count rather than the backend's internal
+// usable-values count, which isn't exposed to the frontend).
+export function mergeSponsorshipBreakdowns(breakdowns) {
+  const valid = breakdowns.filter(Boolean);
+  if (valid.length === 0) return null;
+
+  const mergeStats = (statsList) => {
+    let post_count = 0, likesSum = 0, commentsSum = 0, viewsSum = 0, viewsN = 0;
+    for (const s of statsList) {
+      if (!s) continue;
+      post_count += s.post_count;
+      if (s.avg_likes != null) likesSum += s.avg_likes * s.post_count;
+      if (s.avg_comments != null) commentsSum += s.avg_comments * s.post_count;
+      if (s.avg_views != null) { viewsSum += s.avg_views * s.post_count; viewsN += s.post_count; }
+    }
+    return {
+      post_count,
+      avg_views: viewsN > 0 ? viewsSum / viewsN : null,
+      avg_likes: post_count > 0 ? likesSum / post_count : null,
+      avg_comments: post_count > 0 ? commentsSum / post_count : null,
+    };
+  };
+
+  const byFormat = {
+    long_form: { organic: [], sponsored: [] },
+    short_form: { organic: [], sponsored: [] },
+  };
+  for (const b of valid) {
+    for (const f of b.formats) {
+      byFormat[f.format].organic.push(f.organic);
+      byFormat[f.format].sponsored.push(f.sponsored);
+    }
+  }
+
+  return {
+    window_days: valid[0].window_days,
+    organic: mergeStats(valid.map((b) => b.organic)),
+    sponsored: mergeStats(valid.map((b) => b.sponsored)),
+    formats: ['long_form', 'short_form'].map((format) => ({
+      format,
+      organic: mergeStats(byFormat[format].organic),
+      sponsored: mergeStats(byFormat[format].sponsored),
+    })),
+  };
+}
+
 // Merges PostingFrequencyPoint[] lists (one per linked platform) into one
 // series, summing post_count for buckets that share the same date.
 export function mergePostingFrequency(seriesList) {

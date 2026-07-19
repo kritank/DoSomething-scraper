@@ -123,6 +123,12 @@ class FormatStats(BaseModel):
     # None when no post in this format/window has a usable view-or-likes
     # metric (see _PostMetricPoint.outlier_metric for the views==0 rule).
     avg_views: Optional[float] = None
+    # Mean of each post's own (likes + comments) / usable-metric ratio
+    # (same views-else-likes fallback as avg_views) -- an average of
+    # per-post rates, not total_likes+total_comments/total_views, so one
+    # viral post doesn't dominate the figure. None when no post in this
+    # format/window has any usable likes/comments/views data at all.
+    avg_engagement_rate: Optional[float] = None
     # Share (0..1) of the window's combined long_form + short_form views.
     views_share: float = 0.0
 
@@ -131,6 +137,36 @@ class FormatBreakdownOut(BaseModel):
     window_days: int
     formats: list[FormatStats]
     total_views: int
+
+
+class SponsorshipStats(BaseModel):
+    post_count: int = 0
+    # None when no post in this bucket has a usable view-or-likes metric
+    # (same views==0-means-no-metric rule as FormatStats.avg_views).
+    avg_views: Optional[float] = None
+    avg_likes: Optional[float] = None
+    avg_comments: Optional[float] = None
+
+
+class FormatSponsorshipStats(BaseModel):
+    # "long_form" | "short_form" -- same folding-live-into-long_form rule
+    # as FormatStats.
+    format: Literal["long_form", "short_form"]
+    organic: SponsorshipStats
+    sponsored: SponsorshipStats
+
+
+class SponsorshipBreakdownOut(BaseModel):
+    window_days: int
+    # Aggregated across both formats.
+    organic: SponsorshipStats
+    # "Sponsored" means Instagram's/YouTube's own paid-partnership /
+    # paid-product-placement disclosure flag was set on the post --
+    # creators who run sponsored content without using that official
+    # disclosure tool show up as organic here. See
+    # Post.is_paid_partnership and docs/DATABASE_ER_DIAGRAM.md.
+    sponsored: SponsorshipStats
+    formats: list[FormatSponsorshipStats]
 
 
 class AboutOut(BaseModel):
