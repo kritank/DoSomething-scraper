@@ -23,6 +23,7 @@ export default function AddInfluencerForm({ categories, creators = [], onCreated
   const [handle, setHandle] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [creatorName, setCreatorName] = useState('');
+  const [accountType, setAccountType] = useState('individual');
   const [scrapePostsSince, setScrapePostsSince] = useState(defaultScrapeSince);
   const [submitting, setSubmitting] = useState(false);
 
@@ -46,7 +47,7 @@ export default function AddInfluencerForm({ categories, creators = [], onCreated
     setSubmitting(true);
     try {
       const created = await createInfluencer(
-        cleanHandle, effectiveCategoryId, scrapePostsSince, platform, creatorName.trim(),
+        cleanHandle, effectiveCategoryId, scrapePostsSince, platform, creatorName.trim(), accountType,
       );
       toast.success(`${formatHandle(created.handle, created.platform)} added`);
       setHandle('');
@@ -115,6 +116,25 @@ export default function AddInfluencerForm({ categories, creators = [], onCreated
             {categories.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
+          </select>
+        </div>
+
+        <div className="min-w-[140px]">
+          <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+            Type
+          </label>
+          <select
+            value={accountType}
+            onChange={(e) => setAccountType(e.target.value)}
+            className="w-full px-3.5 py-2.5 rounded-xl text-sm outline-none border"
+            style={{
+              background: 'var(--color-bg-secondary)',
+              color: 'var(--color-text-primary)',
+              borderColor: 'var(--color-border-default)',
+            }}
+          >
+            <option value="individual">Individual</option>
+            <option value="business">Business</option>
           </select>
         </div>
 

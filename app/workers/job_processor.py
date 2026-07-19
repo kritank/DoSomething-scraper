@@ -11,7 +11,12 @@ from app.analytics.creator_stats import CreatorStatsService
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.database import get_session
-from app.core.exceptions import InfluencerNotFoundError, ScraperBlockedError, ScraperRateLimitError
+from app.core.exceptions import (
+    InfluencerHandleNotFoundError,
+    InfluencerNotFoundError,
+    ScraperBlockedError,
+    ScraperRateLimitError,
+)
 from app.models.scrape_job import ScrapeJob
 from app.models.influencer import Influencer
 from app.models.snapshot import ProfileSnapshot, PostMetricsSnapshot
@@ -142,13 +147,28 @@ class JobProcessor:
                     logger.info("Scrape cancelled", job_id=job.id)
                     outcome = "cancelled"
                     job.error_message = None
+                except InfluencerHandleNotFoundError as e:
+                    # The Instagram handle itself doesn't resolve to any
+                    # account -- retrying won't help (every account would
+                    # fail identically, and the handle isn't going to start
+                    # existing on the next attempt), so this skips the
+                    # normal retry_pending loop and fails the job outright,
+                    # and deactivates the influencer so it stops being
+                    # dispatched daily forever. account_at_fault stays
+                    # False -- the account's session did nothing wrong.
+                    logger.warning("Scrape handle not found", job_id=job.id, error=str(e))
+                    outcome = "target_not_found"
+                    account_at_fault = False
+                    job.error_message = str(e)
+                    await self._deactivate_for_missing_handle(session)
                 except InfluencerNotFoundError as e:
-                    # Wrong/nonexistent Instagram handle, or the Influencer row
-                    # got deleted while this job sat queued -- the job legitimately
-                    # fails/retries, but the account's session is not implicated
-                    # (see account_at_fault above).
+                    # Our own Influencer row got deleted while this job sat
+                    # queued -- a race, not a data problem, so there's
+                    # nothing to deactivate. Still not worth retrying (the
+                    # row won't come back), but the account's session is
+                    # not implicated either way.
                     logger.warning("Scrape target not found", job_id=job.id, error=str(e))
-                    outcome = "error"
+                    outcome = "target_not_found"
                     account_at_fault = False
                     job.error_message = str(e)
                 except ScraperBlockedError as e:
@@ -169,6 +189,13 @@ class JobProcessor:
                         # A user-requested stop, not a failure -- doesn't
                         # spend retry_count or route through retry_pending.
                         job.status = "cancelled"
+                    elif outcome == "target_not_found":
+                        # See the InfluencerHandleNotFoundError/
+                        # InfluencerNotFoundError handlers above -- neither
+                        # case improves on a retry, so this fails outright
+                        # instead of spending SCRAPER_MAX_RETRIES attempts
+                        # on a target that can't resolve.
+                        job.status = "failed"
                     elif outcome != "success":
                         job.retry_count += 1
                         job.status = (
@@ -192,6 +219,19 @@ class JobProcessor:
                     await heartbeat_task
                 except asyncio.CancelledError:
                     pass
+
+    async def _deactivate_for_missing_handle(self, session: AsyncSession) -> None:
+        """The platform confirmed this handle doesn't resolve to any
+        account -- deactivates the influencer so it stops being dispatched
+        every day forever, and flags why so the dashboard can say "recheck
+        the handle" instead of just "inactive". Mutates in-session only;
+        the caller's existing finally-block commit persists this alongside
+        the job status update, same transaction."""
+        influencer = await session.get(Influencer, self.message.influencer_id)
+        if influencer is None:
+            return
+        influencer.is_active = False
+        influencer.deactivation_reason = "handle_not_found"
 
     async def _recompute_outlier_metrics(self, session: AsyncSession) -> None:
         """Best-effort: re-score and persist this influencer's recent posts'

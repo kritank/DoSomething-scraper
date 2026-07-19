@@ -1,4 +1,5 @@
 import React from 'react';
+import { profileUrl, platformLabel } from '../../utils/platform';
 
 // Simplified, tasteful glyphs that evoke each platform for quick visual
 // scanning -- not pixel-traced reproductions of the official trademarked
@@ -35,6 +36,25 @@ function YoutubeGlyph({ className }) {
   );
 }
 
-export default function PlatformIcon({ platform, className = 'w-6 h-6 rounded-md' }) {
-  return platform === 'youtube' ? <YoutubeGlyph className={className} /> : <InstagramGlyph className={className} />;
+// `handle`, when passed, turns the icon into a link out to the real
+// Instagram profile / YouTube channel -- optional so every other spot this
+// renders purely decoratively (no handle in scope) is unaffected.
+export default function PlatformIcon({ platform, className = 'w-6 h-6 rounded-md', handle }) {
+  const glyph = platform === 'youtube' ? <YoutubeGlyph className={className} /> : <InstagramGlyph className={className} />;
+  const url = profileUrl(handle, platform);
+  if (!url) return glyph;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      title={`Open on ${platformLabel(platform)}`}
+      // Icons often sit inside a row/card that's itself a Link -- stop the
+      // click from also triggering that outer navigation.
+      onClick={(e) => e.stopPropagation()}
+      className="inline-flex shrink-0"
+    >
+      {glyph}
+    </a>
+  );
 }

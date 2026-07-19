@@ -8,6 +8,7 @@ import Accounts from './pages/Accounts';
 import Influencers from './pages/Influencers';
 import CreatorProfile from './pages/CreatorProfile';
 import CombinedCreatorProfile from './pages/CombinedCreatorProfile';
+import CategoryProfile from './pages/CategoryProfile';
 import Content from './pages/Content';
 import Insights from './pages/Insights';
 import Export from './pages/Export';
@@ -23,6 +24,7 @@ export default function App() {
             <Route path="influencers" element={<Influencers />} />
             <Route path="influencers/:influencerId" element={<CreatorProfile />} />
             <Route path="creators/:creatorId" element={<CombinedCreatorProfile />} />
+            <Route path="categories/:categoryId" element={<CategoryProfile />} />
             <Route path="content" element={<Content />} />
             <Route path="insights" element={<Insights />} />
             <Route path="query" element={<QueryConsole />} />

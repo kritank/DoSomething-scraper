@@ -30,6 +30,7 @@ export default function Content() {
 
   const [influencerId, setInfluencerId] = useState('');
   const [categoryId, setCategoryId] = useState('');
+  const [accountType, setAccountType] = useState('');
   // Local, further-narrowing scope within whatever the Header's global
   // filter allows -- see PlatformFilter's docstring. Re-clamped to the
   // global set below whenever it changes, so this page never holds a
@@ -66,6 +67,7 @@ export default function Content() {
       const data = await listPosts({
         influencer_id: influencerId || undefined,
         category_id: categoryId || undefined,
+        account_type: accountType || undefined,
         platforms: selectedPlatforms,
         min_score: outliersOnly ? 2.0 : undefined,
         sort,
@@ -80,7 +82,7 @@ export default function Content() {
     } finally {
       setLoading(false);
     }
-  }, [influencerId, categoryId, selectedPlatforms, outliersOnly, sort, sortDir, page]);
+  }, [influencerId, categoryId, accountType, selectedPlatforms, outliersOnly, sort, sortDir, page]);
 
   useEffect(() => {
     loadFilters();
@@ -149,6 +151,16 @@ export default function Content() {
             {categories.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
+          </select>
+          <select
+            value={accountType}
+            onChange={(e) => { setAccountType(e.target.value); setPage(0); }}
+            className="px-3 py-2.5 rounded-xl text-sm outline-none border"
+            style={{ background: 'var(--color-bg-secondary)', color: 'var(--color-text-primary)', borderColor: 'var(--color-border-default)' }}
+          >
+            <option value="">All types</option>
+            <option value="business">Business</option>
+            <option value="individual">Individual</option>
           </select>
           <div
             className="pl-3 pr-2 py-2.5 rounded-xl text-sm font-medium border inline-flex items-center gap-1.5"
@@ -228,14 +240,20 @@ export default function Content() {
                         {formatHandle(p.handle, p.platform)}
                       </td>
                       <td className="py-2.5 px-3 whitespace-nowrap">
-                        <PlatformBadge platform={p.platform} />
+                        <PlatformBadge platform={p.platform} handle={p.handle} />
                       </td>
                       <td
                         className="py-2.5 px-3 max-w-[320px] truncate"
                         style={{ color: 'var(--color-text-secondary)' }}
                         title={p.title ? `${p.title}\n\n${p.caption ?? ''}` : (p.caption ?? undefined)}
                       >
-                        {p.title || p.caption || '—'}
+                        {p.permalink ? (
+                          <a href={p.permalink} target="_blank" rel="noreferrer" className="hover:underline">
+                            {p.title || p.caption || '—'}
+                          </a>
+                        ) : (
+                          p.title || p.caption || '—'
+                        )}
                       </td>
                       <td className="py-2.5 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
                         {format(new Date(p.posted_at), 'MMM d, yyyy')}

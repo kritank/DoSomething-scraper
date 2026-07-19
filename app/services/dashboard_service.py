@@ -29,10 +29,12 @@ class DashboardService:
         influencers = await self.influencer_repo.get_all_with_category()
         latest_jobs = await self.job_repo.get_latest_per_influencer()
         jobs_by_influencer = {job.influencer_id: job for job in latest_jobs}
+        stats_by_influencer = await self.job_repo.get_job_stats_by_influencer()
 
         rows: list[DashboardStatusRow] = []
         for influencer in influencers:
             job = jobs_by_influencer.get(influencer.id)
+            stats = stats_by_influencer.get(influencer.id)
             rows.append(
                 DashboardStatusRow(
                     influencer_id=influencer.id,
@@ -42,7 +44,10 @@ class DashboardService:
                     creator_name=influencer.creator.name if influencer.creator else None,
                     category_id=influencer.category_id,
                     category_name=influencer.category.name,
+                    account_type=influencer.account_type,
                     is_active=influencer.is_active,
+                    paused_by_category=influencer.paused_by_category,
+                    deactivation_reason=influencer.deactivation_reason,
                     backfill_completed=influencer.backfill_completed,
                     scrape_posts_since=influencer.scrape_posts_since,
                     last_job_id=job.id if job else None,
@@ -54,6 +59,11 @@ class DashboardService:
                     last_job_posts_processed=job.posts_processed if job else None,
                     last_job_comments_processed=job.comments_processed if job else None,
                     last_job_scraper_account=job.scraper_account if job else None,
+                    total_job_runs=stats.total_job_runs if stats else 0,
+                    completed_job_runs=stats.completed_job_runs if stats else 0,
+                    failed_job_runs=stats.failed_job_runs if stats else 0,
+                    job_success_rate=stats.job_success_rate if stats else None,
+                    consecutive_job_failures=stats.consecutive_job_failures if stats else 0,
                 )
             )
         return rows

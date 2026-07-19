@@ -6,7 +6,8 @@ from uuid import uuid4
 
 import pytest
 
-from app.core.exceptions import NoUsableYouTubeKeyError
+from app.core.exceptions import InfluencerHandleNotFoundError, NoUsableYouTubeKeyError
+from app.models.scrape_job import ScrapeJob
 from app.queue.base import ScrapeJobMessage
 from app.workers.youtube_job_processor import YouTubeJobProcessor
 
@@ -148,3 +149,58 @@ async def test_process_routes_to_retry_pending_when_no_usable_key():
     assert job.error_message == "no usable YouTube API key available"
     # retry_count must NOT be spent -- this job never attempted a scrape.
     assert job.retry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_process_deactivates_influencer_on_handle_not_found():
+    """A channel that doesn't resolve (InfluencerHandleNotFoundError, e.g.
+    raised when channels.list comes back empty) must fail the job outright
+    -- no retry_count spent -- and deactivate the influencer with a reason,
+    instead of endlessly retrying a handle that will never resolve."""
+    job_id = uuid4()
+    influencer_id = uuid4()
+    message = ScrapeJobMessage(job_id=job_id, influencer_id=influencer_id, handle="@doesnotexist", platform="youtube")
+    processor = YouTubeJobProcessor(message)
+
+    job = SimpleNamespace(
+        id=job_id,
+        status="pending",
+        started_at=None,
+        last_heartbeat_at=None,
+        posts_processed=0,
+        comments_processed=0,
+        retry_count=0,
+        error_message=None,
+        finished_at=None,
+        duration_s=None,
+        youtube_api_key_id=None,
+        quota_units_used=None,
+    )
+    influencer = SimpleNamespace(id=influencer_id, is_active=True, deactivation_reason=None)
+
+    async def _get(model, _id):
+        return job if model is ScrapeJob else influencer
+
+    session = MagicMock()
+    session.get = AsyncMock(side_effect=_get)
+    session.commit = AsyncMock()
+
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=session)
+    session_cm.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("app.workers.youtube_job_processor.get_session", return_value=session_cm),
+        patch("app.workers.youtube_job_processor.ykp.provide_key", AsyncMock(return_value=MagicMock())),
+        patch.object(
+            processor, "_run_scrape",
+            AsyncMock(side_effect=InfluencerHandleNotFoundError("@doesnotexist", "youtube")),
+        ),
+        patch.object(processor, "_heartbeat", AsyncMock()),
+    ):
+        await processor.process()
+
+    assert job.status == "failed"
+    assert job.retry_count == 0
+    assert influencer.is_active is False
+    assert influencer.deactivation_reason == "handle_not_found"

@@ -76,7 +76,7 @@ function SegmentedControl({ options, value, onChange }) {
 function PlatformMiniHeader({ influencerRef, verified }) {
   return (
     <div className="flex items-center gap-2">
-      <PlatformIcon platform={influencerRef.platform} className="w-6 h-6 rounded-md" />
+      <PlatformIcon platform={influencerRef.platform} className="w-6 h-6 rounded-md" handle={influencerRef.handle} />
       <div className="flex items-center gap-1.5 min-w-0">
         <span className="text-sm font-semibold truncate" style={{ color: 'var(--color-text-primary)' }}>
           {formatHandle(influencerRef.handle, influencerRef.platform)}
@@ -205,7 +205,7 @@ export default function CombinedCreatorProfile() {
         const posts = await getCreatorPostPerformance(
           ref.influencer_id, 20, postsFilter === 'all' ? undefined : postsFilter, postsSort,
         );
-        return posts.map((p) => ({ ...p, platform: ref.platform }));
+        return posts.map((p) => ({ ...p, platform: ref.platform, handle: ref.handle }));
       }),
     )
       .then((results) => { if (!cancelled) setPostsByInfluencer(Object.fromEntries(creator.influencers.map((ref, i) => [ref.influencer_id, results[i]]))); })
@@ -365,6 +365,7 @@ export default function CombinedCreatorProfile() {
                     key={ref.influencer_id}
                     platform={ref.platform}
                     verified={statsByInfluencer[ref.influencer_id]?.about?.is_verified}
+                    handle={ref.handle}
                   />
                 ))}
               </div>

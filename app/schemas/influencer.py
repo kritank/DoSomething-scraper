@@ -15,6 +15,7 @@ class InfluencerCreate(BaseModel):
     # creator's second platform account under the same name links them
     # automatically. Omit/blank to leave this platform account unlinked.
     creator_name: Optional[str] = None
+    account_type: Literal["business", "individual"] = "individual"
 
 
 class InfluencerScrapeSettingsUpdate(BaseModel):
@@ -29,6 +30,7 @@ class InfluencerDetailsUpdate(BaseModel):
     handle: Optional[str] = None
     category_id: Optional[UUID] = None
     creator_name: Optional[str] = None
+    account_type: Optional[Literal["business", "individual"]] = None
 
 
 class InfluencerActiveUpdate(BaseModel):
@@ -41,7 +43,10 @@ class InfluencerOut(BaseModel):
     category_id: UUID
     platform: str
     creator_id: Optional[UUID] = None
+    account_type: str
     is_active: bool
+    paused_by_category: bool
+    deactivation_reason: Optional[str] = None
     scrape_posts_since: Optional[date] = None
     backfill_completed: bool
 

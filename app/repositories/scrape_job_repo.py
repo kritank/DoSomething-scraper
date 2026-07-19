@@ -1,5 +1,6 @@
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Sequence
+from typing import Optional, Sequence
 from uuid import UUID
 
 from sqlalchemy import Row, case, exists, select, update
@@ -12,6 +13,25 @@ from app.models.influencer import Influencer
 from app.models.scrape_job import ScrapeJob
 
 ACTIVE_JOB_STATUSES = ("queued", "running", "retry_pending")
+# Statuses a run count treats as "decided" -- queued/running/retry_pending/
+# cancelled are all excluded from success-rate math: a cancelled run was
+# never a scrape *failure* (user-requested stop, see JobProcessor), and the
+# in-flight ones haven't resolved to either outcome yet.
+_TERMINAL_JOB_STATUSES = ("completed", "failed")
+
+
+@dataclass
+class JobStats:
+    """Lifetime job reliability for one influencer -- see
+    ScrapeJobRepo.get_job_stats_by_influencer. total_job_runs counts every
+    ScrapeJob row ever created (any status); the rest only count terminal
+    (completed/failed) runs, so an in-flight job never skews the rate."""
+
+    total_job_runs: int
+    completed_job_runs: int
+    failed_job_runs: int
+    job_success_rate: Optional[float]
+    consecutive_job_failures: int
 
 # ScrapeJob.scraper_account (a plain Python property, not a mapped column)
 # reads .instagram_account/.youtube_api_key directly -- in async SQLAlchemy
@@ -175,6 +195,59 @@ class ScrapeJobRepo:
         )
         result = await self.session.execute(stmt)
         return result.scalars().all()
+
+    async def get_job_stats_by_influencer(self) -> dict[UUID, JobStats]:
+        """Powers the Overview page's reliability column -- lifetime run
+        count, success rate, and current consecutive-failure streak per
+        influencer. Two passes: one GROUP BY for the counts (a single
+        aggregate query), one ordered-by-recency fetch of just terminal
+        statuses to compute each influencer's current failure streak in
+        Python -- a running streak ("how many failures in a row, most
+        recent first, before the last success") isn't expressible as a
+        plain GROUP BY. Influencers with zero jobs simply don't appear in
+        the returned dict; the caller (DashboardService) defaults them to
+        zero/None, same convention as get_latest_per_influencer.
+        """
+        counts_stmt = (
+            select(
+                ScrapeJob.influencer_id,
+                func.count().label("total_job_runs"),
+                func.sum(case((ScrapeJob.status == "completed", 1), else_=0)).label("completed_job_runs"),
+                func.sum(case((ScrapeJob.status == "failed", 1), else_=0)).label("failed_job_runs"),
+            )
+            .group_by(ScrapeJob.influencer_id)
+        )
+        counts_rows = (await self.session.execute(counts_stmt)).all()
+
+        streak_stmt = (
+            select(ScrapeJob.influencer_id, ScrapeJob.status)
+            .where(ScrapeJob.status.in_(_TERMINAL_JOB_STATUSES))
+            .order_by(ScrapeJob.influencer_id, ScrapeJob.created_at.desc())
+        )
+        streak_rows = (await self.session.execute(streak_stmt)).all()
+
+        streaks: dict[UUID, int] = {}
+        streak_ended: set[UUID] = set()
+        for row in streak_rows:
+            if row.influencer_id in streak_ended:
+                continue
+            if row.status == "failed":
+                streaks[row.influencer_id] = streaks.get(row.influencer_id, 0) + 1
+            else:  # "completed" -- most recent terminal run succeeded, streak is 0
+                streaks.setdefault(row.influencer_id, 0)
+                streak_ended.add(row.influencer_id)
+
+        results: dict[UUID, JobStats] = {}
+        for row in counts_rows:
+            terminal = row.completed_job_runs + row.failed_job_runs
+            results[row.influencer_id] = JobStats(
+                total_job_runs=row.total_job_runs,
+                completed_job_runs=row.completed_job_runs,
+                failed_job_runs=row.failed_job_runs,
+                job_success_rate=round(row.completed_job_runs / terminal, 4) if terminal else None,
+                consecutive_job_failures=streaks.get(row.influencer_id, 0),
+            )
+        return results
 
     async def get_daily_metrics(self, start_date: date, end_date: date) -> Sequence[Row]:
         # end_date is inclusive -- bump to the start of the next day so a
