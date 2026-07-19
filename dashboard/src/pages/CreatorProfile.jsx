@@ -277,7 +277,7 @@ export default function CreatorProfile() {
                   aria-label="Verified"
                 />
               )}
-              {!loading && <PlatformBadge platform={s.platform} />}
+              {!loading && <PlatformBadge platform={s.platform} handle={s.handle} />}
             </div>
             {!loading && (
               <div className="flex items-center flex-wrap gap-1.5 mt-1.5">

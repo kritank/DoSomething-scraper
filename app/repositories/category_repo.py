@@ -1,12 +1,13 @@
 from typing import Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import DuplicateCategoryError, CategoryNotFoundError
 from app.models.category import Category
+from app.models.influencer import Influencer
 from app.schemas.category import CategoryCreate, CategoryUpdate
 
 
@@ -38,8 +39,35 @@ class CategoryRepo:
         category = await self.get_by_id(category_id)
         if data.name is not None:
             category.name = data.name
-        if data.is_active is not None:
+        # Cascades the category's own is_active flag to its influencers --
+        # previously this column was purely cosmetic (an "(inactive)" label)
+        # and the scheduler never looked at it, so "deactivating" a category
+        # didn't actually stop anything under it from scraping.
+        #
+        # Deactivating: pauses every *currently active* influencer in the
+        # category, tagging each as paused_by_category=true so a later
+        # reactivate knows it's safe to resume them.
+        #
+        # Reactivating: resumes only influencers this category itself
+        # paused (paused_by_category=true) -- one a user separately
+        # deactivated for their own reason (e.g. a broken account) stays
+        # off, matching InfluencerRepo.update_active's contract that a
+        # manual toggle is always the explicit source of truth.
+        if data.is_active is not None and data.is_active != category.is_active:
             category.is_active = data.is_active
+            if data.is_active:
+                stmt = (
+                    update(Influencer)
+                    .where(Influencer.category_id == category_id, Influencer.paused_by_category.is_(True))
+                    .values(is_active=True, paused_by_category=False)
+                )
+            else:
+                stmt = (
+                    update(Influencer)
+                    .where(Influencer.category_id == category_id, Influencer.is_active.is_(True))
+                    .values(is_active=False, paused_by_category=True)
+                )
+            await self.session.execute(stmt)
         try:
             await self.session.commit()
         except IntegrityError:

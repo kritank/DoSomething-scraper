@@ -17,7 +17,9 @@ import {
 } from '../services/influencerService';
 import StatusBadge from '../components/common/StatusBadge';
 import PlatformBadge from '../components/common/PlatformBadge';
+import AccountTypeBadge from '../components/common/AccountTypeBadge';
 import PlatformFilter from '../components/common/PlatformFilter';
+import AccountTypeFilter from '../components/common/AccountTypeFilter';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
 import ErrorState from '../components/common/ErrorState';
@@ -27,40 +29,9 @@ import AddInfluencerForm from '../components/influencers/AddInfluencerForm';
 import JobHistoryPanel from '../components/influencers/JobHistoryPanel';
 import { useAppStore } from '../store/useAppStore';
 import { formatHandle } from '../utils/platform';
+import { groupByCreator } from '../utils/groupByCreator';
 
 const IN_FLIGHT_STATUSES = new Set(['queued', 'running']);
-
-// Groups a category's rows by creator_id -- creators with 2+ linked
-// platform accounts come back as one multi-row group (rendered as a
-// nested card with the creator's name as a header); everyone else is a
-// "solo" single-row group so the caller can render both shapes uniformly.
-// Sorted by display name so creator groups and standalone handles
-// interleave alphabetically rather than creators always floating to one end.
-function groupByCreator(influencers) {
-  const creatorGroups = new Map();
-  const solo = [];
-  for (const row of influencers) {
-    if (row.creator_id) {
-      if (!creatorGroups.has(row.creator_id)) creatorGroups.set(row.creator_id, []);
-      creatorGroups.get(row.creator_id).push(row);
-    } else {
-      solo.push(row);
-    }
-  }
-  const groups = [];
-  for (const [creatorId, rows] of creatorGroups) {
-    groups.push({
-      key: `creator-${creatorId}`,
-      creatorName: rows[0].creator_name,
-      rows: [...rows].sort((a, b) => a.platform.localeCompare(b.platform)),
-    });
-  }
-  for (const row of solo) {
-    groups.push({ key: `solo-${row.influencer_id}`, creatorName: null, rows: [row] });
-  }
-  groups.sort((a, b) => (a.creatorName || a.rows[0].handle).localeCompare(b.creatorName || b.rows[0].handle));
-  return groups;
-}
 
 export default function Influencers() {
   const enabledPlatforms = useAppStore((s) => s.enabledPlatforms);
@@ -77,10 +48,11 @@ export default function Influencers() {
   const [editingCreatorId, setEditingCreatorId] = useState(null);
   const [creatorNameDraft, setCreatorNameDraft] = useState('');
   const [editingInfluencerId, setEditingInfluencerId] = useState(null);
-  const [influencerDraft, setInfluencerDraft] = useState({ handle: '', categoryId: '', scrapePostsSince: '', creatorName: '' });
+  const [influencerDraft, setInfluencerDraft] = useState({ handle: '', categoryId: '', scrapePostsSince: '', creatorName: '', accountType: 'individual' });
   const [savingEdit, setSavingEdit] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedPlatforms, setSelectedPlatforms] = useState(enabledPlatforms);
+  const [selectedTypes, setSelectedTypes] = useState(['business', 'individual']);
 
   useEffect(() => {
     setSelectedPlatforms((prev) => prev.filter((p) => enabledPlatforms.includes(p)));
@@ -114,7 +86,9 @@ export default function Influencers() {
   }, [load]);
 
   const grouped = useMemo(() => {
-    const rows = statusRows.filter((r) => selectedPlatforms.includes(r.platform));
+    const rows = statusRows.filter(
+      (r) => selectedPlatforms.includes(r.platform) && selectedTypes.includes(r.account_type),
+    );
     const byCategory = new Map(categories.map((c) => [c.id, { category: c, influencers: [] }]));
     for (const row of rows) {
       if (!byCategory.has(row.category_id)) {
@@ -123,7 +97,7 @@ export default function Influencers() {
       byCategory.get(row.category_id).influencers.push(row);
     }
     return [...byCategory.values()].sort((a, b) => a.category.name.localeCompare(b.category.name));
-  }, [categories, statusRows, selectedPlatforms]);
+  }, [categories, statusRows, selectedPlatforms, selectedTypes]);
 
   const filteredGrouped = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -163,10 +137,20 @@ export default function Influencers() {
     }
   };
 
-  const handleToggleCategoryActive = async (category) => {
+  const handleToggleCategoryActive = async (category, influencers) => {
+    const activating = category.is_active === false;
     try {
-      await updateCategory(category.id, { is_active: !(category.is_active ?? true) });
-      toast.success(`"${category.name}" ${category.is_active ? 'deactivated' : 'activated'}`);
+      await updateCategory(category.id, { is_active: activating });
+      // Deactivating pauses every currently-active influencer in the
+      // category; reactivating resumes only the ones it paused (a
+      // manually-paused influencer stays paused) -- see CategoryRepo.update.
+      const affected = activating
+        ? influencers.filter((i) => i.paused_by_category).length
+        : influencers.filter((i) => i.is_active).length;
+      toast.success(
+        `"${category.name}" ${activating ? 'activated' : 'deactivated'}` +
+          (affected > 0 ? ` -- ${affected} influencer${affected === 1 ? '' : 's'} ${activating ? 'resumed' : 'paused'}` : ''),
+      );
       load();
     } catch {
       // apiClient's interceptor already toasts the error detail.
@@ -291,12 +275,13 @@ export default function Influencers() {
       categoryId: row.category_id,
       scrapePostsSince: row.scrape_posts_since || '',
       creatorName: row.creator_name || '',
+      accountType: row.account_type,
     });
   };
 
   const cancelEditInfluencer = () => {
     setEditingInfluencerId(null);
-    setInfluencerDraft({ handle: '', categoryId: '', scrapePostsSince: '', creatorName: '' });
+    setInfluencerDraft({ handle: '', categoryId: '', scrapePostsSince: '', creatorName: '', accountType: 'individual' });
   };
 
   const handleSaveInfluencer = async (row) => {
@@ -311,14 +296,16 @@ export default function Influencers() {
       // (e.g. "name" !== "@name") and fire a needless update.
       const previousBareHandle = row.handle.replace(/^@/, '');
       const creatorChanged = influencerDraft.creatorName.trim() !== (row.creator_name || '');
+      const typeChanged = influencerDraft.accountType !== row.account_type;
       const detailsChanged =
-        cleanHandle !== previousBareHandle || influencerDraft.categoryId !== row.category_id || creatorChanged;
+        cleanHandle !== previousBareHandle || influencerDraft.categoryId !== row.category_id || creatorChanged || typeChanged;
       const scrapeSinceChanged = influencerDraft.scrapePostsSince !== (row.scrape_posts_since || '');
       if (detailsChanged) {
         await updateInfluencerDetails(row.influencer_id, {
           handle: cleanHandle,
           categoryId: influencerDraft.categoryId,
           creatorName: creatorChanged ? influencerDraft.creatorName.trim() : undefined,
+          accountType: typeChanged ? influencerDraft.accountType : undefined,
         });
       }
       if (scrapeSinceChanged) {
@@ -368,13 +355,18 @@ export default function Influencers() {
             className="max-w-xs"
           />
         )}
-        <PlatformFilter value={selectedPlatforms} onChange={setSelectedPlatforms} options={enabledPlatforms} />
+        <div className="flex items-center gap-3 flex-wrap">
+          <AccountTypeFilter value={selectedTypes} onChange={setSelectedTypes} />
+          <PlatformFilter value={selectedPlatforms} onChange={setSelectedPlatforms} options={enabledPlatforms} />
+        </div>
       </div>
 
       {loading ? (
         <div className="card p-5 h-64 animate-shimmer" style={{ background: 'var(--color-bg-card-hover)' }} />
       ) : selectedPlatforms.length === 0 ? (
         <EmptyState title="No platform selected" message="Select at least one platform above to see influencers." />
+      ) : selectedTypes.length === 0 ? (
+        <EmptyState title="No type selected" message="Select Business and/or Individual above to see influencers." />
       ) : grouped.length === 0 ? (
         <EmptyState title="No categories yet" message="Add your first category above to get started." />
       ) : filteredGrouped.length === 0 ? (
@@ -401,7 +393,10 @@ export default function Influencers() {
                   </div>
                 ) : (
                   <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-                    {category.name} <span style={{ color: 'var(--color-text-muted)' }}>({influencers.length})</span>
+                    <Link to={`/categories/${category.id}`} className="hover:underline">
+                      {category.name}
+                    </Link>{' '}
+                    <span style={{ color: 'var(--color-text-muted)' }}>({influencers.length})</span>
                     {category.is_active === false && (
                       <span className="ml-2 text-xs font-normal" style={{ color: 'var(--color-text-muted)' }}>(inactive)</span>
                     )}
@@ -416,7 +411,7 @@ export default function Influencers() {
                       variant="ghost"
                       size="sm"
                       title={category.is_active === false ? 'Activate category' : 'Deactivate category'}
-                      onClick={() => handleToggleCategoryActive(category)}
+                      onClick={() => handleToggleCategoryActive(category, influencers)}
                     >
                       <Power className="w-3.5 h-3.5" style={{ color: category.is_active === false ? 'var(--color-success)' : 'var(--color-warning)' }} />
                     </Button>
@@ -437,7 +432,7 @@ export default function Influencers() {
               ) : (
                 <div className="flex flex-col gap-2">
                   {groupByCreator(influencers).map((group) =>
-                    group.rows.length > 1 ? (
+                    group.creatorId ? (
                       <div
                         key={group.key}
                         className="rounded-xl p-3 flex flex-col gap-1"
@@ -471,7 +466,7 @@ export default function Influencers() {
                                 {group.creatorName}
                               </Link>
                               <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
-                                — linked across {group.rows.length} platforms
+                                — linked across {group.rows.length} platform{group.rows.length === 1 ? '' : 's'}
                               </span>
                               <div className="flex items-center gap-0.5 ml-auto">
                                 <Button
@@ -591,6 +586,24 @@ function InfluencerRow({
                 ))}
               </select>
             </div>
+            <div className="min-w-[140px]">
+              <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+                Type
+              </label>
+              <select
+                value={draft.accountType}
+                onChange={(e) => setDraft((d) => ({ ...d, accountType: e.target.value }))}
+                className="w-full px-3.5 py-2.5 rounded-xl text-sm outline-none border"
+                style={{
+                  background: 'var(--color-bg-secondary)',
+                  color: 'var(--color-text-primary)',
+                  borderColor: 'var(--color-border-default)',
+                }}
+              >
+                <option value="individual">Individual</option>
+                <option value="business">Business</option>
+              </select>
+            </div>
             <div className="min-w-[150px]">
               <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
                 Scrape posts since
@@ -637,10 +650,27 @@ function InfluencerRow({
             >
               {formatHandle(row.handle, row.platform)}
             </Link>
-            <PlatformBadge platform={row.platform} />
+            <PlatformBadge platform={row.platform} handle={row.handle} />
+            <AccountTypeBadge accountType={row.account_type} />
             <StatusBadge status={row.last_job_status} />
             {!row.is_active && (
-              <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>(inactive)</span>
+              <span
+                className="text-xs"
+                style={{ color: row.deactivation_reason === 'handle_not_found' ? 'var(--color-danger)' : 'var(--color-text-muted)' }}
+                title={
+                  row.deactivation_reason === 'handle_not_found'
+                    ? "Auto-deactivated: this platform confirmed the handle doesn't exist. Edit the handle (pencil icon) to fix it, then reactivate."
+                    : row.paused_by_category
+                      ? 'Paused because its category is held -- reactivate the category to resume it, or use the power button to resume just this influencer.'
+                      : undefined
+                }
+              >
+                {row.deactivation_reason === 'handle_not_found'
+                  ? '(handle not found -- recheck)'
+                  : row.paused_by_category
+                    ? '(held with category)'
+                    : '(inactive)'}
+              </span>
             )}
           </div>
           <div className="flex items-center gap-4 shrink-0">

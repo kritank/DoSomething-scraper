@@ -43,6 +43,29 @@ class InfluencerNotFoundError(NotFoundError):
         super().__init__(f"Influencer not found: {handle_or_id}")
 
 
+class InfluencerHandleNotFoundError(NotFoundError):
+    """The platform itself confirms this handle/channel doesn't exist --
+    distinct from InfluencerNotFoundError (our own Influencer row vanished
+    mid-flight, nothing to act on) and from ScraperBlockedError (the
+    scraper's session/account is the problem, not the target). Raised by
+    InstagramClient.get_user_info on a definitively empty profile lookup,
+    and by YouTubeJobProcessor._run_scrape when channels.list resolves to
+    nothing -- both job processors respond by deactivating the influencer
+    (see JobProcessor/YouTubeJobProcessor._deactivate_for_missing_handle)
+    instead of endlessly retrying a handle that will never resolve, and
+    without penalizing the scraper account/API key that happened to run it,
+    since every other account would fail identically on this same target."""
+
+    code = "INFLUENCER_HANDLE_NOT_FOUND"
+
+    def __init__(self, handle: str, platform: str) -> None:
+        self.handle = handle
+        self.platform = platform
+        super().__init__(
+            f"No {platform} account found for handle '{handle}' -- verify it's correct."
+        )
+
+
 class CategoryNotFoundError(NotFoundError):
     code = "CATEGORY_NOT_FOUND"
 

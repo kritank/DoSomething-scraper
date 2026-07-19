@@ -8,7 +8,7 @@ from curl_cffi.requests import AsyncSession as CurlAsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import (
-    InfluencerNotFoundError,
+    InfluencerHandleNotFoundError,
     ScraperRateLimitError,
     ScraperBlockedError,
     ScraperTimeoutError,
@@ -380,9 +380,10 @@ class InstagramClient:
             # means, and it drives account_repo.release(outcome="blocked"),
             # parking the scraping account in checkpoint_required). Every other
             # account would hit the exact same empty result for this handle, so
-            # raising InfluencerNotFoundError instead routes this to the job
-            # (fail/retry the scrape target) without touching account health.
-            raise InfluencerNotFoundError(username)
+            # raising InfluencerHandleNotFoundError instead routes this to the
+            # job (deactivate the scrape target, see JobProcessor) without
+            # touching account health.
+            raise InfluencerHandleNotFoundError(username, "instagram")
         return {
             "user": {
                 "pk": user.get("id", ""),

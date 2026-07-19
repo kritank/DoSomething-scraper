@@ -90,3 +90,72 @@ async def test_has_active_job_false():
 async def test_has_active_job_in_category_true():
     repo = _repo_with_exists_result(True)
     assert await repo.has_active_job_in_category(uuid4()) is True
+
+
+def _repo_with_two_query_results(counts_rows, streak_rows) -> ScrapeJobRepo:
+    """get_job_stats_by_influencer runs two SELECTs in sequence -- the
+    counts GROUP BY first, then the ordered terminal-status fetch."""
+    session = MagicMock()
+    counts_result = MagicMock()
+    counts_result.all = MagicMock(return_value=counts_rows)
+    streak_result = MagicMock()
+    streak_result.all = MagicMock(return_value=streak_rows)
+    session.execute = AsyncMock(side_effect=[counts_result, streak_result])
+    return ScrapeJobRepo(session)
+
+
+@pytest.mark.asyncio
+async def test_job_stats_success_rate_and_streak_reset_by_recent_success():
+    influencer_id = uuid4()
+    counts_rows = [
+        SimpleNamespace(influencer_id=influencer_id, total_job_runs=3, completed_job_runs=2, failed_job_runs=1),
+    ]
+    # Most recent (first, since streak query orders created_at desc) is a
+    # success -- the streak must be 0 even though there's an older failure.
+    streak_rows = [
+        SimpleNamespace(influencer_id=influencer_id, status="completed"),
+        SimpleNamespace(influencer_id=influencer_id, status="failed"),
+        SimpleNamespace(influencer_id=influencer_id, status="completed"),
+    ]
+    repo = _repo_with_two_query_results(counts_rows, streak_rows)
+
+    stats = await repo.get_job_stats_by_influencer()
+
+    assert stats[influencer_id].job_success_rate == round(2 / 3, 4)
+    assert stats[influencer_id].consecutive_job_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_job_stats_flags_a_failing_streak():
+    influencer_id = uuid4()
+    counts_rows = [
+        SimpleNamespace(influencer_id=influencer_id, total_job_runs=5, completed_job_runs=2, failed_job_runs=3),
+    ]
+    # Three failures in a row (most recent first), then an older success --
+    # the streak must stop counting at that success, not keep going.
+    streak_rows = [
+        SimpleNamespace(influencer_id=influencer_id, status="failed"),
+        SimpleNamespace(influencer_id=influencer_id, status="failed"),
+        SimpleNamespace(influencer_id=influencer_id, status="failed"),
+        SimpleNamespace(influencer_id=influencer_id, status="completed"),
+    ]
+    repo = _repo_with_two_query_results(counts_rows, streak_rows)
+
+    stats = await repo.get_job_stats_by_influencer()
+
+    assert stats[influencer_id].consecutive_job_failures == 3
+    assert stats[influencer_id].job_success_rate == round(2 / 5, 4)
+
+
+@pytest.mark.asyncio
+async def test_job_stats_success_rate_none_with_no_terminal_runs():
+    influencer_id = uuid4()
+    counts_rows = [
+        SimpleNamespace(influencer_id=influencer_id, total_job_runs=1, completed_job_runs=0, failed_job_runs=0),
+    ]
+    repo = _repo_with_two_query_results(counts_rows, [])
+
+    stats = await repo.get_job_stats_by_influencer()
+
+    assert stats[influencer_id].job_success_rate is None
+    assert stats[influencer_id].consecutive_job_failures == 0

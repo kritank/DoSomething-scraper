@@ -1,7 +1,7 @@
 import React from 'react';
 import { BadgeCheck } from 'lucide-react';
 import { cn } from '../../utils/cn';
-import { platformLabel } from '../../utils/platform';
+import { platformLabel, profileUrl } from '../../utils/platform';
 import PlatformIcon from './PlatformIcon';
 
 // Compact square platform-logo badge with a small verified checkmark
@@ -10,10 +10,23 @@ import PlatformIcon from './PlatformIcon';
 // side and per-platform verification status matters (e.g. the combined
 // creator header), since a name+icon pill can't show "verified on this
 // platform" without also spelling out the platform name every time.
-export default function PlatformVerifiedBadge({ platform, verified, className }) {
+//
+// `handle`, when passed, turns the logo into a link out to the real
+// Instagram profile / YouTube channel.
+export default function PlatformVerifiedBadge({ platform, verified, className, handle }) {
   const label = verified ? `Verified on ${platformLabel(platform)}` : platformLabel(platform);
+  const url = profileUrl(handle, platform);
+  const Wrapper = url ? 'a' : 'span';
+  const wrapperProps = url
+    ? { href: url, target: '_blank', rel: 'noreferrer', onClick: (e) => e.stopPropagation() }
+    : {};
   return (
-    <span className={cn('relative inline-flex shrink-0', className)} title={label} aria-label={label}>
+    <Wrapper
+      className={cn('relative inline-flex shrink-0', className)}
+      title={url ? `Open on ${platformLabel(platform)}` : label}
+      aria-label={label}
+      {...wrapperProps}
+    >
       <PlatformIcon platform={platform} className="w-6 h-6 rounded-lg" />
       {verified && (
         <span
@@ -23,6 +36,6 @@ export default function PlatformVerifiedBadge({ platform, verified, className })
           <BadgeCheck className="w-3 h-3" style={{ color: 'var(--color-accent)' }} />
         </span>
       )}
-    </span>
+    </Wrapper>
   );
 }

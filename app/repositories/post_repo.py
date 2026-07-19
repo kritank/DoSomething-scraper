@@ -33,6 +33,7 @@ class PostRepo:
         influencer_id: Optional[UUID] = None,
         category_id: Optional[UUID] = None,
         platforms: Optional[list[str]] = None,
+        account_type: Optional[str] = None,
         # Cross-creator outliers feed (docs/OUTLIERS_PLAN.md Phase 3) --
         # posts below min_score, or with no score yet, are excluded when set.
         min_score: Optional[float] = None,
@@ -50,6 +51,8 @@ class PostRepo:
                 stmt = stmt.where(Influencer.category_id == category_id)
             if platforms:
                 stmt = stmt.where(Influencer.platform.in_(platforms))
+            if account_type is not None:
+                stmt = stmt.where(Influencer.account_type == account_type)
             if min_score is not None:
                 stmt = stmt.where(PostOutlierMetrics.outlier_score >= min_score)
             return stmt

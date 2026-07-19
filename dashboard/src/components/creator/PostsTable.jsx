@@ -95,11 +95,17 @@ export default function PostsTable({
                 <tr key={`${p.platform ?? ''}-${p.post_id}`} className="hover:bg-[var(--color-bg-card-hover)]" style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
                   {showPlatformColumn && (
                     <td className="py-2.5 px-3">
-                      <PlatformIcon platform={p.platform} className="w-5 h-5 rounded-[5px]" />
+                      <PlatformIcon platform={p.platform} className="w-5 h-5 rounded-[5px]" handle={p.handle} />
                     </td>
                   )}
                   <td className="py-2.5 px-3 max-w-xs truncate" style={{ color: 'var(--color-text-primary)' }} title={p.title ?? ''}>
-                    {p.title || '(untitled)'}
+                    {p.permalink ? (
+                      <a href={p.permalink} target="_blank" rel="noreferrer" className="hover:underline">
+                        {p.title || '(untitled)'}
+                      </a>
+                    ) : (
+                      p.title || '(untitled)'
+                    )}
                   </td>
                   <td className="py-2.5 px-3 whitespace-nowrap">
                     <span

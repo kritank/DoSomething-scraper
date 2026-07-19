@@ -56,7 +56,32 @@ class Influencer(Base):
         ForeignKey("categories.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    # "business" | "individual" -- freeform enough that a bad value doesn't
+    # break reads (no DB CHECK constraint, same convention as `platform`),
+    # validated at the Pydantic layer instead (see InfluencerCreate/
+    # InfluencerDetailsUpdate). Defaults to "individual"; set explicitly at
+    # creation or edited after the fact via update_details, same as category.
+    account_type: Mapped[str] = mapped_column(String(16), nullable=False, server_default="individual")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    # True only when this row's is_active=false was set by a category-level
+    # deactivate (CategoryRepo.update), never by a direct per-influencer
+    # toggle -- lets reactivating the category resume exactly the
+    # influencers it paused, without touching ones a user separately
+    # deactivated for their own reasons (e.g. a broken account). Any manual
+    # per-influencer toggle (InfluencerRepo.update_active) always resets
+    # this back to false, since that action is now the explicit source of
+    # truth for the row.
+    paused_by_category: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    # Set only when a scrape job auto-deactivated this influencer because
+    # the platform confirmed the handle doesn't resolve to any account
+    # (InfluencerHandleNotFoundError -- see JobProcessor/
+    # YouTubeJobProcessor._deactivate_for_missing_handle). NULL for a
+    # manual deactivate or a category-level pause. Cleared by any manual
+    # per-influencer edit (InfluencerRepo.update_active/update_details),
+    # same "explicit action is the new source of truth" rule as
+    # paused_by_category -- fixing the handle and saving, or just flipping
+    # the row back active, both silently clear this.
+    deactivation_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     # Don't pull posts older than this date (null = full history). Bounds
     # the one-time backfill's request count for accounts with years of posts.
