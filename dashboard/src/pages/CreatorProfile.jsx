@@ -8,6 +8,8 @@ import {
   getCreatorPostPerformance,
   getCreatorFormatBreakdown,
   getCreatorKeyEvents,
+  getCreatorPostingFrequency,
+  getCreatorPostingTimes,
 } from '../services/creatorStatsService';
 import PlatformBadge from '../components/common/PlatformBadge';
 import ScrapeStatusIndicator from '../components/common/ScrapeStatusIndicator';
@@ -21,6 +23,7 @@ import Banner from '../components/common/Banner';
 import GrowthChart from '../components/charts/GrowthChart';
 import DailyGrowthChart from '../components/charts/DailyGrowthChart';
 import FormatSplitCard from '../components/creator/FormatSplitCard';
+import PostingFrequencyCard from '../components/creator/PostingFrequencyCard';
 import AboutSection from '../components/creator/AboutSection';
 import PostsTable from '../components/creator/PostsTable';
 import DailyGrowthHistoryTable from '../components/creator/DailyGrowthHistoryTable';
@@ -30,27 +33,13 @@ import { formatHandle, platformLabel, PLATFORM_COLORS } from '../utils/platform'
 import { formatCompactNumber, formatSignedCompact, formatUsdRange, formatPercent, countryFlagEmoji, formatAccountAge } from '../utils/format';
 import { GROWTH_RANGES } from '../utils/growthRanges';
 
-// A leading 0-value point in the followers series is a broken/seed
-// snapshot, not "tracking started at zero" -- no tracked account actually
-// has 0 followers. Left as-is it draws a vertical cliff on GrowthChart and
-// turns into a misleadingly huge first bar on DailyGrowthChart. Strip any
-// leading zero(s) followed by a >=10x jump, and clear the new first
-// point's daily_delta since it no longer has a real "previous day" to
-// diff against -- DailyGrowthChart already drops null-delta points.
-function stripPhantomZeroLead(points) {
-  if (!points || points.length < 2) return points ?? [];
-  let start = 0;
-  while (
-    start < points.length - 1 &&
-    points[start].value === 0 &&
-    points[start + 1].value >= 1000
-  ) {
-    start++;
-  }
-  if (start === 0) return points;
-  const rest = points.slice(start);
-  return [{ ...rest[0], daily_delta: null }, ...rest.slice(1)];
-}
+// Leading phantom-zero seed snapshots (a broken first data point that
+// would otherwise draw a vertical cliff / flood the key-events feed) are
+// now stripped server-side, in CreatorStatsService.get_growth_series --
+// see app/analytics/creator_stats.py's _strip_phantom_zero_lead. Every
+// consumer of getCreatorGrowth (this page and CombinedCreatorProfile.jsx)
+// gets clean data for free, including get_key_events' milestone detection,
+// which a frontend-only fix here never could have reached.
 
 const TOOLTIPS = {
   followersYoutube: 'Latest scraped count. YouTube rounds subscriber counts to 3 significant figures, so large channels move in visible steps.',
@@ -124,6 +113,11 @@ export default function CreatorProfile() {
   const [formatBreakdown, setFormatBreakdown] = useState(null);
   const [formatLoading, setFormatLoading] = useState(true);
 
+  const [postingDays, setPostingDays] = useState(28);
+  const [postingFrequency, setPostingFrequency] = useState([]);
+  const [postingTimeDistribution, setPostingTimeDistribution] = useState(null);
+  const [postingLoading, setPostingLoading] = useState(true);
+
   const [postsFilter, setPostsFilter] = useState('all');
   const [postsSort, setPostsSort] = useState('top');
   const [posts, setPosts] = useState([]);
@@ -178,7 +172,7 @@ export default function CreatorProfile() {
     ])
       .then(([growthData, eventsData]) => {
         if (cancelled) return;
-        setGrowthPoints(growthMetric === 'followers' ? stripPhantomZeroLead(growthData) : growthData);
+        setGrowthPoints(growthData);
         setEvents(eventsData);
       })
       .finally(() => { if (!cancelled) setGrowthLoading(false); });
@@ -194,6 +188,23 @@ export default function CreatorProfile() {
       .finally(() => { if (!cancelled) setFormatLoading(false); });
     return () => { cancelled = true; };
   }, [influencerId, formatDays, stats]);
+
+  useEffect(() => {
+    if (!stats) return;
+    let cancelled = false;
+    setPostingLoading(true);
+    Promise.all([
+      getCreatorPostingFrequency(influencerId, postingDays, 'day'),
+      getCreatorPostingTimes(influencerId, postingDays),
+    ])
+      .then(([freq, times]) => {
+        if (cancelled) return;
+        setPostingFrequency(freq);
+        setPostingTimeDistribution(times);
+      })
+      .finally(() => { if (!cancelled) setPostingLoading(false); });
+    return () => { cancelled = true; };
+  }, [influencerId, postingDays, stats]);
 
   useEffect(() => {
     if (!stats) return;
@@ -223,7 +234,7 @@ export default function CreatorProfile() {
     ])
       .then(([followers, views, earnings]) => {
         if (cancelled) return;
-        setHistoryFollowers(stripPhantomZeroLead(followers));
+        setHistoryFollowers(followers);
         setHistoryViews(views);
         setHistoryEarnings(earnings);
       })
@@ -393,6 +404,14 @@ export default function CreatorProfile() {
               longFormLabel={longFormLabel}
               shortFormLabel={shortFormLabel}
               infoTip={isYoutube ? TOOLTIPS.formatSplitYoutube : TOOLTIPS.formatSplitInstagram}
+            />
+
+            <PostingFrequencyCard
+              frequencyPoints={postingFrequency}
+              timeDistribution={postingTimeDistribution}
+              loading={postingLoading}
+              days={postingDays}
+              onDaysChange={setPostingDays}
             />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

@@ -13,6 +13,8 @@ from app.schemas.creator_stats import (
     FormatBreakdownOut,
     GrowthPoint,
     KeyEvent,
+    PostingFrequencyPoint,
+    PostingTimeDistribution,
     PostPerformance,
 )
 
@@ -91,6 +93,33 @@ async def get_creator_format_breakdown(
     if breakdown is None:
         raise HTTPException(status_code=404, detail="Influencer not found")
     return breakdown
+
+
+@router.get("/{influencer_id}/posting-frequency", response_model=list[PostingFrequencyPoint])
+async def get_creator_posting_frequency(
+    influencer_id: UUID,
+    days: int = Query(90, ge=1, le=3650),
+    bucket: Literal["day", "week"] = Query("week"),
+    db: AsyncSession = Depends(get_db),
+):
+    service = CreatorStatsService(db)
+    summary = await service.get_summary(influencer_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    return await service.get_posting_frequency(influencer_id, days=days, bucket=bucket)
+
+
+@router.get("/{influencer_id}/posting-times", response_model=PostingTimeDistribution)
+async def get_creator_posting_times(
+    influencer_id: UUID,
+    days: int = Query(90, ge=1, le=3650),
+    db: AsyncSession = Depends(get_db),
+):
+    service = CreatorStatsService(db)
+    summary = await service.get_summary(influencer_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    return await service.get_posting_time_distribution(influencer_id, days=days)
 
 
 @router.get("/{influencer_id}/events", response_model=list[KeyEvent])

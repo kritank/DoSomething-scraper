@@ -6,6 +6,8 @@ from uuid import uuid4
 from app.analytics.creator_stats import (
     MIN_POSTS_FOR_OUTLIER,
     OUTLIER_LOOKBACK_POSTS,
+    _aggregate_posting_times,
+    _bucket_posting_frequency,
     _compute_composite_outlier_score,
     _compute_outlier_and_velocity,
     _compute_outlier_details,
@@ -13,6 +15,7 @@ from app.analytics.creator_stats import (
     _detect_milestones,
     _PostMetricPoint,
     _select_metric_pair,
+    _strip_phantom_zero_lead,
     content_format,
 )
 from app.schemas.creator_stats import GrowthPoint
@@ -255,10 +258,10 @@ def test_milestone_none_for_single_point():
 
 
 def test_milestone_multiple_thresholds_in_one_jump():
-    series = [_gp("2026-01-01", 90_000), _gp("2026-01-02", 1_200_000)]
+    series = [_gp("2026-01-01", 90_000), _gp("2026-01-02", 160_000)]
     events = _detect_milestones(series)
     labels = {e.label for e in events}
-    assert labels == {"Crossed 100K followers", "Crossed 500K followers", "Crossed 1M followers"}
+    assert labels == {"Crossed 100K followers", "Crossed 150K followers"}
 
 
 def test_milestone_not_re_triggered_by_later_drop_and_regrowth():
@@ -268,3 +271,106 @@ def test_milestone_not_re_triggered_by_later_drop_and_regrowth():
     events = _detect_milestones(series)
     assert len(events) == 1
     assert events[0].date.isoformat() == "2026-01-02"
+
+
+def test_phantom_zero_lead_flood_prevented_before_stripping():
+    """Documents the actual bug: an unstripped phantom-zero seed point
+    makes _detect_milestones treat the very next real point as having
+    crossed every threshold between 0 and that value at once -- a flood of
+    same-day events, which is what "shot up on first scrape" looked like."""
+    series = [_gp("2026-01-01", 0), _gp("2026-01-02", 160_000)]
+    events = _detect_milestones(series)
+    assert len(events) > 2  # the bug: far more than the 2 real crossings
+
+
+def test_strip_phantom_zero_lead_removes_seed_point():
+    from datetime import date as date_cls
+
+    series = [
+        _gp("2026-01-01", 0),
+        GrowthPoint(date=date_cls.fromisoformat("2026-01-02"), value=160_000, daily_delta=160_000),
+        GrowthPoint(date=date_cls.fromisoformat("2026-01-03"), value=165_000, daily_delta=5_000),
+    ]
+    stripped = _strip_phantom_zero_lead(series)
+    assert [p.date.isoformat() for p in stripped] == ["2026-01-02", "2026-01-03"]
+    assert stripped[0].daily_delta is None  # no real "previous day" anymore
+    assert stripped[1].daily_delta == 5_000  # untouched, not the stripped point
+
+
+def test_strip_phantom_zero_lead_fixes_the_flood():
+    series = [_gp("2026-01-01", 0), _gp("2026-01-02", 160_000)]
+    events = _detect_milestones(_strip_phantom_zero_lead(series))
+    assert events == []  # first (only) point after stripping -- nothing to compare against
+
+
+def test_strip_phantom_zero_lead_leaves_real_zero_start_alone():
+    """A small jump after a 0 isn't a seed-snapshot artifact -- only a
+    >=1000x jump is treated as "this 0 wasn't real"."""
+    series = [_gp("2026-01-01", 0), _gp("2026-01-02", 500)]
+    assert _strip_phantom_zero_lead(series) == series
+
+
+def test_strip_phantom_zero_lead_noop_without_leading_zero():
+    series = [_gp("2026-01-01", 9_000), _gp("2026-01-02", 11_000)]
+    assert _strip_phantom_zero_lead(series) == series
+
+
+def test_strip_phantom_zero_lead_noop_for_short_series():
+    assert _strip_phantom_zero_lead([]) == []
+
+
+def _dt(iso: str) -> datetime:
+    return datetime.fromisoformat(iso).replace(tzinfo=timezone.utc)
+
+
+def test_bucket_posting_frequency_weekly_groups_same_week():
+    # 2026-01-05 (Mon) and 2026-01-07 (Wed) share the Monday-01-05 bucket;
+    # 2026-01-12 (Mon) starts a new week.
+    posted_ats = [_dt("2026-01-05T10:00:00"), _dt("2026-01-07T22:00:00"), _dt("2026-01-12T00:00:00")]
+    points = _bucket_posting_frequency(posted_ats, bucket="week")
+    assert [(p.date.isoformat(), p.post_count) for p in points] == [
+        ("2026-01-05", 2),
+        ("2026-01-12", 1),
+    ]
+
+
+def test_bucket_posting_frequency_daily_keeps_days_separate():
+    posted_ats = [_dt("2026-01-05T01:00:00"), _dt("2026-01-05T23:00:00"), _dt("2026-01-06T00:00:00")]
+    points = _bucket_posting_frequency(posted_ats, bucket="day")
+    assert [(p.date.isoformat(), p.post_count) for p in points] == [
+        ("2026-01-05", 2),
+        ("2026-01-06", 1),
+    ]
+
+
+def test_bucket_posting_frequency_empty_input():
+    assert _bucket_posting_frequency([], bucket="week") == []
+
+
+def test_aggregate_posting_times_counts_and_picks_best():
+    # 2026-01-05 is a Monday (weekday()==0); 2026-01-07 is a Wednesday (2).
+    posted_ats = [
+        _dt("2026-01-05T09:00:00"),
+        _dt("2026-01-05T09:30:00"),
+        _dt("2026-01-07T14:00:00"),
+    ]
+    dist = _aggregate_posting_times(posted_ats)
+    assert dist.weekday_counts[0] == 2  # Monday
+    assert dist.weekday_counts[2] == 1  # Wednesday
+    assert dist.hour_counts[9] == 2
+    assert dist.hour_counts[14] == 1
+    assert dist.best_weekday == 0
+    assert dist.best_hour == 9
+    assert dist.total_posts == 3
+    assert dist.hourly_weekday_matrix[0][9] == 2
+    assert dist.hourly_weekday_matrix[2][14] == 1
+
+
+def test_aggregate_posting_times_empty_input():
+    dist = _aggregate_posting_times([])
+    assert dist.total_posts == 0
+    assert dist.best_weekday is None
+    assert dist.best_hour is None
+    assert dist.weekday_counts == [0] * 7
+    assert dist.hour_counts == [0] * 24
+    assert _strip_phantom_zero_lead([_gp("2026-01-01", 0)]) == [_gp("2026-01-01", 0)]

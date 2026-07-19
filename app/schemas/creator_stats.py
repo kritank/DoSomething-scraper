@@ -170,6 +170,33 @@ class KeyEvent(BaseModel):
     format: Optional[str] = None
 
 
+class PostingFrequencyPoint(BaseModel):
+    # Bucket start date -- the Monday of that week for bucket="week", or
+    # the day itself for bucket="day".
+    date: date
+    post_count: int
+
+
+class PostingTimeDistribution(BaseModel):
+    # Post counts by day of week, index 0=Monday .. 6=Sunday (Python's
+    # datetime.weekday() convention), over the requested window.
+    weekday_counts: list[int] = [0] * 7
+    # Post counts by hour of day (0-23), in UTC -- posted_at is stored in
+    # UTC, so this reflects the creator's UTC posting pattern, not their
+    # local audience's clock. Good enough for "do they post consistently
+    # around the same time" without claiming timezone precision we don't have.
+    hour_counts: list[int] = [0] * 24
+    # Joint weekday x hour counts -- matrix[weekday][hour], same indexing
+    # as weekday_counts/hour_counts. Powers the weekday-by-hour heatmap;
+    # weekday_counts/hour_counts remain as the pre-computed marginals so
+    # existing consumers don't need to sum the matrix themselves.
+    hourly_weekday_matrix: list[list[int]] = [[0] * 24 for _ in range(7)]
+    # None when there are no posts in the window to rank.
+    best_weekday: Optional[int] = None
+    best_hour: Optional[int] = None
+    total_posts: int = 0
+
+
 class CreatorStatsOut(BaseModel):
     summary: CreatorSummary
     engagement: EngagementOut

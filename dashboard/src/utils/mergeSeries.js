@@ -130,3 +130,45 @@ export function mergeFormatBreakdowns(breakdowns) {
     formats,
   };
 }
+
+// Merges PostingFrequencyPoint[] lists (one per linked platform) into one
+// series, summing post_count for buckets that share the same date.
+export function mergePostingFrequency(seriesList) {
+  const valid = seriesList.filter(Boolean);
+  const byDate = new Map();
+  for (const series of valid) {
+    for (const point of series) {
+      byDate.set(point.date, (byDate.get(point.date) || 0) + point.post_count);
+    }
+  }
+  return Array.from(byDate.entries())
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([date, post_count]) => ({ date, post_count }));
+}
+
+// Merges PostingTimeDistribution objects (one per linked platform) by
+// summing each index of weekday_counts/hour_counts/hourly_weekday_matrix,
+// then re-deriving best_weekday/best_hour/total_posts from the combined
+// totals.
+export function mergePostingTimeDistributions(distributions) {
+  const valid = distributions.filter(Boolean);
+  const weekday_counts = new Array(7).fill(0);
+  const hour_counts = new Array(24).fill(0);
+  const hourly_weekday_matrix = Array.from({ length: 7 }, () => new Array(24).fill(0));
+  for (const d of valid) {
+    (d.weekday_counts || []).forEach((c, i) => { weekday_counts[i] += c; });
+    (d.hour_counts || []).forEach((c, i) => { hour_counts[i] += c; });
+    (d.hourly_weekday_matrix || []).forEach((row, wd) => {
+      (row || []).forEach((c, hr) => { hourly_weekday_matrix[wd][hr] += c; });
+    });
+  }
+  const total_posts = weekday_counts.reduce((a, b) => a + b, 0);
+  return {
+    weekday_counts,
+    hour_counts,
+    hourly_weekday_matrix,
+    best_weekday: total_posts > 0 ? weekday_counts.indexOf(Math.max(...weekday_counts)) : null,
+    best_hour: total_posts > 0 ? hour_counts.indexOf(Math.max(...hour_counts)) : null,
+    total_posts,
+  };
+}
