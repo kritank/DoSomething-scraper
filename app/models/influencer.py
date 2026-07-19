@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from app.models.category import Category
     from app.models.creator import Creator
     from app.models.snapshot import ProfileSnapshot
+    from app.models.post import Post
 
 
 class Influencer(Base):
@@ -116,6 +117,19 @@ class Influencer(Base):
     )
     profile_snapshots: Mapped[list["ProfileSnapshot"]] = relationship(
         "ProfileSnapshot", back_populates="influencer", cascade="all, delete-orphan"
+    )
+    # passive_deletes=True -- posts.influencer_id is NOT NULL with an
+    # ON DELETE CASCADE at the DB level (InfluencerRepo.delete relies on
+    # it), but without this the ORM's default behavior on deleting an
+    # Influencer is to SELECT its posts and UPDATE their influencer_id to
+    # NULL first (since no ORM-level cascade is declared here), which
+    # violates that NOT NULL constraint -- the actual bug behind "delete
+    # influencer" 500ing for any account that has posts. This tells
+    # SQLAlchemy to leave child rows alone and trust Postgres's cascade to
+    # delete them (which in turn cascades further into comments/
+    # metrics_snapshots/feature_store/outlier_metrics via their own FKs).
+    posts: Mapped[list["Post"]] = relationship(
+        "Post", back_populates="influencer", passive_deletes=True
     )
 
     def __repr__(self) -> str:

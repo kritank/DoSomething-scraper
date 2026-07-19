@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from app.models.snapshot import PostMetricsSnapshot
     from app.models.feature_store import FeatureStore
     from app.models.post_outlier_metrics import PostOutlierMetrics
+    from app.models.comment import Comment
 
 
 class Post(Base):
@@ -74,7 +75,7 @@ class Post(Base):
     )
 
     influencer: Mapped["Influencer"] = relationship(
-        "Influencer", backref="posts"
+        "Influencer", back_populates="posts"
     )
     metrics_snapshots: Mapped[list["PostMetricsSnapshot"]] = relationship(
         "PostMetricsSnapshot", back_populates="post", cascade="all, delete-orphan"
@@ -84,6 +85,15 @@ class Post(Base):
     )
     outlier_metrics: Mapped[Optional["PostOutlierMetrics"]] = relationship(
         "PostOutlierMetrics", back_populates="post", uselist=False, cascade="all, delete-orphan"
+    )
+    # passive_deletes=True -- comments.post_id is NOT NULL with an
+    # ON DELETE CASCADE at the DB level, but without this the ORM's default
+    # behavior on deleting a Post is to SELECT its comments and UPDATE
+    # their post_id to NULL first (since no ORM-level cascade is declared
+    # here), which violates that NOT NULL constraint. This tells SQLAlchemy
+    # to leave child rows alone and trust Postgres's cascade to delete them.
+    comments: Mapped[list["Comment"]] = relationship(
+        "Comment", back_populates="post", passive_deletes=True
     )
 
     def __repr__(self) -> str:

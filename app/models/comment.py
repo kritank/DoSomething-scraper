@@ -61,7 +61,7 @@ class Comment(Base):
         onupdate=func.now(),
     )
 
-    post: Mapped["Post"] = relationship("Post", backref="comments")
+    post: Mapped["Post"] = relationship("Post", back_populates="comments")
 
     def __repr__(self) -> str:
         return f"<Comment id={self.id} post={self.post_id} comment_id={self.comment_id}>"
