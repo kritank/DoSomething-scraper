@@ -80,6 +80,12 @@ export default function Overview() {
   // holistic cross-platform comparison.
   const [selectedPlatforms, setSelectedPlatforms] = useState(enabledPlatforms);
 
+  // Scopes the Reliability column's success-rate/streak math -- null (the
+  // default) is lifetime, matching the original un-windowed behavior.
+  // Triggers a refetch (not a client-side re-filter) since the aggregation
+  // happens server-side in ScrapeJobRepo.get_job_stats_by_influencer.
+  const [reliabilityWindowDays, setReliabilityWindowDays] = useState(null);
+
   useEffect(() => {
     setSelectedPlatforms((prev) => prev.filter((p) => enabledPlatforms.includes(p)));
   }, [enabledPlatforms]);
@@ -89,7 +95,7 @@ export default function Overview() {
     setError(null);
     try {
       const [statusRows, metricsData, categories, alertRows, queue, dlq, health, queueHist] = await Promise.all([
-        getDashboardStatus(),
+        getDashboardStatus(reliabilityWindowDays),
         getDashboardMetrics(startDate, endDate),
         getCategories(),
         getAlerts(),
@@ -111,7 +117,7 @@ export default function Overview() {
     } finally {
       setLoading(false);
     }
-  }, [startDate, endDate]);
+  }, [startDate, endDate, reliabilityWindowDays]);
 
   useEffect(() => {
     load();
@@ -335,7 +341,11 @@ export default function Overview() {
           </p>
         </div>
       ) : (
-        <StatusTable rows={filteredStatus ?? []} />
+        <StatusTable
+          rows={filteredStatus ?? []}
+          reliabilityWindowDays={reliabilityWindowDays}
+          onReliabilityWindowChange={setReliabilityWindowDays}
+        />
       )}
     </div>
   );

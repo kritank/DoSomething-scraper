@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,11 +26,16 @@ class DashboardService:
         self.credential_health_repo = CredentialHealthRepo(session)
         self.queue_depth_repo = QueueDepthRepo(session)
 
-    async def get_status_rows(self) -> list[DashboardStatusRow]:
+    async def get_status_rows(self, reliability_window_days: Optional[int] = None) -> list[DashboardStatusRow]:
         influencers = await self.influencer_repo.get_all_with_category()
         latest_jobs = await self.job_repo.get_latest_per_influencer()
         jobs_by_influencer = {job.influencer_id: job for job in latest_jobs}
-        stats_by_influencer = await self.job_repo.get_job_stats_by_influencer()
+        since = (
+            datetime.now(timezone.utc) - timedelta(days=reliability_window_days)
+            if reliability_window_days is not None
+            else None
+        )
+        stats_by_influencer = await self.job_repo.get_job_stats_by_influencer(since=since)
 
         rows: list[DashboardStatusRow] = []
         for influencer in influencers:
@@ -44,7 +50,14 @@ class DashboardService:
                     creator_name=influencer.creator.name if influencer.creator else None,
                     category_id=influencer.category_id,
                     category_name=influencer.category.name,
-                    account_type=influencer.account_type,
+                    # Coalesced defensively, not trusted blindly from the DB
+                    # -- account_type is a required field on this schema, so
+                    # a single row with a NULL value (shouldn't happen given
+                    # the column's NOT NULL + server_default, but see the
+                    # migration that backfills any that slipped through)
+                    # would otherwise 500 this entire response, not just
+                    # that one row.
+                    account_type=influencer.account_type or "individual",
                     is_active=influencer.is_active,
                     paused_by_category=influencer.paused_by_category,
                     deactivation_reason=influencer.deactivation_reason,

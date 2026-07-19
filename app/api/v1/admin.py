@@ -213,8 +213,15 @@ async def delete_influencer(influencer_id: UUID, db: AsyncSession = Depends(get_
 
 
 @router.get("/influencers/{influencer_id}/jobs", response_model=list[ScrapeJobOut])
-async def list_influencer_jobs(influencer_id: UUID, db: AsyncSession = Depends(get_db)):
-    return await ScrapeJobRepo(db).get_by_influencer(influencer_id)
+async def list_influencer_jobs(
+    influencer_id: UUID,
+    # Callers that only need the most recent run (e.g. a per-platform
+    # scrape-status indicator on the creator profile header) can ask for
+    # limit=1 instead of paying for the full 50-row history every time.
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    return await ScrapeJobRepo(db).get_by_influencer(influencer_id, limit=limit)
 
 
 @router.post("/scrape")
@@ -242,8 +249,15 @@ async def cancel_job(job_id: UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/dashboard/status", response_model=list[DashboardStatusRow])
-async def get_dashboard_status(db: AsyncSession = Depends(get_db)):
-    return await DashboardService(db).get_status_rows()
+async def get_dashboard_status(
+    # None (default) = lifetime reliability, matching the original
+    # behavior. Any other value scopes job_success_rate/consecutive_job_
+    # failures/total_job_runs to just jobs created in the last N days --
+    # see ScrapeJobRepo.get_job_stats_by_influencer.
+    reliability_window_days: int | None = Query(default=None, ge=1, le=3650),
+    db: AsyncSession = Depends(get_db),
+):
+    return await DashboardService(db).get_status_rows(reliability_window_days=reliability_window_days)
 
 
 @router.get("/dashboard/metrics", response_model=DashboardMetricsOut)

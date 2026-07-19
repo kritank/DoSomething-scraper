@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, ArrowUpDown, Search } from 'lucide-react';
+import { AlertTriangle, ArrowUpDown, ChevronUp, History, Search } from 'lucide-react';
 import { format } from 'date-fns';
 import { Link } from 'react-router-dom';
 import StatusBadge from '../common/StatusBadge';
@@ -7,6 +7,7 @@ import PlatformBadge from '../common/PlatformBadge';
 import Input from '../common/Input';
 import InfoTip from '../common/InfoTip';
 import EmptyState from '../common/EmptyState';
+import JobHistoryPanel from '../influencers/JobHistoryPanel';
 import { formatHandle } from '../../utils/platform';
 
 const COLUMNS = [
@@ -28,8 +29,21 @@ const COLUMNS = [
 // this long is exactly "this influencer just burned through its retries".
 const FAILING_STREAK_THRESHOLD = 3;
 
-const RELIABILITY_TOOLTIP =
-  'Lifetime scrape success rate (completed / (completed + failed) jobs, excludes cancelled and still-running). The streak count is how many of the most recent jobs failed in a row -- 0 means the last attempt succeeded, however poor the lifetime average.';
+const RELIABILITY_WINDOWS = [
+  { label: 'Lifetime', value: null },
+  { label: '7D', value: 7 },
+  { label: '28D', value: 28 },
+  { label: '90D', value: 90 },
+];
+
+function reliabilityTooltip(windowDays) {
+  const scope = windowDays ? `the last ${windowDays} days'` : "the account's lifetime";
+  return (
+    `Scrape success rate over ${scope} completed / (completed + failed) jobs, excludes cancelled and ` +
+    "still-running. The streak count is how many of the most recent jobs (within the same window) failed " +
+    'in a row -- 0 means the last attempt succeeded, however poor the rate.'
+  );
+}
 
 function formatDuration(s) {
   if (s == null) return '—';
@@ -39,12 +53,21 @@ function formatDuration(s) {
   return `${m}m ${rem}s`;
 }
 
-export default function StatusTable({ rows }) {
+export default function StatusTable({ rows, reliabilityWindowDays = null, onReliabilityWindowChange }) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [failingOnly, setFailingOnly] = useState(false);
   const [sortKey, setSortKey] = useState('handle');
   const [sortDir, setSortDir] = useState('asc');
+  const [expandedHistory, setExpandedHistory] = useState(() => new Set());
+
+  const toggleHistory = (influencerId) => {
+    setExpandedHistory((prev) => {
+      const next = new Set(prev);
+      next.has(influencerId) ? next.delete(influencerId) : next.add(influencerId);
+      return next;
+    });
+  };
 
   const statuses = useMemo(
     () => [...new Set(rows.map((r) => r.last_job_status ?? 'never_scraped'))],
@@ -122,6 +145,26 @@ export default function StatusTable({ rows }) {
           <AlertTriangle className="w-3.5 h-3.5" />
           Failing frequently
         </button>
+        {onReliabilityWindowChange && (
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs font-medium" style={{ color: 'var(--color-text-muted)' }}>Reliability</span>
+            <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: 'var(--color-bg-card-hover)' }}>
+              {RELIABILITY_WINDOWS.map((opt) => (
+                <button
+                  key={opt.label}
+                  onClick={() => onReliabilityWindowChange(opt.value)}
+                  className="px-2.5 py-1 rounded-md text-xs font-semibold transition-colors"
+                  style={{
+                    background: reliabilityWindowDays === opt.value ? 'var(--color-accent)' : 'transparent',
+                    color: reliabilityWindowDays === opt.value ? '#fff' : 'var(--color-text-muted)',
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {filtered.length === 0 ? (
@@ -143,21 +186,22 @@ export default function StatusTable({ rows }) {
                       <ArrowUpDown className="w-3 h-3 opacity-50" />
                       {col.key === 'job_success_rate' && (
                         <span onClick={(e) => e.stopPropagation()}>
-                          <InfoTip text={RELIABILITY_TOOLTIP} side="bottom" />
+                          <InfoTip text={reliabilityTooltip(reliabilityWindowDays)} side="bottom" />
                         </span>
                       )}
                     </span>
                   </th>
                 ))}
                 <th className="text-left py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-secondary)' }}>Flags</th>
+                <th className="text-left py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-secondary)' }}>History</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((row) => (
+                <React.Fragment key={row.influencer_id}>
                 <tr
-                  key={row.influencer_id}
                   className="transition-colors hover:bg-[var(--color-bg-card-hover)]"
-                  style={{ borderBottom: '1px solid var(--color-border-subtle)' }}
+                  style={{ borderBottom: expandedHistory.has(row.influencer_id) ? 'none' : '1px solid var(--color-border-subtle)' }}
                   title={row.last_job_error_message ?? undefined}
                 >
                   <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{row.category_name}</td>
@@ -190,7 +234,7 @@ export default function StatusTable({ rows }) {
                     {row.last_job_scraper_account ?? '—'}
                   </td>
                   <td className="py-2.5 px-3 whitespace-nowrap">
-                    <ReliabilityCell row={row} />
+                    <ReliabilityCell row={row} windowDays={reliabilityWindowDays} />
                   </td>
                   <td className="py-2.5 px-3 text-xs" style={{ color: 'var(--color-text-muted)' }}>
                     {row.deactivation_reason === 'handle_not_found' ? (
@@ -200,7 +244,28 @@ export default function StatusTable({ rows }) {
                     ) : null}
                     {!row.backfill_completed && <span>backfilling</span>}
                   </td>
+                  <td className="py-2.5 px-3">
+                    <button
+                      onClick={() => toggleHistory(row.influencer_id)}
+                      className="inline-flex items-center justify-center rounded-lg p-1.5 transition-colors hover:bg-[var(--color-bg-card-hover)]"
+                      title={expandedHistory.has(row.influencer_id) ? 'Hide run history' : 'Show run history'}
+                    >
+                      {expandedHistory.has(row.influencer_id) ? (
+                        <ChevronUp className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+                      ) : (
+                        <History className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+                      )}
+                    </button>
+                  </td>
                 </tr>
+                {expandedHistory.has(row.influencer_id) && (
+                  <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
+                    <td colSpan={COLUMNS.length + 2} className="px-3 pb-3">
+                      <JobHistoryPanel influencerId={row.influencer_id} />
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
@@ -210,10 +275,14 @@ export default function StatusTable({ rows }) {
   );
 }
 
-function ReliabilityCell({ row }) {
+function ReliabilityCell({ row, windowDays }) {
   const total = row.total_job_runs ?? 0;
   if (total === 0) {
-    return <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Never scraped</span>;
+    return (
+      <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+        {windowDays ? `No runs in ${windowDays}D` : 'Never scraped'}
+      </span>
+    );
   }
   const rate = row.job_success_rate;
   const streak = row.consecutive_job_failures ?? 0;
