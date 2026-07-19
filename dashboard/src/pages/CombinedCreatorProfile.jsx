@@ -10,9 +10,11 @@ import {
   getCreatorFormatBreakdown,
   getCreatorPostPerformance,
 } from '../services/creatorStatsService';
+import { getInfluencerJobs } from '../services/influencerJobsService';
 import Avatar from '../components/common/Avatar';
 import PlatformIcon from '../components/common/PlatformIcon';
 import PlatformVerifiedBadge from '../components/common/PlatformVerifiedBadge';
+import ScrapeStatusIndicator from '../components/common/ScrapeStatusIndicator';
 import HeaderPill from '../components/common/HeaderPill';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
@@ -101,6 +103,7 @@ export default function CombinedCreatorProfile() {
 
   const [creator, setCreator] = useState(null);
   const [statsByInfluencer, setStatsByInfluencer] = useState({});
+  const [latestJobByInfluencer, setLatestJobByInfluencer] = useState({});
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
@@ -110,7 +113,7 @@ export default function CombinedCreatorProfile() {
 
   const [viewMode, setViewMode] = useState('combined'); // 'combined' | 'byPlatform'
   const [growthMetric, setGrowthMetric] = useState('followers');
-  const [growthDays, setGrowthDays] = useState(90);
+  const [growthDays, setGrowthDays] = useState(28);
   const [growthByInfluencer, setGrowthByInfluencer] = useState({});
   const [eventsByInfluencer, setEventsByInfluencer] = useState({});
   const [growthLoading, setGrowthLoading] = useState(true);
@@ -137,6 +140,19 @@ export default function CombinedCreatorProfile() {
         data.influencers.map(async (ref) => [ref.influencer_id, await getCreatorStats(ref.influencer_id)]),
       );
       setStatsByInfluencer(Object.fromEntries(entries));
+      try {
+        const jobEntries = await Promise.all(
+          data.influencers.map(async (ref) => {
+            const jobs = await getInfluencerJobs(ref.influencer_id, 1);
+            return [ref.influencer_id, jobs[0] ?? null];
+          }),
+        );
+        setLatestJobByInfluencer(Object.fromEntries(jobEntries));
+      } catch {
+        // Non-fatal -- the scrape-status dots just stay "never scraped"
+        // rather than taking down the whole profile page over it.
+        setLatestJobByInfluencer({});
+      }
     } catch {
       setNotFound(true);
     } finally {
@@ -361,12 +377,14 @@ export default function CombinedCreatorProfile() {
                   {loading ? 'Loading…' : creator?.name}
                 </h2>
                 {!loading && creator?.influencers.map((ref) => (
-                  <PlatformVerifiedBadge
-                    key={ref.influencer_id}
-                    platform={ref.platform}
-                    verified={statsByInfluencer[ref.influencer_id]?.about?.is_verified}
-                    handle={ref.handle}
-                  />
+                  <span key={ref.influencer_id} className="inline-flex items-center gap-1">
+                    <PlatformVerifiedBadge
+                      platform={ref.platform}
+                      verified={statsByInfluencer[ref.influencer_id]?.about?.is_verified}
+                      handle={ref.handle}
+                    />
+                    <ScrapeStatusIndicator status={latestJobByInfluencer[ref.influencer_id]?.status} />
+                  </span>
                 ))}
               </div>
               {!loading && creator && (

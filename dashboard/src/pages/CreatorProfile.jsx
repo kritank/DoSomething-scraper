@@ -10,6 +10,8 @@ import {
   getCreatorKeyEvents,
 } from '../services/creatorStatsService';
 import PlatformBadge from '../components/common/PlatformBadge';
+import ScrapeStatusIndicator from '../components/common/ScrapeStatusIndicator';
+import { getInfluencerJobs } from '../services/influencerJobsService';
 import Avatar from '../components/common/Avatar';
 import EmptyState from '../components/common/EmptyState';
 import Button from '../components/common/Button';
@@ -108,11 +110,12 @@ export default function CreatorProfile() {
   const { influencerId } = useParams();
 
   const [stats, setStats] = useState(null);
+  const [latestJob, setLatestJob] = useState(null);
   const [notFound, setNotFound] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const [growthMetric, setGrowthMetric] = useState('followers');
-  const [growthDays, setGrowthDays] = useState(90);
+  const [growthDays, setGrowthDays] = useState(28);
   const [growthPoints, setGrowthPoints] = useState([]);
   const [growthLoading, setGrowthLoading] = useState(true);
   const [events, setEvents] = useState([]);
@@ -142,6 +145,14 @@ export default function CreatorProfile() {
     try {
       const data = await getCreatorStats(influencerId);
       setStats(data);
+      try {
+        const jobs = await getInfluencerJobs(influencerId, 1);
+        setLatestJob(jobs[0] ?? null);
+      } catch {
+        // Non-fatal -- the scrape-status dot just stays "never scraped"
+        // rather than taking down the whole profile page over it.
+        setLatestJob(null);
+      }
     } catch {
       // apiClient's interceptor discards the HTTP status (see
       // apiClient.js), so -- same convention as Insights.jsx's
@@ -277,7 +288,12 @@ export default function CreatorProfile() {
                   aria-label="Verified"
                 />
               )}
-              {!loading && <PlatformBadge platform={s.platform} handle={s.handle} />}
+              {!loading && (
+                <span className="inline-flex items-center gap-1.5">
+                  <PlatformBadge platform={s.platform} handle={s.handle} />
+                  <ScrapeStatusIndicator status={latestJob?.status} />
+                </span>
+              )}
             </div>
             {!loading && (
               <div className="flex items-center flex-wrap gap-1.5 mt-1.5">

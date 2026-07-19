@@ -196,17 +196,18 @@ class ScrapeJobRepo:
         result = await self.session.execute(stmt)
         return result.scalars().all()
 
-    async def get_job_stats_by_influencer(self) -> dict[UUID, JobStats]:
-        """Powers the Overview page's reliability column -- lifetime run
-        count, success rate, and current consecutive-failure streak per
-        influencer. Two passes: one GROUP BY for the counts (a single
-        aggregate query), one ordered-by-recency fetch of just terminal
-        statuses to compute each influencer's current failure streak in
-        Python -- a running streak ("how many failures in a row, most
-        recent first, before the last success") isn't expressible as a
-        plain GROUP BY. Influencers with zero jobs simply don't appear in
-        the returned dict; the caller (DashboardService) defaults them to
-        zero/None, same convention as get_latest_per_influencer.
+    async def get_job_stats_by_influencer(self, since: Optional[datetime] = None) -> dict[UUID, JobStats]:
+        """Powers the Overview page's reliability column -- run count,
+        success rate, and current consecutive-failure streak per
+        influencer, over `since` (None = lifetime, all jobs ever). Two
+        passes: one GROUP BY for the counts (a single aggregate query), one
+        ordered-by-recency fetch of just terminal statuses to compute each
+        influencer's current failure streak in Python -- a running streak
+        ("how many failures in a row, most recent first, before the last
+        success") isn't expressible as a plain GROUP BY. Influencers with
+        zero jobs (in the window) simply don't appear in the returned dict;
+        the caller (DashboardService) defaults them to zero/None, same
+        convention as get_latest_per_influencer.
         """
         counts_stmt = (
             select(
@@ -217,13 +218,16 @@ class ScrapeJobRepo:
             )
             .group_by(ScrapeJob.influencer_id)
         )
-        counts_rows = (await self.session.execute(counts_stmt)).all()
-
         streak_stmt = (
             select(ScrapeJob.influencer_id, ScrapeJob.status)
             .where(ScrapeJob.status.in_(_TERMINAL_JOB_STATUSES))
             .order_by(ScrapeJob.influencer_id, ScrapeJob.created_at.desc())
         )
+        if since is not None:
+            counts_stmt = counts_stmt.where(ScrapeJob.created_at >= since)
+            streak_stmt = streak_stmt.where(ScrapeJob.created_at >= since)
+
+        counts_rows = (await self.session.execute(counts_stmt)).all()
         streak_rows = (await self.session.execute(streak_stmt)).all()
 
         streaks: dict[UUID, int] = {}

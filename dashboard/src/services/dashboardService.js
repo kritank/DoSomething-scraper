@@ -1,7 +1,9 @@
 import apiClient from './apiClient';
 
-export async function getDashboardStatus() {
-  const { data } = await apiClient.get('/admin/dashboard/status');
+export async function getDashboardStatus(reliabilityWindowDays) {
+  const { data } = await apiClient.get('/admin/dashboard/status', {
+    params: reliabilityWindowDays ? { reliability_window_days: reliabilityWindowDays } : undefined,
+  });
   return data;
 }
 
