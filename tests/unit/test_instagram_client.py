@@ -148,3 +148,46 @@ async def test_soft_fail_status_exhausts_retries_as_rate_limit(monkeypatch):
     with pytest.raises(ScraperRateLimitError):
         await client._get("https://i.instagram.com/api/v1/some_endpoint", handle="testuser")
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_400_retries_instead_of_raising_unhandled_error(monkeypatch):
+    """A 400 from Instagram's web endpoints is intermittent (confirmed
+    against real job history -- the same account/handle succeeds a run or
+    two later), not a malformed request or a blocked session. It must NOT
+    fall through to raise_for_status(), which raises a raw, untyped error
+    that JobProcessor's generic except-Exception catch-all blames on the
+    account -- silently burning down every account's failure_count for
+    something none of them did wrong."""
+    monkeypatch.setattr("app.scraper.client.asyncio.sleep", _noop)
+
+    client = _make_client()
+    mock_get = AsyncMock(
+        side_effect=[
+            _FakeResponse(400),
+            _FakeResponse(200, json_data={"status": "ok", "items": []}),
+        ]
+    )
+    monkeypatch.setattr(client._curl, "get", mock_get)
+
+    result = await client._get("https://i.instagram.com/api/v1/some_endpoint", handle="testuser")
+
+    assert result == {"status": "ok", "items": []}
+    assert mock_get.call_count == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_400_exhausts_retries_as_rate_limit_error(monkeypatch):
+    """A persistent 400 surfaces as ScraperRateLimitError (retryable at the
+    job level, cooldown on the account) -- not an unhandled exception that
+    counts as an account-fault "error" outcome."""
+    monkeypatch.setattr("app.scraper.client.asyncio.sleep", _noop)
+    monkeypatch.setattr(settings, "SCRAPER_MAX_RETRIES", 1)
+
+    client = _make_client()
+    monkeypatch.setattr(client._curl, "get", AsyncMock(return_value=_FakeResponse(400)))
+
+    with pytest.raises(ScraperRateLimitError):
+        await client._get("https://i.instagram.com/api/v1/some_endpoint", handle="testuser")
+    await client.close()

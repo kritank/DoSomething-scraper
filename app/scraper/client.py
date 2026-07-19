@@ -302,6 +302,28 @@ class InstagramClient:
                     await asyncio.sleep(wait_s)
                     continue
                 raise ScraperTimeoutError(handle=handle)
+            elif response.status_code == 400:
+                # Confirmed against real production job history: Instagram's
+                # web endpoints (web_profile_info, feed/user) intermittently
+                # 400 on an otherwise-healthy session -- the same account and
+                # handle succeed again a run or two later, so this isn't a
+                # malformed request or a blocked session. Left to fall
+                # through to raise_for_status() below, this raised a raw
+                # curl_cffi HTTPError that isn't one of this module's typed
+                # exceptions, so JobProcessor's generic `except Exception`
+                # catch-all marked the *account* at fault -- with zero
+                # in-loop retries, since raise_for_status() doesn't loop.
+                # Every account hits this identically (it's not
+                # account-specific), so it was quietly burning down
+                # failure_count on every account in the pool until all three
+                # got auto-disabled despite perfectly valid cookies. Retry
+                # like a 429/5xx instead.
+                if attempt < settings.SCRAPER_MAX_RETRIES:
+                    wait_s = min(_BACKOFF_BASE_S * (2 ** attempt), _BACKOFF_MAX_S)
+                    wait_s += random.uniform(0, wait_s * 0.2)
+                    await asyncio.sleep(wait_s)
+                    continue
+                raise ScraperRateLimitError(handle=handle)
 
             response.raise_for_status()
             payload = response.json()
@@ -345,6 +367,23 @@ class InstagramClient:
             return payload
         raise ScraperTimeoutError(handle=handle)
 
+    def _web_endpoint_headers(self, referer: str) -> dict[str, str]:
+        """Headers for the web_profile_info/feed GET endpoints (_get) --
+        matches what _graphql_post already sends (x-ig-app-id, x-csrftoken,
+        x-asbd-id, referer), which _get's callers used to omit entirely.
+        That thinner header set is the most likely concrete cause of the
+        intermittent 400s these two endpoints hit (confirmed against real
+        job history -- same account, same handle, succeeds a run or two
+        later): Instagram's anti-automation layer treats a request missing
+        the csrf/referer/asbd signals a real browser XHR always carries as
+        higher-risk, even though the session itself is perfectly valid."""
+        return {
+            "X-IG-App-ID": _IG_APP_ID,
+            "x-csrftoken": self.cookies.get("csrftoken", ""),
+            "x-asbd-id": _ASBD_ID,
+            "referer": referer,
+        }
+
     async def get_user_info(self, username: str) -> dict[str, Any]:
         """Fetch user profile via the public web endpoint.
 
@@ -358,7 +397,7 @@ class InstagramClient:
             payload = await self._get(
                 "https://www.instagram.com/api/v1/users/web_profile_info/",
                 params={"username": username},
-                headers={"X-IG-App-ID": "936619743392459"},
+                headers=self._web_endpoint_headers(referer=f"https://www.instagram.com/{username}/"),
                 handle=username,
             )
             user = payload.get("data", {}).get("user") or {}
@@ -440,7 +479,7 @@ class InstagramClient:
         return await self._get(
             f"https://www.instagram.com/api/v1/feed/user/{username}/username/",
             params=params,
-            headers={"X-IG-App-ID": "936619743392459"},
+            headers=self._web_endpoint_headers(referer=f"https://www.instagram.com/{username}/"),
             handle=username,
         )
 
