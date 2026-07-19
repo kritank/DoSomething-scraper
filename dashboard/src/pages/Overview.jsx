@@ -150,18 +150,28 @@ export default function Overview() {
 
   const kpis = useMemo(() => {
     if (!filteredStatus) return null;
-    const total = filteredStatus.length;
+    // Distinct creators, not raw influencer-account rows -- a creator
+    // tracked on both YouTube and Instagram is one creator, not two.
+    // Falls back to influencer_id as the dedup key for rows with no
+    // creator_id (ungrouped influencers), so each still counts once.
+    const total = new Set(filteredStatus.map((r) => r.creator_id ?? r.influencer_id)).size;
+    // Raw per-platform account rows -- distinct from `total` above, which
+    // dedupes a creator tracked on multiple platforms down to one.
+    const accounts = filteredStatus.length;
     const scraped = filteredStatus.filter((r) => r.last_job_status != null);
     const successes = scraped.filter((r) => r.last_job_status === 'completed').length;
     const successRate = scraped.length ? Math.round((successes / scraped.length) * 100) : 0;
     const backfilling = filteredStatus.filter((r) => !r.backfill_completed).length;
-    return { total, successRate, backfilling };
+    return { total, accounts, successRate, backfilling };
   }, [filteredStatus]);
 
+  // Same "Focus" platform selection as the KPI row/status table below --
+  // narrowing focus there now also narrows this strip, rather than always
+  // showing every globally-enabled platform regardless of it.
   const platformBreakdown = useMemo(() => {
     if (!status || !metrics) return null;
-    return enabledPlatforms.map((platform) => platformBreakdownFor(status, metrics.buckets ?? [], platform));
-  }, [status, metrics, enabledPlatforms]);
+    return selectedPlatforms.map((platform) => platformBreakdownFor(status, metrics.buckets ?? [], platform));
+  }, [status, metrics, selectedPlatforms]);
 
   if (error) {
     return <ErrorState title="Couldn't load dashboard data" description={error} onRetry={load} />;
@@ -184,54 +194,64 @@ export default function Overview() {
 
       <AlertsBanner alerts={alerts} />
 
-      {/* Holistic cross-platform picture -- always shows every globally-
-          enabled platform side by side, independent of the KPI row's own
-          narrower filter below. */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {(!platformBreakdown ? enabledPlatforms.map((p) => ({ platform: p })) : platformBreakdown).map((b) => (
-          <div
-            key={b.platform}
-            className="card p-4 flex items-center gap-4"
-          >
-            <PlatformIcon platform={b.platform} className="w-11 h-11 rounded-xl shrink-0" />
-            <div className="flex flex-col min-w-0 flex-1">
-              <span className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-                {platformLabel(b.platform)}
-              </span>
-              {b.total == null ? (
-                <div className="h-4 w-32 mt-1 rounded animate-shimmer" style={{ background: 'var(--color-bg-card-hover)' }} />
-              ) : (
-                <>
-                  <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
-                    {b.total} tracked · {b.successRate}% success · {b.backfilling} backfilling
-                  </span>
-                  <span className="text-xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-                    {b.postsProcessed.toLocaleString()} posts · {b.commentsProcessed.toLocaleString()} comments (window)
-                    {b.quotaUsed != null && ` · ${b.quotaUsed.toLocaleString()} quota units`}
-                  </span>
-                </>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <DateRangeSelector startDate={startDate} endDate={endDate} onChange={handleRangeChange} />
+        <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+          Cross-platform status -- narrow to a platform with "Focus" to match the KPIs and status table below.
+        </span>
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium" style={{ color: 'var(--color-text-muted)' }}>Focus</span>
           <PlatformFilter value={selectedPlatforms} onChange={setSelectedPlatforms} options={enabledPlatforms} size="sm" />
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+      {selectedPlatforms.length === 0 ? (
+        <div className="card p-4">
+          <p className="text-sm text-center py-4" style={{ color: 'var(--color-text-muted)' }}>
+            Select at least one platform above ("Focus") to see its status.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {(!platformBreakdown ? selectedPlatforms.map((p) => ({ platform: p })) : platformBreakdown).map((b) => (
+            <div
+              key={b.platform}
+              className="card p-4 flex items-center gap-4"
+            >
+              <PlatformIcon platform={b.platform} className="w-11 h-11 rounded-xl shrink-0" />
+              <div className="flex flex-col min-w-0 flex-1">
+                <span className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+                  {platformLabel(b.platform)}
+                </span>
+                {b.total == null ? (
+                  <div className="h-4 w-32 mt-1 rounded animate-shimmer" style={{ background: 'var(--color-bg-card-hover)' }} />
+                ) : (
+                  <>
+                    <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                      {b.total} tracked · {b.successRate}% success · {b.backfilling} backfilling
+                    </span>
+                    <span className="text-xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                      {b.postsProcessed.toLocaleString()} posts · {b.commentsProcessed.toLocaleString()} comments (window)
+                      {b.quotaUsed != null && ` · ${b.quotaUsed.toLocaleString()} quota units`}
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <DateRangeSelector startDate={startDate} endDate={endDate} onChange={handleRangeChange} />
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
         {loading || !kpis ? (
           <>
-            <SkeletonKPICard /><SkeletonKPICard /><SkeletonKPICard /><SkeletonKPICard /><SkeletonKPICard />
+            <SkeletonKPICard /><SkeletonKPICard /><SkeletonKPICard /><SkeletonKPICard /><SkeletonKPICard /><SkeletonKPICard />
           </>
         ) : (
           <>
-            <KPICard label="Tracked influencers" value={kpis.total} icon={<Users className="w-4 h-4" />} />
+            <KPICard label="Tracked creators" value={kpis.total} icon={<Users className="w-4 h-4" />} />
+            <KPICard label="Tracked accounts" value={kpis.accounts} icon={<Users className="w-4 h-4" />} />
             <KPICard label="Categories" value={categoryCount ?? '—'} icon={<Layers className="w-4 h-4" />} />
             <KPICard
               label="Last-scrape success rate"

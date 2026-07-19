@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, useLocation, Link } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Pencil, Trash2, Check, X, BadgeCheck, Video, Calendar, Clock, RefreshCw, Layers } from 'lucide-react';
 import { toast } from 'sonner';
 import { getCreator, renameCreator, deleteCreator } from '../services/creatorService';
@@ -143,6 +143,11 @@ function PlatformMiniHeader({ influencerRef, verified }) {
 export default function CombinedCreatorProfile() {
   const { creatorId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  // Same fallback as CreatorProfile.jsx's Back button -- location.key is
+  // 'default' when there's no previous entry in this session's history
+  // (direct URL open/refresh), where navigate(-1) would be a dead end.
+  const handleBack = () => (location.key !== 'default' ? navigate(-1) : navigate('/influencers'));
 
   const [creator, setCreator] = useState(null);
   const [statsByInfluencer, setStatsByInfluencer] = useState({});
@@ -534,12 +539,10 @@ export default function CombinedCreatorProfile() {
     <div className="flex flex-col gap-8 min-w-0">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <Link to="/influencers">
-            <Button variant="ghost" size="sm">
-              <ArrowLeft className="w-3.5 h-3.5" />
-              Back
-            </Button>
-          </Link>
+          <Button variant="ghost" size="sm" onClick={handleBack}>
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Back
+          </Button>
           {!loading && <Avatar src={primaryAvatar} handle={creator?.name} />}
           {editingName ? (
             <div className="flex items-center gap-2 min-w-0">

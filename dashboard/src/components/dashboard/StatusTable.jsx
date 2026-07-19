@@ -1,14 +1,20 @@
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, ArrowUpDown, ChevronUp, History, Search } from 'lucide-react';
+import { AlertTriangle, ArrowUpDown, ChevronUp, History, PlayCircle, Search } from 'lucide-react';
 import { format } from 'date-fns';
 import { Link } from 'react-router-dom';
+import { toast } from 'sonner';
 import StatusBadge from '../common/StatusBadge';
 import PlatformBadge from '../common/PlatformBadge';
 import Input from '../common/Input';
 import InfoTip from '../common/InfoTip';
 import EmptyState from '../common/EmptyState';
 import JobHistoryPanel from '../influencers/JobHistoryPanel';
+import { triggerScrape } from '../../services/influencerService';
 import { formatHandle } from '../../utils/platform';
+
+// Matches Influencers.jsx's "Scrape now" button -- a job already
+// queued/running for this influencer can't be triggered again.
+const IN_FLIGHT_STATUSES = new Set(['queued', 'running']);
 
 const COLUMNS = [
   { key: 'category_name', label: 'Category' },
@@ -60,6 +66,28 @@ export default function StatusTable({ rows, reliabilityWindowDays = null, onReli
   const [sortKey, setSortKey] = useState('handle');
   const [sortDir, setSortDir] = useState('asc');
   const [expandedHistory, setExpandedHistory] = useState(() => new Set());
+  const [triggering, setTriggering] = useState(() => new Set());
+  // influencer_id -> optimistic status, so the badge flips to "queued"
+  // immediately after a manual trigger without waiting for the parent's
+  // next poll/refetch of `rows`.
+  const [statusOverride, setStatusOverride] = useState(() => new Map());
+
+  const handleScrapeNow = async (row) => {
+    setTriggering((prev) => new Set(prev).add(row.influencer_id));
+    try {
+      await triggerScrape(row.influencer_id);
+      toast.success(`Scrape queued for ${formatHandle(row.handle, row.platform)}`);
+      setStatusOverride((prev) => new Map(prev).set(row.influencer_id, 'queued'));
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    } finally {
+      setTriggering((prev) => {
+        const next = new Set(prev);
+        next.delete(row.influencer_id);
+        return next;
+      });
+    }
+  };
 
   const toggleHistory = (influencerId) => {
     setExpandedHistory((prev) => {
@@ -194,6 +222,7 @@ export default function StatusTable({ rows, reliabilityWindowDays = null, onReli
                 ))}
                 <th className="text-left py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-secondary)' }}>Flags</th>
                 <th className="text-left py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-secondary)' }}>History</th>
+                <th className="text-left py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-secondary)' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -217,7 +246,7 @@ export default function StatusTable({ rows, reliabilityWindowDays = null, onReli
                   <td className="py-2.5 px-3">
                     <PlatformBadge platform={row.platform} handle={row.handle} />
                   </td>
-                  <td className="py-2.5 px-3"><StatusBadge status={row.last_job_status} /></td>
+                  <td className="py-2.5 px-3"><StatusBadge status={statusOverride.get(row.influencer_id) ?? row.last_job_status} /></td>
                   <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>
                     {row.last_job_finished_at ? format(new Date(row.last_job_finished_at), 'MMM d, HH:mm') : '—'}
                   </td>
@@ -257,10 +286,26 @@ export default function StatusTable({ rows, reliabilityWindowDays = null, onReli
                       )}
                     </button>
                   </td>
+                  <td className="py-2.5 px-3">
+                    <button
+                      onClick={() => handleScrapeNow(row)}
+                      disabled={
+                        triggering.has(row.influencer_id) ||
+                        IN_FLIGHT_STATUSES.has(statusOverride.get(row.influencer_id) ?? row.last_job_status)
+                      }
+                      className="inline-flex items-center justify-center rounded-lg p-1.5 transition-colors hover:bg-[var(--color-bg-card-hover)] disabled:opacity-40 disabled:cursor-not-allowed"
+                      title="Scrape now"
+                    >
+                      <PlayCircle
+                        className={`w-3.5 h-3.5 ${triggering.has(row.influencer_id) ? 'animate-pulse' : ''}`}
+                        style={{ color: 'var(--color-text-muted)' }}
+                      />
+                    </button>
+                  </td>
                 </tr>
                 {expandedHistory.has(row.influencer_id) && (
                   <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                    <td colSpan={COLUMNS.length + 2} className="px-3 pb-3">
+                    <td colSpan={COLUMNS.length + 3} className="px-3 pb-3">
                       <JobHistoryPanel influencerId={row.influencer_id} />
                     </td>
                   </tr>
