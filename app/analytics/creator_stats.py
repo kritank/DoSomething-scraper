@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.analytics.earnings import instagram_value_per_1k_views_range, youtube_rpm_range
+from app.models.feature_store import FeatureStore
 from app.models.influencer import Influencer
 from app.models.post import Post
 from app.models.snapshot import PostMetricsSnapshot, ProfileSnapshot
@@ -39,6 +40,8 @@ from app.schemas.creator_stats import (
     PostPerformance,
     RankingEntry,
     RankingsOut,
+    ReplyTimeFormatStats,
+    ReplyTimeHeatmapOut,
     SponsorshipBreakdownOut,
     SponsorshipStats,
 )
@@ -388,6 +391,95 @@ def _aggregate_posting_times(posted_ats: list[datetime]) -> PostingTimeDistribut
         best_weekday=weekday_counts.index(max(weekday_counts)) if total else None,
         best_hour=hour_counts.index(max(hour_counts)) if total else None,
         total_posts=total,
+    )
+
+
+# Time-since-post buckets for the reply-time heatmap: 15-min resolution
+# out to 90 min (an audience/comment-response window is front-loaded --
+# most reply activity happens early), then coarser 1hr buckets out to
+# 3.5h, with a catch-all tail so every measured reply lands somewhere.
+# Each tuple is (upper bound in seconds, exclusive) -- None means "no
+# upper bound" and must be last.
+_REPLY_TIME_BUCKETS: list[tuple[Optional[int], str]] = [
+    (900, "0-15m"),
+    (1800, "15-30m"),
+    (2700, "30-45m"),
+    (3600, "45-60m"),
+    (4500, "60-75m"),
+    (5400, "75-90m"),
+    (9000, "1.5-2.5h"),
+    (12600, "2.5-3.5h"),
+    (None, "3.5h+"),
+]
+
+
+def _reply_time_bucket_index(seconds: int) -> int:
+    for i, (upper, _label) in enumerate(_REPLY_TIME_BUCKETS):
+        if upper is None or seconds < upper:
+            return i
+    return len(_REPLY_TIME_BUCKETS) - 1  # unreachable -- last bucket has upper=None
+
+
+@dataclass
+class _ReplyTimeRow:
+    """Pre-resolved input to _aggregate_reply_time_heatmap -- `format` is
+    already folded ("live" -> "long_form"), same convention as _FormatRow."""
+
+    format: str  # "long_form" | "short_form"
+    reply_time_s: int
+    # Latest known total comment count for the post (PostMetricsSnapshot),
+    # None when the post has never had a metrics snapshot with a comment
+    # count -- excluded from bucket_avg_comments rather than counted as 0.
+    comments: Optional[int]
+
+
+def _aggregate_reply_time_heatmap(rows: list[_ReplyTimeRow], days: int) -> ReplyTimeHeatmapOut:
+    """Pure function (no DB access) so this is unit-testable in isolation."""
+    bucket_labels = [label for _, label in _REPLY_TIME_BUCKETS]
+    n_buckets = len(bucket_labels)
+
+    def _empty_bucket() -> dict:
+        return {
+            "counts": [0] * n_buckets,
+            "bucket_reply_times": [[] for _ in range(n_buckets)],
+            "bucket_comments": [[] for _ in range(n_buckets)],
+            "reply_times": [],
+        }
+
+    buckets: dict[str, dict] = {"long_form": _empty_bucket(), "short_form": _empty_bucket()}
+    for row in rows:
+        bucket = buckets[row.format]
+        idx = _reply_time_bucket_index(row.reply_time_s)
+        bucket["counts"][idx] += 1
+        bucket["bucket_reply_times"][idx].append(row.reply_time_s)
+        bucket["reply_times"].append(row.reply_time_s)
+        if row.comments is not None:
+            bucket["bucket_comments"][idx].append(row.comments)
+
+    formats = []
+    for fmt in ("long_form", "short_form"):
+        b = buckets[fmt]
+        formats.append(
+            ReplyTimeFormatStats(
+                format=fmt,
+                reply_count=len(b["reply_times"]),
+                avg_reply_time_s=round(sum(b["reply_times"]) / len(b["reply_times"]), 1)
+                if b["reply_times"]
+                else None,
+                bucket_counts=b["counts"],
+                bucket_avg_reply_time_s=[
+                    round(sum(times) / len(times), 1) if times else None
+                    for times in b["bucket_reply_times"]
+                ],
+                bucket_avg_comments=[
+                    round(sum(comments) / len(comments), 1) if comments else None
+                    for comments in b["bucket_comments"]
+                ],
+            )
+        )
+
+    return ReplyTimeHeatmapOut(
+        window_days=days, bucket_labels=bucket_labels, formats=formats, total_replies=len(rows)
     )
 
 
@@ -1402,6 +1494,68 @@ class CreatorStatsService:
         )
         rows = (await self.session.execute(stmt)).scalars().all()
         return _aggregate_posting_times(list(rows))
+
+    async def get_reply_time_heatmap(
+        self, influencer_id: UUID, days: int
+    ) -> Optional[ReplyTimeHeatmapOut]:
+        """How quickly the creator replies to comments, bucketed by
+        time-since-post and crossed with format -- built entirely from
+        FeatureStore.time_to_first_creator_reply_s (real platform comment
+        timestamps, computed in comment_sync.py), no new scraping needed."""
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return None
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        latest_metric_sq = (
+            select(
+                PostMetricsSnapshot.post_id,
+                PostMetricsSnapshot.comments,
+                func.row_number()
+                .over(
+                    partition_by=PostMetricsSnapshot.post_id,
+                    order_by=PostMetricsSnapshot.scraped_at.desc(),
+                )
+                .label("rn"),
+            )
+            .subquery("latest_metric")
+        )
+        stmt = (
+            select(
+                Post.product_type,
+                FeatureStore.time_to_first_creator_reply_s,
+                latest_metric_sq.c.comments,
+            )
+            .select_from(Post)
+            .join(FeatureStore, FeatureStore.post_id == Post.id)
+            .outerjoin(
+                latest_metric_sq,
+                (latest_metric_sq.c.post_id == Post.id) & (latest_metric_sq.c.rn == 1),
+            )
+            .where(
+                Post.influencer_id == influencer_id,
+                Post.posted_at >= cutoff,
+                FeatureStore.time_to_first_creator_reply_s.is_not(None),
+            )
+        )
+        rows = (await self.session.execute(stmt)).all()
+
+        reply_rows = []
+        for row in rows:
+            fmt = content_format(influencer.platform, row.product_type)
+            if fmt == "live":
+                fmt = "long_form"
+            reply_rows.append(
+                _ReplyTimeRow(
+                    format=fmt,
+                    reply_time_s=row.time_to_first_creator_reply_s,
+                    comments=row.comments,
+                )
+            )
+
+        return _aggregate_reply_time_heatmap(reply_rows, days)
 
     async def get_about(self, influencer_id: UUID) -> Optional[AboutOut]:
         influencer = (

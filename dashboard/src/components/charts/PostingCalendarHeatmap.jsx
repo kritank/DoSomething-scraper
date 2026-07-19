@@ -40,7 +40,11 @@ export default function PostingCalendarHeatmap({ points, days }) {
     [byDate]
   );
 
-  const cellSize = days > 200 ? 11 : 15;
+  // Sized so cellSize * 9 + 30 (the wrapper height below) lands close to
+  // PostingTimeHeatmap's fixed h-56 (224px) -- these two charts sit side
+  // by side in the same grid row, and the old 11/15px cells made this one
+  // look tiny and empty next to its full-height sibling.
+  const cellSize = days > 200 ? 14 : 20;
   // Side-by-side with the weekday/hour heatmap (see PostingFrequencyCard),
   // this chart's column often has less width than the calendar's natural
   // footprint at longer ranges -- rather than letting ECharts stretch or

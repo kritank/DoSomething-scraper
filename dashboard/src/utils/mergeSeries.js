@@ -180,6 +180,68 @@ export function mergeSponsorshipBreakdowns(breakdowns) {
   };
 }
 
+// Merges ReplyTimeHeatmapOut objects (one per linked platform) by summing
+// bucket_counts index-for-index (bucket_labels are a fixed backend
+// constant, so every platform shares the same column layout) and
+// combining avg_reply_time_s weighted by reply_count, same weighting
+// convention as mergeSponsorshipBreakdowns.
+export function mergeReplyTimeHeatmaps(heatmaps) {
+  const valid = heatmaps.filter(Boolean);
+  if (valid.length === 0) return null;
+
+  const bucketLabels = valid[0].bucket_labels;
+  const byFormat = { long_form: [], short_form: [] };
+  for (const h of valid) {
+    for (const f of h.formats) {
+      byFormat[f.format].push(f);
+    }
+  }
+
+  const mergeFormat = (format, statsList) => {
+    const bucketCounts = new Array(bucketLabels.length).fill(0);
+    const bucketTimeSum = new Array(bucketLabels.length).fill(0);
+    const bucketTimeN = new Array(bucketLabels.length).fill(0);
+    // Weighted by bucket_counts[i], same "not every post's comment count
+    // is known" approximation mergeSponsorshipBreakdowns already makes
+    // for avg_likes/avg_comments -- the backend doesn't expose a separate
+    // per-bucket "posts with a known comment count" denominator.
+    const bucketCommentsSum = new Array(bucketLabels.length).fill(0);
+    const bucketCommentsN = new Array(bucketLabels.length).fill(0);
+    let reply_count = 0, timeSum = 0, timeN = 0;
+    for (const s of statsList) {
+      if (!s) continue;
+      reply_count += s.reply_count;
+      s.bucket_counts.forEach((c, i) => { bucketCounts[i] += c; });
+      (s.bucket_avg_reply_time_s ?? []).forEach((avg, i) => {
+        if (avg == null) return;
+        bucketTimeSum[i] += avg * s.bucket_counts[i];
+        bucketTimeN[i] += s.bucket_counts[i];
+      });
+      (s.bucket_avg_comments ?? []).forEach((avg, i) => {
+        if (avg == null) return;
+        bucketCommentsSum[i] += avg * s.bucket_counts[i];
+        bucketCommentsN[i] += s.bucket_counts[i];
+      });
+      if (s.avg_reply_time_s != null) { timeSum += s.avg_reply_time_s * s.reply_count; timeN += s.reply_count; }
+    }
+    return {
+      format,
+      reply_count,
+      avg_reply_time_s: timeN > 0 ? timeSum / timeN : null,
+      bucket_counts: bucketCounts,
+      bucket_avg_reply_time_s: bucketTimeN.map((n, i) => (n > 0 ? bucketTimeSum[i] / n : null)),
+      bucket_avg_comments: bucketCommentsN.map((n, i) => (n > 0 ? bucketCommentsSum[i] / n : null)),
+    };
+  };
+
+  return {
+    window_days: valid[0].window_days,
+    bucket_labels: bucketLabels,
+    total_replies: valid.reduce((sum, h) => sum + h.total_replies, 0),
+    formats: ['long_form', 'short_form'].map((format) => mergeFormat(format, byFormat[format])),
+  };
+}
+
 // Merges PostingFrequencyPoint[] lists (one per linked platform) into one
 // series, summing post_count for buckets that share the same date.
 export function mergePostingFrequency(seriesList) {

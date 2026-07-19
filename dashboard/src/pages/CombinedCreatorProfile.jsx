@@ -12,6 +12,7 @@ import {
   getCreatorPostingFrequency,
   getCreatorPostingTimes,
   getCreatorSponsorshipBreakdown,
+  getCreatorReplyTimeHeatmap,
 } from '../services/creatorStatsService';
 import { getInfluencerJobs } from '../services/influencerJobsService';
 import Avatar from '../components/common/Avatar';
@@ -28,13 +29,14 @@ import DailyGrowthChart from '../components/charts/DailyGrowthChart';
 import FormatSplitCard from '../components/creator/FormatSplitCard';
 import PostingFrequencyCard from '../components/creator/PostingFrequencyCard';
 import SponsorshipCard from '../components/creator/SponsorshipCard';
+import ReplyTimeCard from '../components/creator/ReplyTimeCard';
 import PostsTable from '../components/creator/PostsTable';
 import DailyGrowthHistoryTable from '../components/creator/DailyGrowthHistoryTable';
 import AboutSection from '../components/creator/AboutSection';
 import { formatHandle, platformLabel } from '../utils/platform';
 import { formatCompactNumber, formatUsdRange, countryFlagEmoji } from '../utils/format';
 import { GROWTH_RANGES } from '../utils/growthRanges';
-import { mergeGrowthSeries, mergeEarningsSeries, mergeFormatBreakdowns, mergePostingFrequency, mergePostingTimeDistributions, mergeSponsorshipBreakdowns } from '../utils/mergeSeries';
+import { mergeGrowthSeries, mergeEarningsSeries, mergeFormatBreakdowns, mergePostingFrequency, mergePostingTimeDistributions, mergeSponsorshipBreakdowns, mergeReplyTimeHeatmaps } from '../utils/mergeSeries';
 import { avatarUrl } from '../services/apiClient';
 
 const COMBINED_COLOR = '#8b5cf6';
@@ -152,12 +154,12 @@ export default function CombinedCreatorProfile() {
   const [nameDraft, setNameDraft] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const [viewMode, setViewMode] = useState('combined'); // 'combined' | 'byPlatform'
   const [growthMetric, setGrowthMetric] = useState('followers');
   const [growthDays, setGrowthDays] = useState(28);
   const [growthByInfluencer, setGrowthByInfluencer] = useState({});
   const [eventsByInfluencer, setEventsByInfluencer] = useState({});
   const [growthLoading, setGrowthLoading] = useState(true);
+  const [growthPlatform, setGrowthPlatform] = useState('all');
 
   const [formatDays, setFormatDays] = useState(28);
   const [formatByInfluencer, setFormatByInfluencer] = useState({});
@@ -173,6 +175,11 @@ export default function CombinedCreatorProfile() {
   const [sponsorshipByInfluencer, setSponsorshipByInfluencer] = useState({});
   const [sponsorshipLoading, setSponsorshipLoading] = useState(true);
   const [sponsorshipPlatform, setSponsorshipPlatform] = useState('all');
+
+  const [replyTimeDays, setReplyTimeDays] = useState(90);
+  const [replyTimeByInfluencer, setReplyTimeByInfluencer] = useState({});
+  const [replyTimeLoading, setReplyTimeLoading] = useState(true);
+  const [replyTimePlatform, setReplyTimePlatform] = useState('all');
 
   const [postsSort, setPostsSort] = useState('top');
   const [postsFilter, setPostsFilter] = useState('all');
@@ -304,6 +311,21 @@ export default function CombinedCreatorProfile() {
   useEffect(() => {
     if (!creator) return;
     let cancelled = false;
+    setReplyTimeLoading(true);
+    Promise.all(
+      creator.influencers.map(async (ref) => [
+        ref.influencer_id,
+        await getCreatorReplyTimeHeatmap(ref.influencer_id, replyTimeDays),
+      ]),
+    )
+      .then((results) => { if (!cancelled) setReplyTimeByInfluencer(Object.fromEntries(results)); })
+      .finally(() => { if (!cancelled) setReplyTimeLoading(false); });
+    return () => { cancelled = true; };
+  }, [creator, replyTimeDays]);
+
+  useEffect(() => {
+    if (!creator) return;
+    let cancelled = false;
     setPostsLoading(true);
     Promise.all(
       creator.influencers.map(async (ref) => {
@@ -362,6 +384,24 @@ export default function CombinedCreatorProfile() {
   // (posting frequency, sponsorship, content, daily history) -- one memo
   // instead of a duplicate per feature.
   const linkedPlatforms = useMemo(() => Object.keys(influencersByPlatform), [influencersByPlatform]);
+  const growthByPlatform = useMemo(() => {
+    const result = {};
+    for (const [platform, ids] of Object.entries(influencersByPlatform)) {
+      result[platform] = mergeGrowthSeries(ids.map((id) => growthByInfluencer[id]));
+    }
+    return result;
+  }, [influencersByPlatform, growthByInfluencer]);
+  const eventsByPlatform = useMemo(() => {
+    const result = {};
+    for (const [platform, ids] of Object.entries(influencersByPlatform)) {
+      result[platform] = ids
+        .flatMap((id) => eventsByInfluencer[id] ?? [])
+        .sort((a, b) => (a.date < b.date ? -1 : 1));
+    }
+    return result;
+  }, [influencersByPlatform, eventsByInfluencer]);
+  const selectedGrowth = growthPlatform === 'all' ? combinedGrowth : growthByPlatform[growthPlatform];
+  const selectedEvents = growthPlatform === 'all' ? combinedEvents : (eventsByPlatform[growthPlatform] ?? []);
   const postingFrequencyByPlatform = useMemo(() => {
     const result = {};
     for (const [platform, ids] of Object.entries(influencersByPlatform)) {
@@ -388,6 +428,16 @@ export default function CombinedCreatorProfile() {
     return result;
   }, [influencersByPlatform, sponsorshipByInfluencer]);
   const selectedSponsorship = sponsorshipPlatform === 'all' ? combinedSponsorship : sponsorshipByPlatform[sponsorshipPlatform];
+
+  const combinedReplyTime = useMemo(() => mergeReplyTimeHeatmaps(Object.values(replyTimeByInfluencer)), [replyTimeByInfluencer]);
+  const replyTimeByPlatform = useMemo(() => {
+    const result = {};
+    for (const [platform, ids] of Object.entries(influencersByPlatform)) {
+      result[platform] = mergeReplyTimeHeatmaps(ids.map((id) => replyTimeByInfluencer[id]));
+    }
+    return result;
+  }, [influencersByPlatform, replyTimeByInfluencer]);
+  const selectedReplyTime = replyTimePlatform === 'all' ? combinedReplyTime : replyTimeByPlatform[replyTimePlatform];
   const combinedPosts = useMemo(() => {
     const all = Object.values(postsByInfluencer).flat();
     const filtered = postsPlatform === 'all' ? all : all.filter((p) => p.platform === postsPlatform);
@@ -595,21 +645,7 @@ export default function CombinedCreatorProfile() {
                 Growth
               </SectionHeading>
               <div className="flex items-center gap-4 flex-wrap">
-                <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: 'var(--color-bg-card-hover)' }}>
-                  {[{ value: 'combined', label: 'Combined' }, { value: 'byPlatform', label: 'By platform' }].map((opt) => (
-                    <button
-                      key={opt.value}
-                      onClick={() => setViewMode(opt.value)}
-                      className="px-3 py-1.5 rounded-md text-xs font-semibold transition-colors"
-                      style={{
-                        background: viewMode === opt.value ? 'var(--color-accent)' : 'transparent',
-                        color: viewMode === opt.value ? '#fff' : 'var(--color-text-muted)',
-                      }}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
+                <PlatformFilterToggle platforms={linkedPlatforms} selected={growthPlatform} onChange={setGrowthPlatform} />
                 <SegmentedControl options={growthMetricOptions} value={growthMetric} onChange={setGrowthMetric} />
                 <SegmentedControl options={GROWTH_RANGES.map((r) => ({ value: r.days, label: r.label }))} value={growthDays} onChange={setGrowthDays} />
               </div>
@@ -617,43 +653,26 @@ export default function CombinedCreatorProfile() {
 
             {growthLoading ? (
               <Skeleton className="h-64 w-full" />
-            ) : viewMode === 'combined' ? (
+            ) : (
               <>
-                <GrowthChart points={combinedGrowth} metric={growthMetric} color={COMBINED_COLOR} events={combinedEvents} onEventClick={handleEventClick} />
+                <GrowthChart
+                  points={selectedGrowth}
+                  metric={growthMetric}
+                  color={growthPlatform === 'all' ? COMBINED_COLOR : (growthPlatform === 'youtube' ? '#ff0000' : '#d62976')}
+                  events={selectedEvents}
+                  onEventClick={handleEventClick}
+                />
                 {growthMetric !== 'earnings' && (
                   <>
                     <div className="flex items-center gap-1.5 pt-2" style={{ borderTop: '1px solid var(--color-border-subtle)' }}>
                       <h4 className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-muted)' }}>
-                        Combined daily change
+                        {growthPlatform === 'all' ? 'Combined daily change' : `${platformLabel(growthPlatform)} daily change`}
                       </h4>
                     </div>
-                    <DailyGrowthChart points={combinedGrowth} label={growthMetricOptions.find((o) => o.value === growthMetric)?.label} />
+                    <DailyGrowthChart points={selectedGrowth} label={growthMetricOptions.find((o) => o.value === growthMetric)?.label} />
                   </>
                 )}
               </>
-            ) : (
-              <div className="flex flex-col gap-6">
-                {creator.influencers.map((ref) => {
-                  const points = growthByInfluencer[ref.influencer_id] ?? [];
-                  const about = statsByInfluencer[ref.influencer_id]?.about;
-                  if (points.length === 0) return null;
-                  return (
-                    <div key={ref.influencer_id} className="flex flex-col gap-2">
-                      <PlatformMiniHeader influencerRef={ref} verified={about?.is_verified} />
-                      <GrowthChart
-                        points={points}
-                        metric={growthMetric}
-                        color={ref.platform === 'youtube' ? '#ff0000' : '#d62976'}
-                        events={eventsByInfluencer[ref.influencer_id] ?? []}
-                        onEventClick={handleEventClick}
-                      />
-                    </div>
-                  );
-                })}
-                {creator.influencers.every((ref) => (growthByInfluencer[ref.influencer_id] ?? []).length === 0) && (
-                  <EmptyState title="Not enough history yet" message="Growth charts need at least a couple of days of snapshots to plot." />
-                )}
-              </div>
             )}
           </div>
 
@@ -687,6 +706,18 @@ export default function CombinedCreatorProfile() {
             platforms={linkedPlatforms}
             selectedPlatform={sponsorshipPlatform}
             onPlatformChange={setSponsorshipPlatform}
+          />
+
+          <ReplyTimeCard
+            heatmap={selectedReplyTime}
+            loading={replyTimeLoading}
+            days={replyTimeDays}
+            onDaysChange={setReplyTimeDays}
+            longFormLabel="Long-form"
+            shortFormLabel="Shorts/Reels"
+            platforms={linkedPlatforms}
+            selectedPlatform={replyTimePlatform}
+            onPlatformChange={setReplyTimePlatform}
           />
 
           {creator.influencers.length > 1 && (
