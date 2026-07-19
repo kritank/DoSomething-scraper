@@ -257,6 +257,137 @@ export function mergePostingFrequency(seriesList) {
     .map(([date, post_count]) => ({ date, post_count }));
 }
 
+// Merges EngagementTrendPoint[] lists (one per linked platform) into one
+// series: post_count sums per date, avg_engagement_rate becomes a
+// post_count-weighted average across platforms for that date (same
+// weighting convention as mergeSponsorshipBreakdowns). No forward-fill --
+// unlike a cumulative counter, a bucket with no posts on one platform
+// just contributes nothing rather than needing a held-flat value.
+export function mergeEngagementTrend(seriesList) {
+  const valid = seriesList.filter(Boolean);
+  const byDate = new Map();
+  for (const series of valid) {
+    for (const point of series) {
+      if (!byDate.has(point.date)) byDate.set(point.date, { post_count: 0, rateSum: 0, rateN: 0 });
+      const acc = byDate.get(point.date);
+      acc.post_count += point.post_count;
+      if (point.avg_engagement_rate != null) {
+        acc.rateSum += point.avg_engagement_rate * point.post_count;
+        acc.rateN += point.post_count;
+      }
+    }
+  }
+  return [...byDate.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([date, acc]) => ({
+      date,
+      post_count: acc.post_count,
+      avg_engagement_rate: acc.rateN > 0 ? acc.rateSum / acc.rateN : null,
+    }));
+}
+
+// Merges PerformanceDecayOut objects (one per linked platform) by
+// averaging avg_velocity_per_hour per bucket index, weighted by
+// sample_size -- bucket_labels are a fixed backend constant, so every
+// platform shares the same column layout.
+export function mergePerformanceDecay(decays) {
+  const valid = decays.filter(Boolean);
+  if (valid.length === 0) return null;
+
+  const bucketLabels = valid[0].bucket_labels;
+  const sums = new Array(bucketLabels.length).fill(0);
+  const counts = new Array(bucketLabels.length).fill(0);
+  for (const d of valid) {
+    d.points.forEach((p, i) => {
+      if (p.avg_velocity_per_hour != null) sums[i] += p.avg_velocity_per_hour * p.sample_size;
+      counts[i] += p.sample_size;
+    });
+  }
+
+  return {
+    window_days: valid[0].window_days,
+    bucket_labels: bucketLabels,
+    points: bucketLabels.map((label, i) => ({
+      bucket_label: label,
+      avg_velocity_per_hour: counts[i] > 0 ? sums[i] / counts[i] : null,
+      sample_size: counts[i],
+    })),
+  };
+}
+
+// Merges CommentEngagementOut objects (one per linked platform), weighting
+// each rate by comment_count -- same weighting convention as
+// mergeSponsorshipBreakdowns/mergeReplyTimeHeatmaps.
+function mergeCommentStatsList(statsList) {
+  let comment_count = 0, replySum = 0, verifiedSum = 0, childSum = 0, likeSum = 0;
+  for (const s of statsList) {
+    if (!s) continue;
+    comment_count += s.comment_count;
+    if (s.creator_reply_rate != null) replySum += s.creator_reply_rate * s.comment_count;
+    if (s.verified_commenter_rate != null) verifiedSum += s.verified_commenter_rate * s.comment_count;
+    if (s.avg_child_comment_count != null) childSum += s.avg_child_comment_count * s.comment_count;
+    if (s.avg_likes_per_comment != null) likeSum += s.avg_likes_per_comment * s.comment_count;
+  }
+  return {
+    comment_count,
+    creator_reply_rate: comment_count > 0 ? replySum / comment_count : null,
+    verified_commenter_rate: comment_count > 0 ? verifiedSum / comment_count : null,
+    avg_child_comment_count: comment_count > 0 ? childSum / comment_count : null,
+    avg_likes_per_comment: comment_count > 0 ? likeSum / comment_count : null,
+  };
+}
+
+export function mergeCommentEngagement(breakdowns) {
+  const valid = breakdowns.filter(Boolean);
+  if (valid.length === 0) return null;
+
+  const byFormat = { long_form: [], short_form: [] };
+  for (const b of valid) {
+    for (const f of b.formats) byFormat[f.format].push(f);
+  }
+
+  return {
+    window_days: valid[0].window_days,
+    posts_with_comments: valid.reduce((sum, b) => sum + b.posts_with_comments, 0),
+    overall: { format: 'overall', ...mergeCommentStatsList(valid.map((b) => b.overall)) },
+    formats: ['long_form', 'short_form'].map((format) => ({ format, ...mergeCommentStatsList(byFormat[format]) })),
+  };
+}
+
+// Merges FollowerRatioPoint[] lists (one per linked platform), same
+// forward-fill-then-sum strategy as mergeGrowthSeries (followers/following
+// are cumulative account state, not per-period counts) -- ratio is
+// re-derived from the combined totals rather than averaging per-platform
+// ratios, which would misweight accounts with very different follower counts.
+function forwardFillFollowerRatio(points, dates) {
+  const byDate = new Map(points.map((p) => [p.date, [p.followers, p.following]]));
+  const firstDate = points[0]?.date;
+  let last = [null, null];
+  const filled = new Map();
+  for (const d of dates) {
+    if (byDate.has(d)) last = byDate.get(d);
+    filled.set(d, firstDate && d >= firstDate ? last : [null, null]);
+  }
+  return filled;
+}
+
+export function mergeFollowerRatioSeries(seriesList) {
+  const nonEmpty = seriesList.filter((s) => s && s.length > 0);
+  if (nonEmpty.length === 0) return [];
+
+  const allDates = [...new Set(nonEmpty.flatMap((s) => s.map((p) => p.date)))].sort();
+  const filledPerSeries = nonEmpty.map((s) => forwardFillFollowerRatio(s, allDates));
+
+  return allDates.map((date) => {
+    const pairs = filledPerSeries.map((f) => f.get(date));
+    const known = pairs.filter(([followers]) => followers !== null);
+    if (known.length === 0) return { date, followers: null, following: null, ratio: null };
+    const followers = known.reduce((sum, [f]) => sum + f, 0);
+    const following = known.reduce((sum, [, fo]) => sum + (fo ?? 0), 0);
+    return { date, followers, following, ratio: following > 0 ? followers / following : null };
+  });
+}
+
 // Merges PostingTimeDistribution objects (one per linked platform) by
 // summing each index of weekday_counts/hour_counts/hourly_weekday_matrix,
 // then re-deriving best_weekday/best_hour/total_posts from the combined

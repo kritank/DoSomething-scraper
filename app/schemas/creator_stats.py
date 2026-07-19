@@ -272,3 +272,67 @@ class CreatorStatsOut(BaseModel):
     earnings: Optional[EarningsEstimate] = None
     rankings: RankingsOut
     about: AboutOut
+
+
+class EngagementTrendPoint(BaseModel):
+    # Bucket start date -- Monday of that week for bucket="week", the day
+    # itself for bucket="day" (same convention as PostingFrequencyPoint).
+    date: date
+    # (likes+comments)/followers averaged across posts published in this
+    # bucket, using the influencer's *current* follower count as the
+    # denominator for every post (same simplification as EngagementOut) --
+    # None when no post in the bucket has usable like/comment data.
+    avg_engagement_rate: Optional[float] = None
+    post_count: int = 0
+
+
+class PerformanceDecayPoint(BaseModel):
+    # e.g. "0-1h", "1-3h", ... "30d+" -- see PerformanceDecayOut.bucket_labels.
+    bucket_label: str
+    # Average (views-else-likes metric / hours-since-posted) across every
+    # snapshot that landed in this age bucket -- the same lifetime-average
+    # velocity figure PostPerformance.velocity_per_hour uses, just bucketed
+    # by snapshot age instead of restricted to freshly-posted content. A
+    # falling curve across buckets is the expected "decay" shape: most
+    # metric accrues early, so the cumulative average rate drops as age
+    # outpaces it.
+    avg_velocity_per_hour: Optional[float] = None
+    sample_size: int = 0
+
+
+class PerformanceDecayOut(BaseModel):
+    window_days: int
+    bucket_labels: list[str]
+    points: list[PerformanceDecayPoint]
+
+
+class CommentEngagementStats(BaseModel):
+    # "overall" | "long_form" | "short_form"
+    format: str
+    comment_count: int = 0
+    # Share of comments authored by the creator themself -- None with no
+    # comments in this bucket.
+    creator_reply_rate: Optional[float] = None
+    # Share of comments from a platform-verified account.
+    verified_commenter_rate: Optional[float] = None
+    avg_child_comment_count: Optional[float] = None
+    avg_likes_per_comment: Optional[float] = None
+
+
+class CommentEngagementOut(BaseModel):
+    window_days: int
+    # Distinct posts contributing at least one comment -- comment coverage
+    # is naturally partial (only posts that had comments scraped), so this
+    # tells the UI how much of the post history this breakdown represents.
+    posts_with_comments: int
+    overall: CommentEngagementStats
+    formats: list[CommentEngagementStats]
+
+
+class FollowerRatioPoint(BaseModel):
+    date: date
+    followers: int
+    following: int
+    # followers/following -- None when following is 0 (division undefined,
+    # not "infinite ratio").
+    ratio: Optional[float] = None

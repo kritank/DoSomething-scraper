@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.analytics.earnings import instagram_value_per_1k_views_range, youtube_rpm_range
+from app.models.comment import Comment
 from app.models.feature_store import FeatureStore
 from app.models.influencer import Influencer
 from app.models.post import Post
@@ -28,13 +29,19 @@ from app.models.snapshot import PostMetricsSnapshot, ProfileSnapshot
 from app.repositories.post_outlier_metrics_repo import PostOutlierMetricsRepo
 from app.schemas.creator_stats import (
     AboutOut,
+    CommentEngagementOut,
+    CommentEngagementStats,
     CreatorSummary,
     EngagementOut,
+    EngagementTrendPoint,
+    FollowerRatioPoint,
     FormatBreakdownOut,
     FormatStats,
     GrowthPoint,
     KeyEvent,
     FormatSponsorshipStats,
+    PerformanceDecayOut,
+    PerformanceDecayPoint,
     PostingFrequencyPoint,
     PostingTimeDistribution,
     PostPerformance,
@@ -368,6 +375,158 @@ def _bucket_posting_frequency(
         )
         counts[bucket_date] = counts.get(bucket_date, 0) + 1
     return [PostingFrequencyPoint(date=d, post_count=c) for d, c in sorted(counts.items())]
+
+
+@dataclass
+class _EngagementTrendRow:
+    posted_at: datetime
+    likes: Optional[int]
+    comments: Optional[int]
+
+
+def _bucket_engagement_trend(
+    rows: list[_EngagementTrendRow], followers: int, bucket: str
+) -> list[EngagementTrendPoint]:
+    """Pure function (no DB access) so this is unit-testable in isolation.
+    Same Monday-start week bucketing as _bucket_posting_frequency. Uses one
+    fixed `followers` count (the influencer's current total) as the
+    denominator for every post regardless of when it was published --
+    reconstructing "followers at post time" would need denser
+    ProfileSnapshot history than most accounts have yet (see
+    docs/CREATOR_STATS_PLAN.md), and EngagementOut already makes this same
+    simplification for its single-number engagement rate."""
+    post_counts: dict[date, int] = {}
+    rate_sums: dict[date, list[float]] = {}
+    for row in rows:
+        bucket_date = (
+            row.posted_at.date() - timedelta(days=row.posted_at.weekday())
+            if bucket == "week"
+            else row.posted_at.date()
+        )
+        post_counts[bucket_date] = post_counts.get(bucket_date, 0) + 1
+        # Likes-hidden posts are excluded rather than treated as 0 -- same
+        # null-safety rule as EngagementOut.
+        if row.likes is None and row.comments is None:
+            continue
+        rate = ((row.likes or 0) + (row.comments or 0)) / followers
+        rate_sums.setdefault(bucket_date, []).append(rate)
+
+    points = []
+    for d in sorted(post_counts):
+        rates = rate_sums.get(d, [])
+        points.append(
+            EngagementTrendPoint(
+                date=d,
+                avg_engagement_rate=round(sum(rates) / len(rates), 4) if rates else None,
+                post_count=post_counts[d],
+            )
+        )
+    return points
+
+
+# Age-since-posted buckets for the performance decay curve: dense in the
+# first 24h (most velocity decay happens early), coarser out to 30 days,
+# with a catch-all tail. Same (upper bound seconds/hours, label) shape as
+# _REPLY_TIME_BUCKETS -- here in hours, and None-upper must be last.
+_DECAY_BUCKETS: list[tuple[Optional[float], str]] = [
+    (1, "0-1h"),
+    (3, "1-3h"),
+    (6, "3-6h"),
+    (12, "6-12h"),
+    (24, "12-24h"),
+    (48, "1-2d"),
+    (96, "2-4d"),
+    (168, "4-7d"),
+    (336, "7-14d"),
+    (720, "14-30d"),
+    (None, "30d+"),
+]
+
+
+def _decay_bucket_index(hours: float) -> int:
+    for i, (upper, _label) in enumerate(_DECAY_BUCKETS):
+        if upper is None or hours < upper:
+            return i
+    return len(_DECAY_BUCKETS) - 1  # unreachable -- last bucket has upper=None
+
+
+@dataclass
+class _DecayRow:
+    hours_since_posted: float
+    velocity_per_hour: float
+
+
+def _aggregate_performance_decay(rows: list[_DecayRow], days: int) -> PerformanceDecayOut:
+    """Pure function (no DB access) so this is unit-testable in isolation."""
+    bucket_labels = [label for _, label in _DECAY_BUCKETS]
+    sums = [0.0] * len(bucket_labels)
+    counts = [0] * len(bucket_labels)
+    for row in rows:
+        idx = _decay_bucket_index(row.hours_since_posted)
+        sums[idx] += row.velocity_per_hour
+        counts[idx] += 1
+
+    points = [
+        PerformanceDecayPoint(
+            bucket_label=label,
+            avg_velocity_per_hour=round(sums[i] / counts[i], 2) if counts[i] else None,
+            sample_size=counts[i],
+        )
+        for i, label in enumerate(bucket_labels)
+    ]
+    return PerformanceDecayOut(window_days=days, bucket_labels=bucket_labels, points=points)
+
+
+@dataclass
+class _CommentEngagementRow:
+    """Pre-resolved input to _aggregate_comment_engagement -- `format` is
+    already folded ("live" -> "long_form"), same convention as _FormatRow."""
+
+    format: str  # "long_form" | "short_form"
+    is_from_creator: bool
+    is_verified: bool
+    child_comment_count: int
+    like_count: int
+
+
+def _empty_comment_bucket() -> dict:
+    return {"comment_count": 0, "creator_replies": 0, "verified": 0, "child_sum": 0, "like_sum": 0}
+
+
+def _comment_stats_from_bucket(format_label: str, bucket: dict) -> CommentEngagementStats:
+    n = bucket["comment_count"]
+    return CommentEngagementStats(
+        format=format_label,
+        comment_count=n,
+        creator_reply_rate=round(bucket["creator_replies"] / n, 4) if n else None,
+        verified_commenter_rate=round(bucket["verified"] / n, 4) if n else None,
+        avg_child_comment_count=round(bucket["child_sum"] / n, 2) if n else None,
+        avg_likes_per_comment=round(bucket["like_sum"] / n, 2) if n else None,
+    )
+
+
+def _aggregate_comment_engagement(
+    rows: list[_CommentEngagementRow], days: int, posts_with_comments: int
+) -> CommentEngagementOut:
+    """Pure function (no DB access) so this is unit-testable in isolation."""
+    overall = _empty_comment_bucket()
+    by_format = {"long_form": _empty_comment_bucket(), "short_form": _empty_comment_bucket()}
+    for row in rows:
+        for bucket in (overall, by_format[row.format]):
+            bucket["comment_count"] += 1
+            if row.is_from_creator:
+                bucket["creator_replies"] += 1
+            if row.is_verified:
+                bucket["verified"] += 1
+            bucket["child_sum"] += row.child_comment_count
+            bucket["like_sum"] += row.like_count
+
+    return CommentEngagementOut(
+        window_days=days,
+        posts_with_comments=posts_with_comments,
+        overall=_comment_stats_from_bucket("overall", overall),
+        formats=[_comment_stats_from_bucket(fmt, by_format[fmt]) for fmt in ("long_form", "short_form")],
+    )
 
 
 def _aggregate_posting_times(posted_ats: list[datetime]) -> PostingTimeDistribution:
@@ -1556,6 +1715,186 @@ class CreatorStatsService:
             )
 
         return _aggregate_reply_time_heatmap(reply_rows, days)
+
+    async def get_engagement_trend(
+        self, influencer_id: UUID, days: int, bucket: str = "week"
+    ) -> list[EngagementTrendPoint]:
+        """Engagement rate ((likes+comments)/followers), averaged per
+        posting-date bucket -- the time-series extension of
+        get_engagement_rate, built entirely from existing PostMetricsSnapshot
+        data. Empty when there's no usable follower count yet (mirrors
+        get_engagement_rate's own guard)."""
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        latest = await self._closest_snapshot(influencer_id, date.today())
+        if influencer is None or latest is None or latest.subscribers_hidden or latest.followers <= 0:
+            return []
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        latest_metric_sq = (
+            select(
+                PostMetricsSnapshot.post_id,
+                PostMetricsSnapshot.likes,
+                PostMetricsSnapshot.comments,
+                func.row_number()
+                .over(
+                    partition_by=PostMetricsSnapshot.post_id,
+                    order_by=PostMetricsSnapshot.scraped_at.desc(),
+                )
+                .label("rn"),
+            )
+            .subquery("latest_metric")
+        )
+        stmt = (
+            select(Post.posted_at, latest_metric_sq.c.likes, latest_metric_sq.c.comments)
+            .select_from(Post)
+            .outerjoin(
+                latest_metric_sq,
+                (latest_metric_sq.c.post_id == Post.id) & (latest_metric_sq.c.rn == 1),
+            )
+            .where(Post.influencer_id == influencer_id, Post.posted_at >= cutoff)
+            .order_by(Post.posted_at.asc())
+        )
+        rows = (await self.session.execute(stmt)).all()
+        trend_rows = [
+            _EngagementTrendRow(posted_at=row.posted_at, likes=row.likes, comments=row.comments)
+            for row in rows
+        ]
+        return _bucket_engagement_trend(trend_rows, latest.followers, bucket)
+
+    async def get_performance_decay(
+        self, influencer_id: UUID, days: int
+    ) -> Optional[PerformanceDecayOut]:
+        """Cohort views/likes-per-hour decay curve: every PostMetricsSnapshot
+        for posts published in the window, bucketed by how many hours old
+        the post was at that snapshot. Built as a cohort curve rather than
+        per-post -- most posts only get re-scraped a handful of times (see
+        docs/analysis backing this feature), so a single post rarely has
+        enough snapshots to plot its own decay, but averaging across posts
+        per age bucket is reliable with current snapshot volume."""
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return None
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        stmt = (
+            select(Post.posted_at, PostMetricsSnapshot.scraped_at, PostMetricsSnapshot.views, PostMetricsSnapshot.likes)
+            .select_from(PostMetricsSnapshot)
+            .join(Post, Post.id == PostMetricsSnapshot.post_id)
+            .where(Post.influencer_id == influencer_id, Post.posted_at >= cutoff)
+        )
+        rows = (await self.session.execute(stmt)).all()
+
+        decay_rows = []
+        for posted_at, scraped_at, views, likes in rows:
+            metric = views if views else likes
+            if metric is None:
+                continue
+            # scraped_at is date-only; treat it as end-of-day for the age
+            # calculation since the real scrape time within that day isn't
+            # recorded -- coarse, but consistent across every snapshot.
+            scraped_dt = datetime.combine(scraped_at, datetime.max.time(), tzinfo=timezone.utc)
+            hours = (scraped_dt - posted_at).total_seconds() / 3600
+            if hours <= 0:
+                continue
+            decay_rows.append(_DecayRow(hours_since_posted=hours, velocity_per_hour=metric / hours))
+
+        return _aggregate_performance_decay(decay_rows, days)
+
+    async def get_comment_engagement(
+        self, influencer_id: UUID, days: int
+    ) -> Optional[CommentEngagementOut]:
+        """Audience-quality signal built entirely from the comments table:
+        creator-reply rate, verified-commenter share, and thread depth,
+        overall and crossed with format. Coverage is naturally partial --
+        only posts that had comments scraped contribute -- see
+        CommentEngagementOut.posts_with_comments."""
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return None
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        stmt = (
+            select(
+                Post.id,
+                Post.product_type,
+                Comment.is_from_creator,
+                Comment.is_verified,
+                Comment.child_comment_count,
+                Comment.like_count,
+            )
+            .select_from(Comment)
+            .join(Post, Post.id == Comment.post_id)
+            .where(Post.influencer_id == influencer_id, Post.posted_at >= cutoff)
+        )
+        rows = (await self.session.execute(stmt)).all()
+
+        comment_rows = []
+        posts_with_comments = set()
+        for post_id, product_type, is_from_creator, is_verified, child_comment_count, like_count in rows:
+            posts_with_comments.add(post_id)
+            fmt = content_format(influencer.platform, product_type)
+            if fmt == "live":
+                fmt = "long_form"
+            comment_rows.append(
+                _CommentEngagementRow(
+                    format=fmt,
+                    is_from_creator=is_from_creator,
+                    is_verified=is_verified,
+                    child_comment_count=child_comment_count,
+                    like_count=like_count,
+                )
+            )
+
+        return _aggregate_comment_engagement(comment_rows, days, len(posts_with_comments))
+
+    async def get_follower_ratio_series(
+        self, influencer_id: UUID, days: int
+    ) -> list[FollowerRatioPoint]:
+        """Daily followers/following, plus the derived ratio -- trivial off
+        ProfileSnapshot, but not surfaced as its own trend anywhere yet.
+        Same same-day dedupe as get_growth_series."""
+        cutoff = date.today() - timedelta(days=days)
+        row_number = (
+            func.row_number()
+            .over(
+                partition_by=ProfileSnapshot.scraped_at,
+                order_by=ProfileSnapshot.created_at.desc(),
+            )
+        )
+        subq = (
+            select(
+                ProfileSnapshot.scraped_at,
+                ProfileSnapshot.followers,
+                ProfileSnapshot.following,
+                row_number.label("rn"),
+            )
+            .where(
+                ProfileSnapshot.influencer_id == influencer_id,
+                ProfileSnapshot.scraped_at >= cutoff,
+            )
+            .subquery("daily_snapshot")
+        )
+        stmt = (
+            select(subq.c.scraped_at, subq.c.followers, subq.c.following)
+            .where(subq.c.rn == 1)
+            .order_by(subq.c.scraped_at.asc())
+        )
+        rows = (await self.session.execute(stmt)).all()
+        return [
+            FollowerRatioPoint(
+                date=scraped_at,
+                followers=followers,
+                following=following,
+                ratio=round(followers / following, 2) if following else None,
+            )
+            for scraped_at, followers, following in rows
+        ]
 
     async def get_about(self, influencer_id: UUID) -> Optional[AboutOut]:
         influencer = (

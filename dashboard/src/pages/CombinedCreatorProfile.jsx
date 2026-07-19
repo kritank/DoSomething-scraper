@@ -13,6 +13,10 @@ import {
   getCreatorPostingTimes,
   getCreatorSponsorshipBreakdown,
   getCreatorReplyTimeHeatmap,
+  getCreatorEngagementTrend,
+  getCreatorPerformanceDecay,
+  getCreatorCommentEngagement,
+  getCreatorFollowerRatio,
 } from '../services/creatorStatsService';
 import { getInfluencerJobs } from '../services/influencerJobsService';
 import Avatar from '../components/common/Avatar';
@@ -30,13 +34,17 @@ import FormatSplitCard from '../components/creator/FormatSplitCard';
 import PostingFrequencyCard from '../components/creator/PostingFrequencyCard';
 import SponsorshipCard from '../components/creator/SponsorshipCard';
 import ReplyTimeCard from '../components/creator/ReplyTimeCard';
+import EngagementTrendCard from '../components/creator/EngagementTrendCard';
+import PerformanceDecayCard from '../components/creator/PerformanceDecayCard';
+import CommentEngagementCard from '../components/creator/CommentEngagementCard';
+import FollowerRatioCard from '../components/creator/FollowerRatioCard';
 import PostsTable from '../components/creator/PostsTable';
 import DailyGrowthHistoryTable from '../components/creator/DailyGrowthHistoryTable';
 import AboutSection from '../components/creator/AboutSection';
 import { formatHandle, platformLabel } from '../utils/platform';
 import { formatCompactNumber, formatUsdRange, countryFlagEmoji } from '../utils/format';
 import { GROWTH_RANGES } from '../utils/growthRanges';
-import { mergeGrowthSeries, mergeEarningsSeries, mergeFormatBreakdowns, mergePostingFrequency, mergePostingTimeDistributions, mergeSponsorshipBreakdowns, mergeReplyTimeHeatmaps } from '../utils/mergeSeries';
+import { mergeGrowthSeries, mergeEarningsSeries, mergeFormatBreakdowns, mergePostingFrequency, mergePostingTimeDistributions, mergeSponsorshipBreakdowns, mergeReplyTimeHeatmaps, mergeEngagementTrend, mergePerformanceDecay, mergeCommentEngagement, mergeFollowerRatioSeries } from '../utils/mergeSeries';
 import { avatarUrl } from '../services/apiClient';
 
 const COMBINED_COLOR = '#8b5cf6';
@@ -186,6 +194,26 @@ export default function CombinedCreatorProfile() {
   const [replyTimeLoading, setReplyTimeLoading] = useState(true);
   const [replyTimePlatform, setReplyTimePlatform] = useState('all');
 
+  const [engagementTrendDays, setEngagementTrendDays] = useState(90);
+  const [engagementTrendByInfluencer, setEngagementTrendByInfluencer] = useState({});
+  const [engagementTrendLoading, setEngagementTrendLoading] = useState(true);
+  const [engagementTrendPlatform, setEngagementTrendPlatform] = useState('all');
+
+  const [decayDays, setDecayDays] = useState(90);
+  const [decayByInfluencer, setDecayByInfluencer] = useState({});
+  const [decayLoading, setDecayLoading] = useState(true);
+  const [decayPlatform, setDecayPlatform] = useState('all');
+
+  const [commentEngagementDays, setCommentEngagementDays] = useState(90);
+  const [commentEngagementByInfluencer, setCommentEngagementByInfluencer] = useState({});
+  const [commentEngagementLoading, setCommentEngagementLoading] = useState(true);
+  const [commentEngagementPlatform, setCommentEngagementPlatform] = useState('all');
+
+  const [followerRatioDays, setFollowerRatioDays] = useState(365);
+  const [followerRatioByInfluencer, setFollowerRatioByInfluencer] = useState({});
+  const [followerRatioLoading, setFollowerRatioLoading] = useState(true);
+  const [followerRatioPlatform, setFollowerRatioPlatform] = useState('all');
+
   const [postsSort, setPostsSort] = useState('top');
   const [postsFilter, setPostsFilter] = useState('all');
   const [postsPlatform, setPostsPlatform] = useState('all');
@@ -331,6 +359,60 @@ export default function CombinedCreatorProfile() {
   useEffect(() => {
     if (!creator) return;
     let cancelled = false;
+    setEngagementTrendLoading(true);
+    Promise.all(
+      creator.influencers.map(async (ref) => [
+        ref.influencer_id,
+        await getCreatorEngagementTrend(ref.influencer_id, engagementTrendDays, 'week'),
+      ]),
+    )
+      .then((results) => { if (!cancelled) setEngagementTrendByInfluencer(Object.fromEntries(results)); })
+      .finally(() => { if (!cancelled) setEngagementTrendLoading(false); });
+    return () => { cancelled = true; };
+  }, [creator, engagementTrendDays]);
+
+  useEffect(() => {
+    if (!creator) return;
+    let cancelled = false;
+    setDecayLoading(true);
+    Promise.all(
+      creator.influencers.map(async (ref) => [ref.influencer_id, await getCreatorPerformanceDecay(ref.influencer_id, decayDays)]),
+    )
+      .then((results) => { if (!cancelled) setDecayByInfluencer(Object.fromEntries(results)); })
+      .finally(() => { if (!cancelled) setDecayLoading(false); });
+    return () => { cancelled = true; };
+  }, [creator, decayDays]);
+
+  useEffect(() => {
+    if (!creator) return;
+    let cancelled = false;
+    setCommentEngagementLoading(true);
+    Promise.all(
+      creator.influencers.map(async (ref) => [
+        ref.influencer_id,
+        await getCreatorCommentEngagement(ref.influencer_id, commentEngagementDays),
+      ]),
+    )
+      .then((results) => { if (!cancelled) setCommentEngagementByInfluencer(Object.fromEntries(results)); })
+      .finally(() => { if (!cancelled) setCommentEngagementLoading(false); });
+    return () => { cancelled = true; };
+  }, [creator, commentEngagementDays]);
+
+  useEffect(() => {
+    if (!creator) return;
+    let cancelled = false;
+    setFollowerRatioLoading(true);
+    Promise.all(
+      creator.influencers.map(async (ref) => [ref.influencer_id, await getCreatorFollowerRatio(ref.influencer_id, followerRatioDays)]),
+    )
+      .then((results) => { if (!cancelled) setFollowerRatioByInfluencer(Object.fromEntries(results)); })
+      .finally(() => { if (!cancelled) setFollowerRatioLoading(false); });
+    return () => { cancelled = true; };
+  }, [creator, followerRatioDays]);
+
+  useEffect(() => {
+    if (!creator) return;
+    let cancelled = false;
     setPostsLoading(true);
     Promise.all(
       creator.influencers.map(async (ref) => {
@@ -443,6 +525,46 @@ export default function CombinedCreatorProfile() {
     return result;
   }, [influencersByPlatform, replyTimeByInfluencer]);
   const selectedReplyTime = replyTimePlatform === 'all' ? combinedReplyTime : replyTimeByPlatform[replyTimePlatform];
+
+  const combinedEngagementTrend = useMemo(() => mergeEngagementTrend(Object.values(engagementTrendByInfluencer)), [engagementTrendByInfluencer]);
+  const engagementTrendByPlatform = useMemo(() => {
+    const result = {};
+    for (const [platform, ids] of Object.entries(influencersByPlatform)) {
+      result[platform] = mergeEngagementTrend(ids.map((id) => engagementTrendByInfluencer[id]));
+    }
+    return result;
+  }, [influencersByPlatform, engagementTrendByInfluencer]);
+  const selectedEngagementTrend = engagementTrendPlatform === 'all' ? combinedEngagementTrend : engagementTrendByPlatform[engagementTrendPlatform];
+
+  const combinedDecay = useMemo(() => mergePerformanceDecay(Object.values(decayByInfluencer)), [decayByInfluencer]);
+  const decayByPlatform = useMemo(() => {
+    const result = {};
+    for (const [platform, ids] of Object.entries(influencersByPlatform)) {
+      result[platform] = mergePerformanceDecay(ids.map((id) => decayByInfluencer[id]));
+    }
+    return result;
+  }, [influencersByPlatform, decayByInfluencer]);
+  const selectedDecay = decayPlatform === 'all' ? combinedDecay : decayByPlatform[decayPlatform];
+
+  const combinedCommentEngagement = useMemo(() => mergeCommentEngagement(Object.values(commentEngagementByInfluencer)), [commentEngagementByInfluencer]);
+  const commentEngagementByPlatform = useMemo(() => {
+    const result = {};
+    for (const [platform, ids] of Object.entries(influencersByPlatform)) {
+      result[platform] = mergeCommentEngagement(ids.map((id) => commentEngagementByInfluencer[id]));
+    }
+    return result;
+  }, [influencersByPlatform, commentEngagementByInfluencer]);
+  const selectedCommentEngagement = commentEngagementPlatform === 'all' ? combinedCommentEngagement : commentEngagementByPlatform[commentEngagementPlatform];
+
+  const combinedFollowerRatio = useMemo(() => mergeFollowerRatioSeries(Object.values(followerRatioByInfluencer)), [followerRatioByInfluencer]);
+  const followerRatioByPlatform = useMemo(() => {
+    const result = {};
+    for (const [platform, ids] of Object.entries(influencersByPlatform)) {
+      result[platform] = mergeFollowerRatioSeries(ids.map((id) => followerRatioByInfluencer[id]));
+    }
+    return result;
+  }, [influencersByPlatform, followerRatioByInfluencer]);
+  const selectedFollowerRatio = followerRatioPlatform === 'all' ? combinedFollowerRatio : followerRatioByPlatform[followerRatioPlatform];
   const combinedPosts = useMemo(() => {
     const all = Object.values(postsByInfluencer).flat();
     const filtered = postsPlatform === 'all' ? all : all.filter((p) => p.platform === postsPlatform);
@@ -721,6 +843,46 @@ export default function CombinedCreatorProfile() {
             platforms={linkedPlatforms}
             selectedPlatform={replyTimePlatform}
             onPlatformChange={setReplyTimePlatform}
+          />
+
+          <EngagementTrendCard
+            points={selectedEngagementTrend}
+            loading={engagementTrendLoading}
+            days={engagementTrendDays}
+            onDaysChange={setEngagementTrendDays}
+            platforms={linkedPlatforms}
+            selectedPlatform={engagementTrendPlatform}
+            onPlatformChange={setEngagementTrendPlatform}
+          />
+
+          <PerformanceDecayCard
+            decay={selectedDecay}
+            loading={decayLoading}
+            days={decayDays}
+            onDaysChange={setDecayDays}
+            platforms={linkedPlatforms}
+            selectedPlatform={decayPlatform}
+            onPlatformChange={setDecayPlatform}
+          />
+
+          <CommentEngagementCard
+            engagement={selectedCommentEngagement}
+            loading={commentEngagementLoading}
+            days={commentEngagementDays}
+            onDaysChange={setCommentEngagementDays}
+            platforms={linkedPlatforms}
+            selectedPlatform={commentEngagementPlatform}
+            onPlatformChange={setCommentEngagementPlatform}
+          />
+
+          <FollowerRatioCard
+            points={selectedFollowerRatio}
+            loading={followerRatioLoading}
+            days={followerRatioDays}
+            onDaysChange={setFollowerRatioDays}
+            platforms={linkedPlatforms}
+            selectedPlatform={followerRatioPlatform}
+            onPlatformChange={setFollowerRatioPlatform}
           />
 
           {creator.influencers.length > 1 && (

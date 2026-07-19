@@ -64,3 +64,31 @@ export async function getCreatorReplyTimeHeatmap(influencerId, days) {
   });
   return data;
 }
+
+export async function getCreatorEngagementTrend(influencerId, days, bucket = 'week') {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/engagement-trend`, {
+    params: { days, bucket },
+  });
+  return data;
+}
+
+export async function getCreatorPerformanceDecay(influencerId, days) {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/performance-decay`, {
+    params: { days },
+  });
+  return data;
+}
+
+export async function getCreatorCommentEngagement(influencerId, days) {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/comment-engagement`, {
+    params: { days },
+  });
+  return data;
+}
+
+export async function getCreatorFollowerRatio(influencerId, days) {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/follower-ratio`, {
+    params: { days },
+  });
+  return data;
+}
