@@ -17,7 +17,6 @@ import { getInfluencerJobs } from '../services/influencerJobsService';
 import Avatar from '../components/common/Avatar';
 import PlatformIcon from '../components/common/PlatformIcon';
 import PlatformVerifiedBadge from '../components/common/PlatformVerifiedBadge';
-import ScrapeStatusIndicator from '../components/common/ScrapeStatusIndicator';
 import HeaderPill from '../components/common/HeaderPill';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
@@ -219,28 +218,26 @@ export default function CombinedCreatorProfile() {
     load();
   }, [load]);
 
-  const hasYoutube = creator?.influencers.some((ref) => ref.platform === 'youtube') ?? false;
-
-  const growthMetricOptions = useMemo(() => {
-    const opts = [{ value: 'followers', label: 'Followers' }];
-    if (hasYoutube) opts.push({ value: 'total_views', label: 'Views' }, { value: 'earnings', label: 'Earnings' });
-    return opts;
-  }, [hasYoutube]);
+  // Views/Earnings are available for every linked platform: YouTube reads
+  // a real channel view counter, Instagram reconstructs one from per-post
+  // snapshots (see CreatorStatsService._instagram_views_daily_series) --
+  // both are honest daily series, just derived differently server-side.
+  const growthMetricOptions = useMemo(() => [
+    { value: 'followers', label: 'Followers' },
+    { value: 'total_views', label: 'Views' },
+    { value: 'earnings', label: 'Earnings' },
+  ], []);
 
   // Growth + key events, per linked account, for the currently selected
-  // metric/range -- total_views/earnings only exist for YouTube (see
-  // CreatorSummary.total_views docstring), so non-YouTube accounts are
-  // skipped for those metrics rather than firing a request that would
-  // just come back empty.
+  // metric/range.
   useEffect(() => {
     if (!creator) return;
     let cancelled = false;
     setGrowthLoading(true);
     Promise.all(
       creator.influencers.map(async (ref) => {
-        const supported = growthMetric === 'followers' || ref.platform === 'youtube';
         const [growth, events] = await Promise.all([
-          supported ? getCreatorGrowth(ref.influencer_id, growthDays, growthMetric) : Promise.resolve([]),
+          getCreatorGrowth(ref.influencer_id, growthDays, growthMetric),
           getCreatorKeyEvents(ref.influencer_id, growthDays),
         ]);
         return [ref.influencer_id, growth, events];
@@ -327,11 +324,10 @@ export default function CombinedCreatorProfile() {
     setHistoryLoading(true);
     Promise.all(
       creator.influencers.map(async (ref) => {
-        const isYt = ref.platform === 'youtube';
         const [followers, views, earnings] = await Promise.all([
           getCreatorGrowth(ref.influencer_id, growthDays, 'followers'),
-          isYt ? getCreatorGrowth(ref.influencer_id, growthDays, 'total_views') : Promise.resolve([]),
-          isYt ? getCreatorGrowth(ref.influencer_id, growthDays, 'earnings') : Promise.resolve([]),
+          getCreatorGrowth(ref.influencer_id, growthDays, 'total_views'),
+          getCreatorGrowth(ref.influencer_id, growthDays, 'earnings'),
         ]);
         return [ref.influencer_id, { followers, views, earnings }];
       }),
@@ -522,8 +518,8 @@ export default function CombinedCreatorProfile() {
                       platform={ref.platform}
                       verified={statsByInfluencer[ref.influencer_id]?.about?.is_verified}
                       handle={ref.handle}
+                      scrapeStatus={latestJobByInfluencer[ref.influencer_id]?.status}
                     />
-                    <ScrapeStatusIndicator status={latestJobByInfluencer[ref.influencer_id]?.status} />
                   </span>
                 ))}
               </div>

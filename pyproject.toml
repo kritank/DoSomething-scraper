@@ -43,6 +43,12 @@ dependencies = [
     # Feature extraction helpers
     "langdetect>=1.0.9",
     "emoji>=2.12",
+    # Excel parsing/generation for the influencer bulk-import feature
+    # (app/api/v1/admin.py's /influencers/bulk routes)
+    "openpyxl>=3.1",
+    # Required by FastAPI's UploadFile/File() multipart form parsing --
+    # same bulk-import routes.
+    "python-multipart>=0.0.9",
     # Monitoring
     "prometheus-client>=0.20",
 ]

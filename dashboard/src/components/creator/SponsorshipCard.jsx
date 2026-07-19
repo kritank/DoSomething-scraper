@@ -67,7 +67,7 @@ export default function SponsorshipCard({
     const diffPoints = Math.round((long.share - short.share) * 100);
     if (Math.abs(diffPoints) < 3) return null;
     const [higherLabel, lowerLabel] = diffPoints > 0 ? ['long-form', 'short-form'] : ['short-form', 'long-form'];
-    return { text: `You tag partnerships in ${higherLabel} content ${Math.abs(diffPoints)} percentage points more often than in ${lowerLabel}.` };
+    return { text: `Partnerships are tagged in ${higherLabel} content ${Math.abs(diffPoints)} percentage points more often than in ${lowerLabel}.` };
   }, [bucketStats]);
 
   return (
@@ -75,7 +75,7 @@ export default function SponsorshipCard({
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-1.5">
           <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-            Sponsored vs organic
+            Sponsored vs Organic
           </h3>
           <InfoTip text="Compares posts officially tagged with the platform's paid-partnership / paid-promotion disclosure against everything else. Creators who run sponsored content without using that disclosure tool show up as organic here, so this undercounts real sponsorships." />
         </div>

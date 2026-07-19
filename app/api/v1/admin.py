@@ -4,8 +4,8 @@ from uuid import UUID
 
 import os
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +38,7 @@ from app.schemas.dashboard import (
     DashboardStatusRow,
     QueueDepthHistoryOut,
 )
+from app.schemas.bulk_import import BulkImportResult
 from app.schemas.db_schema import SchemaTable
 from app.schemas.influencer import (
     InfluencerActiveUpdate,
@@ -56,6 +57,11 @@ from app.services.alerts_service import get_alerts
 from app.services.dashboard_service import DashboardService
 from app.services.dispatch_service import DispatchService
 from app.services.db_export_service import create_dump
+from app.services.influencer_bulk_import import (
+    build_bulk_import_template,
+    read_bulk_import_workbook,
+    run_bulk_import,
+)
 from app.services.query_console_service import list_schema_tables, run_readonly_query
 
 
@@ -166,6 +172,32 @@ async def register_influencer(data: InfluencerCreate, db: AsyncSession = Depends
 async def list_influencers(db: AsyncSession = Depends(get_db)):
     repo = InfluencerRepo(db)
     return await repo.get_all()
+
+
+@router.get("/influencers/bulk/template")
+async def download_bulk_import_template():
+    return Response(
+        content=build_bulk_import_template(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=influencer_bulk_import_template.xlsx"},
+    )
+
+
+@router.post("/influencers/bulk", response_model=BulkImportResult)
+async def bulk_import_influencers(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(status_code=400, detail="Upload an .xlsx file.")
+    content = await file.read()
+    try:
+        raw_rows = read_bulk_import_workbook(content)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not read the uploaded file -- make sure it's a valid .xlsx workbook.",
+        )
+    if not raw_rows:
+        raise HTTPException(status_code=400, detail="The uploaded file has no data rows.")
+    return await run_bulk_import(db, raw_rows)
 
 
 @router.patch("/influencers/{influencer_id}/details", response_model=InfluencerOut)
