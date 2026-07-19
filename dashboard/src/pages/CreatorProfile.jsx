@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, TrendingUp, TrendingDown, RefreshCw, BadgeCheck, Video, Calendar, Clock } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import {
@@ -101,6 +101,13 @@ function SectionHeading({ children, infoTip }) {
 
 export default function CreatorProfile() {
   const { influencerId } = useParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+  // location.key is 'default' when there's no previous entry in this
+  // session's history (e.g. the URL was opened directly/refreshed) --
+  // navigate(-1) would be a dead end there, so fall back to the
+  // influencers list instead of guessing where "back" should mean.
+  const handleBack = () => (location.key !== 'default' ? navigate(-1) : navigate('/influencers'));
 
   const [stats, setStats] = useState(null);
   const [latestJob, setLatestJob] = useState(null);
@@ -312,12 +319,10 @@ export default function CreatorProfile() {
     <div className="flex flex-col gap-10 min-w-0">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <Link to="/influencers">
-            <Button variant="ghost" size="sm">
-              <ArrowLeft className="w-3.5 h-3.5" />
-              Back
-            </Button>
-          </Link>
+          <Button variant="ghost" size="sm" onClick={handleBack}>
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Back
+          </Button>
           {!loading && <Avatar src={s.profile_pic_url ? avatarUrl(influencerId) : null} handle={s.handle} />}
           <div className="min-w-0">
             <div className="flex items-center gap-2">

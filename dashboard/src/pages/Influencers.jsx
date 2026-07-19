@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { PlayCircle, RefreshCw, Power, Trash2, History, ChevronDown, ChevronUp, Pencil, Check, X, Link2 } from 'lucide-react';
+import { PlayCircle, RefreshCw, Power, Trash2, History, ChevronDown, ChevronUp, Pencil, Check, X, Link2, Users, AtSign } from 'lucide-react';
 import { format } from 'date-fns';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -24,6 +24,7 @@ import Button from '../components/common/Button';
 import Input from '../components/common/Input';
 import ErrorState from '../components/common/ErrorState';
 import EmptyState from '../components/common/EmptyState';
+import HeaderPill from '../components/common/HeaderPill';
 import AddCategoryForm from '../components/influencers/AddCategoryForm';
 import AddInfluencerForm from '../components/influencers/AddInfluencerForm';
 import MassImportInfluencersForm from '../components/influencers/MassImportInfluencersForm';
@@ -44,6 +45,12 @@ export default function Influencers() {
   const [loading, setLoading] = useState(true);
   const [triggering, setTriggering] = useState(() => new Set());
   const [expandedHistory, setExpandedHistory] = useState(() => new Set());
+  // Presence in these sets means expanded -- both default empty so every
+  // category/creator group starts collapsed. Works without needing to
+  // know category/group ids up front (unlike a "collapsed" set, which
+  // would need pre-seeding with every id once loaded to default-collapse).
+  const [expandedCategories, setExpandedCategories] = useState(() => new Set());
+  const [expandedCreatorGroups, setExpandedCreatorGroups] = useState(() => new Set());
   const [editingCategoryId, setEditingCategoryId] = useState(null);
   const [categoryNameDraft, setCategoryNameDraft] = useState('');
   const [editingCreatorId, setEditingCreatorId] = useState(null);
@@ -54,6 +61,7 @@ export default function Influencers() {
   const [search, setSearch] = useState('');
   const [selectedPlatforms, setSelectedPlatforms] = useState(enabledPlatforms);
   const [selectedTypes, setSelectedTypes] = useState(['business', 'individual']);
+  const [statusFilter, setStatusFilter] = useState('all');
 
   useEffect(() => {
     setSelectedPlatforms((prev) => prev.filter((p) => enabledPlatforms.includes(p)));
@@ -63,6 +71,22 @@ export default function Influencers() {
     setExpandedHistory((prev) => {
       const next = new Set(prev);
       next.has(influencerId) ? next.delete(influencerId) : next.add(influencerId);
+      return next;
+    });
+  };
+
+  const toggleCategoryExpanded = (categoryId) => {
+    setExpandedCategories((prev) => {
+      const next = new Set(prev);
+      next.has(categoryId) ? next.delete(categoryId) : next.add(categoryId);
+      return next;
+    });
+  };
+
+  const toggleCreatorGroupExpanded = (groupKey) => {
+    setExpandedCreatorGroups((prev) => {
+      const next = new Set(prev);
+      next.has(groupKey) ? next.delete(groupKey) : next.add(groupKey);
       return next;
     });
   };
@@ -86,9 +110,20 @@ export default function Influencers() {
     load();
   }, [load]);
 
+  // Every distinct last_job_status seen across influencers, plus
+  // "never_scraped" for rows with none -- same convention StatusTable
+  // uses on Overview, so the two pages' status vocabulary stays in sync.
+  const statusOptions = useMemo(
+    () => [...new Set(statusRows.map((r) => r.last_job_status ?? 'never_scraped'))],
+    [statusRows],
+  );
+
   const grouped = useMemo(() => {
     const rows = statusRows.filter(
-      (r) => selectedPlatforms.includes(r.platform) && selectedTypes.includes(r.account_type),
+      (r) =>
+        selectedPlatforms.includes(r.platform) &&
+        selectedTypes.includes(r.account_type) &&
+        (statusFilter === 'all' || (r.last_job_status ?? 'never_scraped') === statusFilter),
     );
     const byCategory = new Map(categories.map((c) => [c.id, { category: c, influencers: [] }]));
     for (const row of rows) {
@@ -98,7 +133,7 @@ export default function Influencers() {
       byCategory.get(row.category_id).influencers.push(row);
     }
     return [...byCategory.values()].sort((a, b) => a.category.name.localeCompare(b.category.name));
-  }, [categories, statusRows, selectedPlatforms, selectedTypes]);
+  }, [categories, statusRows, selectedPlatforms, selectedTypes, statusFilter]);
 
   const filteredGrouped = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -361,6 +396,21 @@ export default function Influencers() {
         <div className="flex items-center gap-3 flex-wrap">
           <AccountTypeFilter value={selectedTypes} onChange={setSelectedTypes} />
           <PlatformFilter value={selectedPlatforms} onChange={setSelectedPlatforms} options={enabledPlatforms} />
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="px-3 py-2.5 rounded-xl text-sm outline-none border"
+            style={{
+              background: 'var(--color-bg-secondary)',
+              color: 'var(--color-text-primary)',
+              borderColor: 'var(--color-border-default)',
+            }}
+          >
+            <option value="all">All statuses</option>
+            {statusOptions.map((s) => (
+              <option key={s} value={s}>{s.replaceAll('_', ' ')}</option>
+            ))}
+          </select>
         </div>
       </div>
 
@@ -373,10 +423,19 @@ export default function Influencers() {
       ) : grouped.length === 0 ? (
         <EmptyState title="No categories yet" message="Add your first category above to get started." />
       ) : filteredGrouped.length === 0 ? (
-        <EmptyState title="No matches" message={`No handle, creator, or category matches "${search}".`} />
+        <EmptyState
+          title="No matches"
+          message={
+            search.trim()
+              ? `No handle, creator, or category matches "${search}".`
+              : 'No influencers match the current status/platform/type filters.'
+          }
+        />
       ) : (
         <div className="flex flex-col gap-4">
-          {filteredGrouped.map(({ category, influencers }) => (
+          {filteredGrouped.map(({ category, influencers }) => {
+          const creatorGroups = groupByCreator(influencers);
+          return (
             <div key={category.id} className="card p-5 flex flex-col gap-3 min-w-0">
               <div className="flex items-center justify-between gap-3">
                 {editingCategoryId === category.id ? (
@@ -395,18 +454,37 @@ export default function Influencers() {
                     </Button>
                   </div>
                 ) : (
-                  <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-                    <Link to={`/categories/${category.id}`} className="hover:underline">
-                      {category.name}
-                    </Link>{' '}
-                    <span style={{ color: 'var(--color-text-muted)' }}>({influencers.length})</span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+                      <Link to={`/categories/${category.id}`} className="hover:underline">
+                        {category.name}
+                      </Link>
+                    </h3>
+                    <HeaderPill icon={Users}>
+                      {creatorGroups.length} creator{creatorGroups.length === 1 ? '' : 's'}
+                    </HeaderPill>
+                    <HeaderPill icon={AtSign}>
+                      {influencers.length} account{influencers.length === 1 ? '' : 's'}
+                    </HeaderPill>
                     {category.is_active === false && (
-                      <span className="ml-2 text-xs font-normal" style={{ color: 'var(--color-text-muted)' }}>(inactive)</span>
+                      <span className="text-xs font-normal" style={{ color: 'var(--color-text-muted)' }}>(inactive)</span>
                     )}
-                  </h3>
+                  </div>
                 )}
                 {editingCategoryId !== category.id && (
                   <div className="flex items-center gap-1 shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title={expandedCategories.has(category.id) ? 'Collapse category' : 'Expand category'}
+                      onClick={() => toggleCategoryExpanded(category.id)}
+                    >
+                      {expandedCategories.has(category.id) ? (
+                        <ChevronUp className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+                      ) : (
+                        <ChevronDown className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+                      )}
+                    </Button>
                     <Button variant="ghost" size="sm" title="Rename category" onClick={() => startEditCategory(category)}>
                       <Pencil className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
                     </Button>
@@ -430,11 +508,11 @@ export default function Influencers() {
                 )}
               </div>
 
-              {influencers.length === 0 ? (
+              {!expandedCategories.has(category.id) ? null : influencers.length === 0 ? (
                 <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>No influencers in this category yet.</p>
               ) : (
                 <div className="flex flex-col gap-2">
-                  {groupByCreator(influencers).map((group) =>
+                  {creatorGroups.map((group) =>
                     group.creatorId ? (
                       <div
                         key={group.key}
@@ -475,6 +553,18 @@ export default function Influencers() {
                                 <Button
                                   variant="ghost"
                                   size="sm"
+                                  title={expandedCreatorGroups.has(group.key) ? 'Collapse accounts' : 'Expand accounts'}
+                                  onClick={() => toggleCreatorGroupExpanded(group.key)}
+                                >
+                                  {expandedCreatorGroups.has(group.key) ? (
+                                    <ChevronUp className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+                                  ) : (
+                                    <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+                                  )}
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
                                   title="Rename creator"
                                   onClick={() => startEditCreator(group.rows[0].creator_id, group.creatorName)}
                                 >
@@ -492,30 +582,32 @@ export default function Influencers() {
                             </>
                           )}
                         </div>
-                        <div className="flex flex-col divide-y" style={{ borderColor: 'var(--color-border-subtle)' }}>
-                          {group.rows.map((row) => (
-                            <InfluencerRow
-                              key={row.influencer_id}
-                              row={row}
-                              categories={categories}
-                              creators={creators}
-                              isEditing={editingInfluencerId === row.influencer_id}
-                              draft={influencerDraft}
-                              setDraft={setInfluencerDraft}
-                              savingEdit={savingEdit}
-                              onStartEdit={() => startEditInfluencer(row)}
-                              onCancelEdit={cancelEditInfluencer}
-                              onSave={() => handleSaveInfluencer(row)}
-                              isInFlight={triggering.has(row.influencer_id) || IN_FLIGHT_STATUSES.has(row.last_job_status)}
-                              triggeringThis={triggering.has(row.influencer_id)}
-                              historyOpen={expandedHistory.has(row.influencer_id)}
-                              onToggleHistory={() => toggleHistory(row.influencer_id)}
-                              onScrapeNow={() => handleScrapeNow(row)}
-                              onToggleActive={() => handleToggleInfluencerActive(row)}
-                              onDelete={() => handleDeleteInfluencer(row)}
-                            />
-                          ))}
-                        </div>
+                        {expandedCreatorGroups.has(group.key) && (
+                          <div className="flex flex-col divide-y" style={{ borderColor: 'var(--color-border-subtle)' }}>
+                            {group.rows.map((row) => (
+                              <InfluencerRow
+                                key={row.influencer_id}
+                                row={row}
+                                categories={categories}
+                                creators={creators}
+                                isEditing={editingInfluencerId === row.influencer_id}
+                                draft={influencerDraft}
+                                setDraft={setInfluencerDraft}
+                                savingEdit={savingEdit}
+                                onStartEdit={() => startEditInfluencer(row)}
+                                onCancelEdit={cancelEditInfluencer}
+                                onSave={() => handleSaveInfluencer(row)}
+                                isInFlight={triggering.has(row.influencer_id) || IN_FLIGHT_STATUSES.has(row.last_job_status)}
+                                triggeringThis={triggering.has(row.influencer_id)}
+                                historyOpen={expandedHistory.has(row.influencer_id)}
+                                onToggleHistory={() => toggleHistory(row.influencer_id)}
+                                onScrapeNow={() => handleScrapeNow(row)}
+                                onToggleActive={() => handleToggleInfluencerActive(row)}
+                                onDelete={() => handleDeleteInfluencer(row)}
+                              />
+                            ))}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div key={group.key} className="flex flex-col divide-y" style={{ borderColor: 'var(--color-border-subtle)' }}>
@@ -544,7 +636,8 @@ export default function Influencers() {
                 </div>
               )}
             </div>
-          ))}
+          );
+          })}
         </div>
       )}
     </div>
