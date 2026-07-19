@@ -16,6 +16,7 @@ from app.schemas.creator_stats import (
     PostingFrequencyPoint,
     PostingTimeDistribution,
     PostPerformance,
+    ReplyTimeHeatmapOut,
     SponsorshipBreakdownOut,
 )
 
@@ -134,6 +135,19 @@ async def get_creator_posting_times(
     if summary is None:
         raise HTTPException(status_code=404, detail="Influencer not found")
     return await service.get_posting_time_distribution(influencer_id, days=days)
+
+
+@router.get("/{influencer_id}/reply-time-heatmap", response_model=ReplyTimeHeatmapOut)
+async def get_creator_reply_time_heatmap(
+    influencer_id: UUID,
+    days: int = Query(90, ge=1, le=3650),
+    db: AsyncSession = Depends(get_db),
+):
+    service = CreatorStatsService(db)
+    summary = await service.get_summary(influencer_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    return await service.get_reply_time_heatmap(influencer_id, days=days)
 
 
 @router.get("/{influencer_id}/events", response_model=list[KeyEvent])

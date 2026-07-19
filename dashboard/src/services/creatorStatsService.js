@@ -57,3 +57,10 @@ export async function getCreatorSponsorshipBreakdown(influencerId, days) {
   });
   return data;
 }
+
+export async function getCreatorReplyTimeHeatmap(influencerId, days) {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/reply-time-heatmap`, {
+    params: { days },
+  });
+  return data;
+}

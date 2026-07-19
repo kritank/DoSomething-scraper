@@ -233,6 +233,39 @@ class PostingTimeDistribution(BaseModel):
     total_posts: int = 0
 
 
+class ReplyTimeFormatStats(BaseModel):
+    # "long_form" | "short_form" -- same folding-live-into-long_form rule
+    # as FormatStats.
+    format: Literal["long_form", "short_form"]
+    reply_count: int
+    # None when no post in this format/window has a creator reply yet.
+    avg_reply_time_s: Optional[float] = None
+    # Post counts per ReplyTimeHeatmapOut.bucket_labels bucket, same
+    # indexing/length as bucket_labels -- powers the heatmap row for this
+    # format.
+    bucket_counts: list[int] = []
+    # Mean of the actual (not bucket-midpoint) reply times of posts that
+    # landed in each bucket, same indexing as bucket_counts. None where
+    # bucket_counts[i] == 0. Lets the heatmap tooltip show a real number
+    # ("avg 6m 40s") instead of just a bucket range + count.
+    bucket_avg_reply_time_s: list[Optional[float]] = []
+    # Mean total comment count (latest known, from PostMetricsSnapshot) of
+    # the posts in each bucket -- comment *volume* context alongside reply
+    # *speed*, since a bucket with 1 comment and a bucket with 200 both
+    # read the same from bucket_counts/bucket_avg_reply_time_s alone.
+    bucket_avg_comments: list[Optional[float]] = []
+
+
+class ReplyTimeHeatmapOut(BaseModel):
+    window_days: int
+    # Time-since-post bucket labels, e.g. "0-15m" .. "3.5h+" -- shared
+    # column ordering across both formats' bucket_counts.
+    bucket_labels: list[str]
+    formats: list[ReplyTimeFormatStats]
+    # Total posts (across both formats) with a measured creator reply time.
+    total_replies: int
+
+
 class CreatorStatsOut(BaseModel):
     summary: CreatorSummary
     engagement: EngagementOut

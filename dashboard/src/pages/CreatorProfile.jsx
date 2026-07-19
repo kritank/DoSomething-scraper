@@ -11,6 +11,7 @@ import {
   getCreatorPostingFrequency,
   getCreatorPostingTimes,
   getCreatorSponsorshipBreakdown,
+  getCreatorReplyTimeHeatmap,
 } from '../services/creatorStatsService';
 import PlatformBadge from '../components/common/PlatformBadge';
 import ScrapeStatusIndicator from '../components/common/ScrapeStatusIndicator';
@@ -26,6 +27,7 @@ import DailyGrowthChart from '../components/charts/DailyGrowthChart';
 import FormatSplitCard from '../components/creator/FormatSplitCard';
 import PostingFrequencyCard from '../components/creator/PostingFrequencyCard';
 import SponsorshipCard from '../components/creator/SponsorshipCard';
+import ReplyTimeCard from '../components/creator/ReplyTimeCard';
 import AboutSection from '../components/creator/AboutSection';
 import PostsTable from '../components/creator/PostsTable';
 import DailyGrowthHistoryTable from '../components/creator/DailyGrowthHistoryTable';
@@ -124,6 +126,10 @@ export default function CreatorProfile() {
   const [sponsorshipBreakdown, setSponsorshipBreakdown] = useState(null);
   const [sponsorshipLoading, setSponsorshipLoading] = useState(true);
 
+  const [replyTimeDays, setReplyTimeDays] = useState(90);
+  const [replyTimeHeatmap, setReplyTimeHeatmap] = useState(null);
+  const [replyTimeLoading, setReplyTimeLoading] = useState(true);
+
   const [postsFilter, setPostsFilter] = useState('all');
   const [postsSort, setPostsSort] = useState('top');
   const [posts, setPosts] = useState([]);
@@ -221,6 +227,16 @@ export default function CreatorProfile() {
       .finally(() => { if (!cancelled) setSponsorshipLoading(false); });
     return () => { cancelled = true; };
   }, [influencerId, sponsorshipDays, stats]);
+
+  useEffect(() => {
+    if (!stats) return;
+    let cancelled = false;
+    setReplyTimeLoading(true);
+    getCreatorReplyTimeHeatmap(influencerId, replyTimeDays)
+      .then((data) => { if (!cancelled) setReplyTimeHeatmap(data); })
+      .finally(() => { if (!cancelled) setReplyTimeLoading(false); });
+    return () => { cancelled = true; };
+  }, [influencerId, replyTimeDays, stats]);
 
   useEffect(() => {
     if (!stats) return;
@@ -435,6 +451,15 @@ export default function CreatorProfile() {
               loading={sponsorshipLoading}
               days={sponsorshipDays}
               onDaysChange={setSponsorshipDays}
+            />
+
+            <ReplyTimeCard
+              heatmap={replyTimeHeatmap}
+              loading={replyTimeLoading}
+              days={replyTimeDays}
+              onDaysChange={setReplyTimeDays}
+              longFormLabel={longFormLabel}
+              shortFormLabel={shortFormLabel}
             />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
