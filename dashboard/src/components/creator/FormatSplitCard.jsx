@@ -35,8 +35,8 @@ export default function FormatSplitCard({ breakdown, loading, days, onDaysChange
   // have a real (non-suppressed, see FormatColumn's avgViews rule) average
   // to compare, otherwise there's nothing honest to say.
   const insight = useMemo(() => {
-    const longAvg = long?.total_views ? long.avg_views : null;
-    const shortAvg = short?.total_views ? short.avg_views : null;
+    const longAvg = long?.avg_views ?? null;
+    const shortAvg = short?.avg_views ?? null;
     if (!longAvg || !shortAvg) return null;
     const [winner, winnerLabel, loserLabel, winnerAvg, loserAvg] =
       shortAvg >= longAvg
@@ -156,12 +156,12 @@ export default function FormatSplitCard({ breakdown, loading, days, onDaysChange
 }
 
 function FormatColumn({ format, label, color, icon: Icon, share, stats, hovered, onHover }) {
-  // avg_views can come back non-zero even when total_views is 0 -- some
-  // backend paths fall back to a likes-based average when view counts
-  // aren't available for a format, which reads as broken next to a "Views:
-  // 0" tile right beside it. Suppress the average in that case instead of
-  // showing two numbers that contradict each other.
-  const avgViews = stats?.total_views ? stats.avg_views : null;
+  // The backend already falls back to a likes-derived average when a
+  // format has no usable view counts (e.g. Instagram photo/carousel posts),
+  // and returns null only when NO post in the bucket has any usable metric
+  // at all -- so avg_views is already null-safe and must not be re-gated on
+  // total_views here (that incorrectly blanked every likes-derived average).
+  const avgViews = stats?.avg_views ?? null;
   const dimmed = hovered && hovered !== format;
   return (
     <div

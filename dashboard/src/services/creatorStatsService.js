@@ -36,3 +36,17 @@ export async function getCreatorKeyEvents(influencerId, days) {
   });
   return data;
 }
+
+export async function getCreatorPostingFrequency(influencerId, days, bucket = 'week') {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/posting-frequency`, {
+    params: { days, bucket },
+  });
+  return data;
+}
+
+export async function getCreatorPostingTimes(influencerId, days) {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/posting-times`, {
+    params: { days },
+  });
+  return data;
+}

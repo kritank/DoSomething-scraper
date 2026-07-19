@@ -12,6 +12,19 @@ const TOOLTIPS = {
   velocity: "Current views (or likes) gained per hour, from the two most recent scrapes -- not restricted to recently-published posts. Shows the lifetime average instead for posts scraped only once so far.",
 };
 
+// Type badge text is platform-specific (YouTube: Video/Short, Instagram:
+// Post/Reel) even on the combined table where longFormLabel/shortFormLabel
+// are necessarily generic component-level props -- each row already
+// carries its own platform (showPlatformColumn mode), so resolve per-row
+// instead of relying on one label for every row regardless of its actual
+// origin. Returns null when the row has no platform (single-platform
+// pages don't attach one), so the caller falls back to the passed props.
+function platformTypeLabel(platform, isShort) {
+  if (platform === 'youtube') return isShort ? 'Short' : 'Video';
+  if (platform === 'instagram') return isShort ? 'Reel' : 'Post';
+  return null;
+}
+
 // Shared "top videos / latest videos" table -- used by both the
 // single-platform creator profile and the combined cross-platform profile
 // (which passes posts merged from every linked account, with
@@ -32,8 +45,8 @@ export default function PostsTable({
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: 'var(--color-bg-card-hover)' }}>
           {[
-            { value: 'top', label: 'Top videos' },
-            { value: 'latest', label: 'Latest videos' },
+            { value: 'top', label: 'Top content' },
+            { value: 'latest', label: 'Latest content' },
           ].map((opt) => (
             <button
               key={opt.value}
@@ -115,7 +128,8 @@ export default function PostsTable({
                         color: p.format === 'short_form' ? 'var(--color-chart-2)' : 'var(--color-accent)',
                       }}
                     >
-                      {p.format === 'short_form' ? shortFormLabel.replace(/s$/, '') : longFormLabel.replace(/s$/, '')}
+                      {platformTypeLabel(p.platform, p.format === 'short_form')
+                        ?? (p.format === 'short_form' ? shortFormLabel.replace(/s$/, '') : longFormLabel.replace(/s$/, ''))}
                     </span>
                   </td>
                   <td className="py-2.5 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>

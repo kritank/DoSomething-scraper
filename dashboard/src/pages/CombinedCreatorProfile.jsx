@@ -9,6 +9,8 @@ import {
   getCreatorKeyEvents,
   getCreatorFormatBreakdown,
   getCreatorPostPerformance,
+  getCreatorPostingFrequency,
+  getCreatorPostingTimes,
 } from '../services/creatorStatsService';
 import { getInfluencerJobs } from '../services/influencerJobsService';
 import Avatar from '../components/common/Avatar';
@@ -24,13 +26,14 @@ import InfoTip from '../components/common/InfoTip';
 import GrowthChart from '../components/charts/GrowthChart';
 import DailyGrowthChart from '../components/charts/DailyGrowthChart';
 import FormatSplitCard from '../components/creator/FormatSplitCard';
+import PostingFrequencyCard from '../components/creator/PostingFrequencyCard';
 import PostsTable from '../components/creator/PostsTable';
 import DailyGrowthHistoryTable from '../components/creator/DailyGrowthHistoryTable';
 import AboutSection from '../components/creator/AboutSection';
 import { formatHandle } from '../utils/platform';
 import { formatCompactNumber, formatUsdRange, countryFlagEmoji } from '../utils/format';
 import { GROWTH_RANGES } from '../utils/growthRanges';
-import { mergeGrowthSeries, mergeEarningsSeries, mergeFormatBreakdowns } from '../utils/mergeSeries';
+import { mergeGrowthSeries, mergeEarningsSeries, mergeFormatBreakdowns, mergePostingFrequency, mergePostingTimeDistributions } from '../utils/mergeSeries';
 import { avatarUrl } from '../services/apiClient';
 
 const COMBINED_COLOR = '#8b5cf6';
@@ -121,6 +124,12 @@ export default function CombinedCreatorProfile() {
   const [formatDays, setFormatDays] = useState(28);
   const [formatByInfluencer, setFormatByInfluencer] = useState({});
   const [formatLoading, setFormatLoading] = useState(true);
+
+  const [postingDays, setPostingDays] = useState(28);
+  const [postingFrequencyByInfluencer, setPostingFrequencyByInfluencer] = useState({});
+  const [postingTimesByInfluencer, setPostingTimesByInfluencer] = useState({});
+  const [postingLoading, setPostingLoading] = useState(true);
+  const [postingPlatform, setPostingPlatform] = useState('all');
 
   const [postsSort, setPostsSort] = useState('top');
   const [postsFilter, setPostsFilter] = useState('all');
@@ -215,6 +224,28 @@ export default function CombinedCreatorProfile() {
   useEffect(() => {
     if (!creator) return;
     let cancelled = false;
+    setPostingLoading(true);
+    Promise.all(
+      creator.influencers.map(async (ref) => {
+        const [freq, times] = await Promise.all([
+          getCreatorPostingFrequency(ref.influencer_id, postingDays, 'day'),
+          getCreatorPostingTimes(ref.influencer_id, postingDays),
+        ]);
+        return [ref.influencer_id, freq, times];
+      }),
+    )
+      .then((results) => {
+        if (cancelled) return;
+        setPostingFrequencyByInfluencer(Object.fromEntries(results.map(([id, freq]) => [id, freq])));
+        setPostingTimesByInfluencer(Object.fromEntries(results.map(([id, , times]) => [id, times])));
+      })
+      .finally(() => { if (!cancelled) setPostingLoading(false); });
+    return () => { cancelled = true; };
+  }, [creator, postingDays]);
+
+  useEffect(() => {
+    if (!creator) return;
+    let cancelled = false;
     setPostsLoading(true);
     Promise.all(
       creator.influencers.map(async (ref) => {
@@ -256,6 +287,37 @@ export default function CombinedCreatorProfile() {
   const combinedGrowth = useMemo(() => mergeGrowthSeries(Object.values(growthByInfluencer)), [growthByInfluencer]);
   const combinedEvents = useMemo(() => Object.values(eventsByInfluencer).flat().sort((a, b) => (a.date < b.date ? -1 : 1)), [eventsByInfluencer]);
   const combinedFormat = useMemo(() => mergeFormatBreakdowns(Object.values(formatByInfluencer)), [formatByInfluencer]);
+  const combinedPostingFrequency = useMemo(() => mergePostingFrequency(Object.values(postingFrequencyByInfluencer)), [postingFrequencyByInfluencer]);
+  const combinedPostingTimes = useMemo(() => mergePostingTimeDistributions(Object.values(postingTimesByInfluencer)), [postingTimesByInfluencer]);
+  // Groups linked accounts by platform (usually one account per platform,
+  // but this merges correctly even if a creator ever has two accounts on
+  // the same platform) so the posting-frequency card's "All / YouTube /
+  // Instagram" toggle can swap views without a second fetch -- the data's
+  // already in memory per influencer.
+  const influencersByPlatform = useMemo(() => {
+    const groups = {};
+    for (const ref of creator?.influencers ?? []) {
+      (groups[ref.platform] ??= []).push(ref.influencer_id);
+    }
+    return groups;
+  }, [creator]);
+  const postingPlatforms = useMemo(() => Object.keys(influencersByPlatform), [influencersByPlatform]);
+  const postingFrequencyByPlatform = useMemo(() => {
+    const result = {};
+    for (const [platform, ids] of Object.entries(influencersByPlatform)) {
+      result[platform] = mergePostingFrequency(ids.map((id) => postingFrequencyByInfluencer[id]));
+    }
+    return result;
+  }, [influencersByPlatform, postingFrequencyByInfluencer]);
+  const postingTimesByPlatform = useMemo(() => {
+    const result = {};
+    for (const [platform, ids] of Object.entries(influencersByPlatform)) {
+      result[platform] = mergePostingTimeDistributions(ids.map((id) => postingTimesByInfluencer[id]));
+    }
+    return result;
+  }, [influencersByPlatform, postingTimesByInfluencer]);
+  const selectedPostingFrequency = postingPlatform === 'all' ? combinedPostingFrequency : postingFrequencyByPlatform[postingPlatform];
+  const selectedPostingTimes = postingPlatform === 'all' ? combinedPostingTimes : postingTimesByPlatform[postingPlatform];
   const combinedPosts = useMemo(() => {
     const all = Object.values(postsByInfluencer).flat();
     const sorted = postsSort === 'top'
@@ -532,6 +594,17 @@ export default function CombinedCreatorProfile() {
             infoTip="Combined across every linked platform. YouTube Shorts and Instagram Reels both count as short-form; regular videos and feed posts count as long-form."
           />
 
+          <PostingFrequencyCard
+            frequencyPoints={selectedPostingFrequency}
+            timeDistribution={selectedPostingTimes}
+            loading={postingLoading}
+            days={postingDays}
+            onDaysChange={setPostingDays}
+            platforms={postingPlatforms}
+            selectedPlatform={postingPlatform}
+            onPlatformChange={setPostingPlatform}
+          />
+
           {creator.influencers.length > 1 && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {creator.influencers.map((ref) => (
@@ -550,9 +623,9 @@ export default function CombinedCreatorProfile() {
             </div>
           )}
 
-          {/* ── Videos ───────────────────────────────────────────────── */}
+          {/* ── Content ──────────────────────────────────────────────── */}
           <div className="card p-5 flex flex-col gap-3 min-w-0">
-            <SectionHeading>Videos</SectionHeading>
+            <SectionHeading>Content</SectionHeading>
             <PostsTable
               posts={combinedPosts}
               loading={postsLoading}

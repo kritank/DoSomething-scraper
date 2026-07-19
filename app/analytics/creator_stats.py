@@ -33,6 +33,8 @@ from app.schemas.creator_stats import (
     FormatStats,
     GrowthPoint,
     KeyEvent,
+    PostingFrequencyPoint,
+    PostingTimeDistribution,
     PostPerformance,
     RankingEntry,
     RankingsOut,
@@ -269,9 +271,21 @@ def _compute_outlier_and_velocity(
 
 
 # Round-number follower thresholds milestone events are detected against --
-# see _detect_milestones. Capped at 500M since no tracked account will ever
-# cross higher, keeping the scan bounded.
-MILESTONE_THRESHOLDS = [10_000, 50_000, 100_000, 500_000] + [n * 1_000_000 for n in range(1, 501)]
+# see _detect_milestones. Denser below 1M than above it: a small/growing
+# account crossing 50M is nonsense, but a small/growing account crossing
+# 2K/5K/8K is exactly the kind of near-term progress that makes the key
+# events feed feel alive rather than going quiet for months between 10K/
+# 50K/100K -- coarse thresholds were the main reason events looked like
+# they'd "stopped updating" after the initial burst. Capped at 500M since
+# no tracked account will ever cross higher, keeping the scan bounded.
+MILESTONE_THRESHOLDS = (
+    [n * 1_000 for n in range(1, 10)]  # 1K, 2K, ..., 9K
+    + [n * 5_000 for n in range(2, 10)]  # 10K, 15K, ..., 45K
+    + [n * 10_000 for n in range(5, 10)]  # 50K, 60K, ..., 90K
+    + [n * 50_000 for n in range(2, 10)]  # 100K, 150K, ..., 450K
+    + [n * 100_000 for n in range(5, 10)]  # 500K, 600K, ..., 900K
+    + [n * 1_000_000 for n in range(1, 501)]  # 1M, 2M, ..., 500M
+)
 
 
 def _format_milestone_label(threshold: int) -> str:
@@ -303,6 +317,75 @@ def _detect_milestones(series: list[GrowthPoint]) -> list[KeyEvent]:
                     )
         high_water_mark = max(high_water_mark or 0, point.value or 0)
     return events
+
+
+def _strip_phantom_zero_lead(points: list[GrowthPoint]) -> list[GrowthPoint]:
+    """A leading 0-value point in a followers/total_views series is a
+    broken/seed snapshot, not "tracking started at zero" -- no tracked
+    account genuinely has 0 followers. Left in, it does two things wrong:
+    draws a misleading vertical cliff on the growth chart, and makes
+    _detect_milestones treat the very next real point as having crossed
+    every single threshold between 0 and that value at once (since
+    high_water_mark starts at 0 instead of None) -- a flood of milestone
+    events all dated the same day, which is exactly what makes the key
+    events feed look like it "shot up once on the first scrape and never
+    updated again": the flood was real events firing early and wrong, not
+    the feed being broken afterward.
+
+    Strips any leading zero(s) followed by a >=1000x jump, and clears the
+    new first point's daily_delta since it no longer has a real "previous
+    day" to diff against."""
+    if len(points) < 2:
+        return points
+    start = 0
+    while start < len(points) - 1 and (points[start].value or 0) == 0 and (points[start + 1].value or 0) >= 1000:
+        start += 1
+    if start == 0:
+        return points
+    rest = points[start:]
+    return [rest[0].model_copy(update={"daily_delta": None})] + rest[1:]
+
+
+def _bucket_posting_frequency(
+    posted_ats: list[datetime], bucket: str
+) -> list[PostingFrequencyPoint]:
+    """Pure function (no DB access) so this is unit-testable in isolation.
+    Groups post timestamps into Monday-start calendar weeks (bucket="week")
+    or individual days (bucket="day"), independent of dialect-specific
+    week-numbering."""
+    counts: dict[date, int] = {}
+    for posted_at in posted_ats:
+        bucket_date = (
+            posted_at.date() - timedelta(days=posted_at.weekday())
+            if bucket == "week"
+            else posted_at.date()
+        )
+        counts[bucket_date] = counts.get(bucket_date, 0) + 1
+    return [PostingFrequencyPoint(date=d, post_count=c) for d, c in sorted(counts.items())]
+
+
+def _aggregate_posting_times(posted_ats: list[datetime]) -> PostingTimeDistribution:
+    """Pure function (no DB access) so this is unit-testable in isolation.
+    weekday index 0=Monday..6=Sunday (datetime.weekday() convention); hour
+    index 0-23 in whatever tz posted_at carries (UTC, as stored)."""
+    weekday_counts = [0] * 7
+    hour_counts = [0] * 24
+    matrix = [[0] * 24 for _ in range(7)]
+    for posted_at in posted_ats:
+        wd, hr = posted_at.weekday(), posted_at.hour
+        weekday_counts[wd] += 1
+        hour_counts[hr] += 1
+        matrix[wd][hr] += 1
+
+    total = len(posted_ats)
+    return PostingTimeDistribution(
+        weekday_counts=weekday_counts,
+        hour_counts=hour_counts,
+        hourly_weekday_matrix=matrix,
+        best_weekday=weekday_counts.index(max(weekday_counts)) if total else None,
+        best_hour=hour_counts.index(max(hour_counts)) if total else None,
+        total_posts=total,
+    )
 
 
 class CreatorStatsService:
@@ -555,6 +638,11 @@ class CreatorStatsService:
                 )
             )
             previous_value = value
+        # Only for cumulative counters where 0 is never a real value for a
+        # tracked account -- "posts" legitimately starts at 0 for a
+        # brand-new account with no posts yet, so it's excluded.
+        if metric in ("followers", "total_views"):
+            points = _strip_phantom_zero_lead(points)
         return points
 
     async def _get_earnings_series(self, influencer_id: UUID, days: int) -> list[GrowthPoint]:
@@ -988,6 +1076,37 @@ class CreatorStatsService:
             )
 
         return FormatBreakdownOut(window_days=days, formats=formats, total_views=int(total_views))
+
+    async def get_posting_frequency(
+        self, influencer_id: UUID, days: int, bucket: str = "week"
+    ) -> list[PostingFrequencyPoint]:
+        """How many posts landed per week (or day) over the window --
+        answers "are they posting consistently" at a glance, which none of
+        the existing growth/format charts show. Bucketed in Python rather
+        than a DB date_trunc so "week" always means "Monday-start calendar
+        week" regardless of dialect-specific week-numbering quirks."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        stmt = (
+            select(Post.posted_at)
+            .where(Post.influencer_id == influencer_id, Post.posted_at >= cutoff)
+            .order_by(Post.posted_at.asc())
+        )
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return _bucket_posting_frequency(list(rows), bucket)
+
+    async def get_posting_time_distribution(
+        self, influencer_id: UUID, days: int
+    ) -> PostingTimeDistribution:
+        """Post counts by weekday and by hour-of-day (UTC) -- surfaces
+        whether a creator has a consistent posting rhythm, using data
+        that's already on every Post row (posted_at); no extra table or
+        backfill needed."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        stmt = select(Post.posted_at).where(
+            Post.influencer_id == influencer_id, Post.posted_at >= cutoff
+        )
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return _aggregate_posting_times(list(rows))
 
     async def get_about(self, influencer_id: UUID) -> Optional[AboutOut]:
         influencer = (
