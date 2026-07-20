@@ -7,6 +7,11 @@ import { formatDistanceToNow } from 'date-fns';
 import { toast } from 'sonner';
 import { getAccounts, updateAccountStatus, deleteAccount } from '../services/accountsService';
 import { getYoutubeKeys, updateYoutubeKeyStatus, deleteYoutubeKey } from '../services/youtubeKeysService';
+import {
+  getInstagramGraphTokens,
+  updateInstagramGraphTokenStatus,
+  deleteInstagramGraphToken,
+} from '../services/instagramGraphTokensService';
 import StatusBadge from '../components/common/StatusBadge';
 import PlatformIcon from '../components/common/PlatformIcon';
 import KPICard from '../components/common/KPICard';
@@ -16,6 +21,7 @@ import ErrorState from '../components/common/ErrorState';
 import EmptyState from '../components/common/EmptyState';
 import AddAccountForm from '../components/accounts/AddAccountForm';
 import AddYoutubeKeyForm from '../components/youtube/AddYoutubeKeyForm';
+import AddInstagramGraphTokenForm from '../components/instagram/AddInstagramGraphTokenForm';
 import { cn } from '../utils/cn';
 
 const NEEDS_MANUAL_RESOLUTION = new Set(['checkpoint_required', 'login_failed']);
@@ -37,9 +43,11 @@ export default function Accounts() {
   const [platform, setPlatform] = useState('instagram');
   const [accounts, setAccounts] = useState(null);
   const [keys, setKeys] = useState(null);
+  const [tokens, setTokens] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [addPanelOpen, setAddPanelOpen] = useState(false);
+  const [tokenPanelOpen, setTokenPanelOpen] = useState(false);
   const [expandedRowId, setExpandedRowId] = useState(null);
   const [search, setSearch] = useState('');
 
@@ -47,9 +55,10 @@ export default function Accounts() {
     setLoading(true);
     setError(null);
     try {
-      const [a, k] = await Promise.all([getAccounts(), getYoutubeKeys()]);
+      const [a, k, t] = await Promise.all([getAccounts(), getYoutubeKeys(), getInstagramGraphTokens()]);
       setAccounts(a);
       setKeys(k);
+      setTokens(t);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -65,6 +74,7 @@ export default function Accounts() {
     if (id === platform) return;
     setPlatform(id);
     setAddPanelOpen(false);
+    setTokenPanelOpen(false);
     setExpandedRowId(null);
     setSearch('');
   };
@@ -88,6 +98,15 @@ export default function Accounts() {
       quotaUsedToday: keys.reduce((sum, k) => sum + k.quota_used_today, 0),
     };
   }, [keys]);
+
+  const igTokenStats = useMemo(() => {
+    if (!tokens) return null;
+    return {
+      total: tokens.length,
+      active: tokens.filter((t) => t.status === 'active').length,
+      needsAttention: tokens.filter((t) => ['invalid', 'disabled'].includes(t.status)).length,
+    };
+  }, [tokens]);
 
   const handleToggleAccountStatus = async (account) => {
     const next = account.status === 'disabled' ? 'active' : 'disabled';
@@ -131,6 +150,30 @@ export default function Accounts() {
     try {
       await deleteYoutubeKey(key.id);
       toast.success(`"${key.label}" deleted`);
+      load();
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    }
+  };
+
+  const handleToggleTokenStatus = async (token) => {
+    const next = token.status === 'disabled' ? 'active' : 'disabled';
+    try {
+      await updateInstagramGraphTokenStatus(token.id, next);
+      toast.success(`"${token.label}" ${next === 'disabled' ? 'disabled' : 're-enabled'}`);
+      load();
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    }
+  };
+
+  const handleDeleteToken = async (token) => {
+    if (!window.confirm(`Permanently delete "${token.label}"? This removes its stored token and cannot be undone.`)) {
+      return;
+    }
+    try {
+      await deleteInstagramGraphToken(token.id);
+      toast.success(`"${token.label}" deleted`);
       load();
     } catch {
       // apiClient's interceptor already toasts the error detail.
@@ -233,6 +276,20 @@ export default function Accounts() {
           </>
         )}
       </div>
+
+      {platform === 'instagram' && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <KPICard label="Graph tokens" value={igTokenStats?.total ?? '—'} icon={<KeyRound className="w-4 h-4" />} loading={!igTokenStats} />
+          <KPICard label="Active tokens" value={igTokenStats?.active ?? '—'} icon={<ShieldCheck className="w-4 h-4" />} color="var(--color-success)" loading={!igTokenStats} />
+          <KPICard
+            label="Needs attention"
+            value={igTokenStats?.needsAttention ?? '—'}
+            icon={<AlertTriangle className="w-4 h-4" />}
+            color={igTokenStats?.needsAttention > 0 ? 'var(--color-danger)' : undefined}
+            loading={!igTokenStats}
+          />
+        </div>
+      )}
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
         {!loading && (platform === 'instagram' ? accounts?.length : keys?.length) > 0 && (
@@ -448,6 +505,76 @@ export default function Accounts() {
           )
         )}
       </div>
+
+      {platform === 'instagram' && (
+        <div className="card p-5 animate-fade-in">
+          <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
+            <div>
+              <h3 className="text-base font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+                Instagram Graph API tokens
+              </h3>
+              <p className="text-sm mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                Add the Meta tokens the hybrid scraper can fall back to when the session pool is exhausted.
+              </p>
+            </div>
+            <Button variant="secondary" size="sm" onClick={() => setTokenPanelOpen((o) => !o)}>
+              {tokenPanelOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              Add token
+            </Button>
+          </div>
+
+          {tokenPanelOpen && (
+            <div className="mt-4 card p-4" style={{ background: 'var(--color-bg-secondary)' }}>
+              <AddInstagramGraphTokenForm onRegistered={() => { setTokenPanelOpen(false); load(); }} />
+            </div>
+          )}
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
+                  {['Label', 'Status', 'Cooldown', 'Failures', 'Last success', 'Last failure', 'Note', 'Actions'].map((h) => (
+                    <th key={h} className="text-left py-2.5 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(tokens ?? []).map((token) => (
+                  <tr key={token.id} className="hover:bg-[var(--color-bg-card-hover)]" style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
+                    <td className="py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-primary)' }}>{token.label}</td>
+                    <td className="py-2.5 px-3"><StatusBadge status={token.status} /></td>
+                    <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{relative(token.cooldown_until)}</td>
+                    <td className="py-2.5 px-3" style={{ color: token.failure_count > 0 ? 'var(--color-warning)' : 'var(--color-text-secondary)' }}>
+                      {token.failure_count}
+                    </td>
+                    <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{relative(token.last_success_at)}</td>
+                    <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{relative(token.last_failure_at)}</td>
+                    <td className="py-2.5 px-3 text-xs max-w-[220px]" style={{ color: 'var(--color-text-muted)' }} title={token.error_message ?? undefined}>
+                      <div className="truncate">{token.error_message ?? '—'}</div>
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          title={token.status === 'disabled' ? 'Re-enable' : 'Disable'}
+                          onClick={() => handleToggleTokenStatus(token)}
+                        >
+                          <Power className="w-3.5 h-3.5" style={{ color: token.status === 'disabled' ? 'var(--color-success)' : 'var(--color-warning)' }} />
+                        </Button>
+                        <Button variant="ghost" size="sm" title="Delete permanently" onClick={() => handleDeleteToken(token)}>
+                          <Trash2 className="w-3.5 h-3.5" style={{ color: 'var(--color-danger)' }} />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

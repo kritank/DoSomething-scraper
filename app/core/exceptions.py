@@ -78,6 +78,13 @@ class YouTubeApiKeyNotFoundError(NotFoundError):
         super().__init__(f"YouTube API key not found: {key_id}")
 
 
+class InstagramGraphTokenNotFoundError(NotFoundError):
+    code = "INSTAGRAM_GRAPH_TOKEN_NOT_FOUND"
+
+    def __init__(self, token_id: str) -> None:
+        super().__init__(f"Instagram Graph token not found: {token_id}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 400 — Bad Request / Validation
 # ─────────────────────────────────────────────────────────────────────────────

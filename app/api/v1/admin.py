@@ -16,6 +16,7 @@ from app.queue.factory import get_queue
 from app.repositories.category_repo import CategoryRepo
 from app.repositories.creator_repo import CreatorRepo
 from app.repositories.influencer_repo import InfluencerRepo
+from app.repositories.instagram_graph_token_repo import InstagramGraphTokenRepo
 from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.repositories.post_repo import PostRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
@@ -49,6 +50,11 @@ from app.schemas.influencer import (
 from app.core.exceptions import ActiveJobExistsError
 from app.schemas.alert import AlertOut
 from app.schemas.instagram_account import AccountStatusUpdate, InstagramAccountOut
+from app.schemas.instagram_graph_token import (
+    InstagramGraphTokenOut,
+    InstagramGraphTokenStatusUpdate,
+    RegisterInstagramGraphTokenRequest,
+)
 from app.schemas.post import PostListOut, PostOut
 from app.schemas.query_console import QueryRequest, QueryResult
 from app.schemas.scrape_job import ScrapeJobOut
@@ -323,6 +329,30 @@ async def delete_account(account_id: UUID, db: AsyncSession = Depends(get_db)):
     # Irreversible; the dashboard gates this behind an explicit confirm,
     # disabling (PATCH status) is the default/reversible action.
     await InstagramAccountRepo(db).delete(account_id)
+
+
+@router.get("/instagram-graph-tokens", response_model=list[InstagramGraphTokenOut])
+async def list_instagram_graph_tokens(db: AsyncSession = Depends(get_db)):
+    return await InstagramGraphTokenRepo(db).get_all()
+
+
+@router.post("/instagram-graph-tokens", response_model=InstagramGraphTokenOut)
+async def register_instagram_graph_token(
+    data: RegisterInstagramGraphTokenRequest, db: AsyncSession = Depends(get_db)
+):
+    return await InstagramGraphTokenRepo(db).create(data.label, data.access_token)
+
+
+@router.patch("/instagram-graph-tokens/{token_id}", response_model=InstagramGraphTokenOut)
+async def update_instagram_graph_token_status(
+    token_id: UUID, data: InstagramGraphTokenStatusUpdate, db: AsyncSession = Depends(get_db)
+):
+    return await InstagramGraphTokenRepo(db).update_status(token_id, data.status)
+
+
+@router.delete("/instagram-graph-tokens/{token_id}", status_code=204)
+async def delete_instagram_graph_token(token_id: UUID, db: AsyncSession = Depends(get_db)):
+    await InstagramGraphTokenRepo(db).delete(token_id)
 
 
 @router.get("/youtube-keys", response_model=list[YouTubeApiKeyOut])
