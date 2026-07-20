@@ -101,6 +101,13 @@ class YouTubeApiKeyNotFoundError(NotFoundError):
         super().__init__(f"YouTube API key not found: {key_id}")
 
 
+class InstagramApiTokenNotFoundError(NotFoundError):
+    code = "INSTAGRAM_API_TOKEN_NOT_FOUND"
+
+    def __init__(self, token_id: str) -> None:
+        super().__init__(f"Instagram API token not found: {token_id}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 400 — Bad Request / Validation
 # ─────────────────────────────────────────────────────────────────────────────
@@ -242,6 +249,34 @@ class NoUsableYouTubeKeyError(ScraperError):
 
     def __init__(self) -> None:
         super().__init__("No usable YouTube API key available (all exhausted, invalid, or disabled).")
+
+
+class NoUsableInstagramTokenError(ScraperError):
+    """Every registered Instagram Graph API token is on cooldown or invalid
+    -- mirrors NoUsableYouTubeKeyError/"no healthy Instagram accounts
+    available": the job never got to attempt anything, so it routes to
+    retry_pending uncounted against SCRAPER_MAX_RETRIES rather than being
+    treated as a real scrape failure."""
+    code = "NO_USABLE_INSTAGRAM_TOKEN"
+
+    def __init__(self) -> None:
+        super().__init__("No usable Instagram API token available (all on cooldown or invalid).")
+
+
+class InstagramAccountNotProfessionalError(ScraperError):
+    """Business Discovery can only read Instagram professional (Business or
+    Creator) accounts -- a personal account is a permanent, not transient,
+    miss. Callers set Influencer.api_supported=False and route the
+    influencer to the legacy cookie scraper (see
+    docs/INSTAGRAM_HYBRID_IMPLEMENTATION.md PR2 2.1) rather than retrying
+    the API call, which would fail identically forever."""
+    code = "INSTAGRAM_ACCOUNT_NOT_PROFESSIONAL"
+
+    def __init__(self, username: str) -> None:
+        super().__init__(
+            f"{username} is not an Instagram professional account -- not readable via Business Discovery.",
+            username=username,
+        )
 
 
 class YouTubeResourceGoneError(ScraperError):

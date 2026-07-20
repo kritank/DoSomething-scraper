@@ -11,6 +11,7 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.instagram_account import InstagramAccount
+    from app.models.instagram_api_token import InstagramApiToken
     from app.models.youtube_api_key import YouTubeApiKey
 
 
@@ -25,7 +26,12 @@ class ScrapeJob(Base):
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    
+    # "scrape" (normal, platform-driven pipeline) | "enrich" (Instagram-only
+    # cookie follow-on that fills in what the Graph API can't provide --
+    # see docs/INSTAGRAM_HYBRID_IMPLEMENTATION.md PR3). Defaulted so
+    # in-flight queue messages predating this column still decode.
+    job_type: Mapped[str] = mapped_column(String(16), nullable=False, default="scrape")
+
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -73,6 +79,15 @@ class ScrapeJob(Base):
         nullable=True,
         index=True,
     )
+    # Set for Instagram Graph API-backed scrape jobs (mirrors
+    # youtube_api_key_id's attribution role); null for cookie-path and
+    # enrich jobs, which use instagram_account_id instead.
+    instagram_api_token_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("instagram_api_tokens.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -86,6 +101,7 @@ class ScrapeJob(Base):
 
     instagram_account: Mapped[Optional["InstagramAccount"]] = relationship("InstagramAccount")
     youtube_api_key: Mapped[Optional["YouTubeApiKey"]] = relationship("YouTubeApiKey")
+    instagram_api_token: Mapped[Optional["InstagramApiToken"]] = relationship("InstagramApiToken")
 
     @property
     def scraper_account(self) -> Optional[str]:

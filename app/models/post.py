@@ -59,6 +59,14 @@ class Post(Base):
     tagged_usernames: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     counts_disabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Instagram Graph API only (Business Discovery media.media_url/
+    # thumbnail_url) -- expiring CDN URLs, refreshed on every API scrape
+    # like Influencer.profile_pic_url. Null for cookie-sourced posts and
+    # for YouTube. Carousel children's URLs live in platform_metadata
+    # under "children" instead of their own columns.
+    media_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    thumbnail_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Platform-specific fields that don't warrant their own column (YouTube
     # tags, definition/dimension, category/topics, madeForKids, etc.) --
     # see docs/YOUTUBE_SCRAPER_DESIGN.md §3.2. Null for Instagram rows.

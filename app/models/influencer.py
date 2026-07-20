@@ -99,6 +99,12 @@ class Influencer(Base):
     )
     backfill_cursor: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
+    # Instagram-only. Null = untried against the Graph API yet, true =
+    # Business Discovery works for this handle (a professional/Business or
+    # Creator account), false = confirmed personal account, permanently
+    # routed to the legacy cookie scraper. Always null for platform="youtube".
+    api_supported: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
