@@ -58,8 +58,8 @@ class ScrapeJobRepo:
         result = await self.session.execute(stmt)
         return result.scalars().all()
 
-    async def create(self, influencer_id: UUID) -> ScrapeJob:
-        job = ScrapeJob(influencer_id=influencer_id, status="queued")
+    async def create(self, influencer_id: UUID, job_type: str = "scrape") -> ScrapeJob:
+        job = ScrapeJob(influencer_id=influencer_id, status="queued", job_type=job_type)
         self.session.add(job)
         await self.session.commit()
         return job
