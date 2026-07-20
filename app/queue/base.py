@@ -12,6 +12,15 @@ class ScrapeJobMessage(BaseModel):
     # worker_runner._run_one. Defaulted so a message already in flight
     # during a deploy still decodes on the new worker image.
     platform: str = "instagram"
+    # "scrape" (normal pipeline) | "enrich" (Instagram-only cookie
+    # follow-on, PR3) -- see docs/INSTAGRAM_HYBRID_IMPLEMENTATION.md.
+    job_type: str = "scrape"
+    # "cookies" | "graph" -- Instagram only (ignored for platform=youtube).
+    # Decided once at enqueue time by DispatchService, not re-derived in
+    # worker_runner._run_one, so routing stays a pure function of the
+    # message with no DB lookup (see PR2 §2.3's "choose the message-stamp
+    # approach").
+    backend: str = "cookies"
 
 
 class QueueBackend(Protocol):

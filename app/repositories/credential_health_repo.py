@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.credential_health_snapshot import CredentialHealthSnapshot
 from app.models.instagram_account import InstagramAccount
+from app.models.instagram_api_token import InstagramApiToken
 from app.models.youtube_api_key import YouTubeApiKey
 
 
@@ -20,6 +21,7 @@ class CredentialHealthRepo:
         Returns the number of snapshot rows written."""
         accounts = (await self.session.execute(select(InstagramAccount))).scalars().all()
         keys = (await self.session.execute(select(YouTubeApiKey))).scalars().all()
+        tokens = (await self.session.execute(select(InstagramApiToken))).scalars().all()
 
         rows = [
             CredentialHealthSnapshot(
@@ -40,6 +42,20 @@ class CredentialHealthRepo:
                 youtube_api_key_id=k.id,
             )
             for k in keys
+        ] + [
+            # Distinct platform value ("instagram_api", not "instagram")
+            # -- see CredentialHealthSnapshot.instagram_api_token_id's
+            # comment for why existing platform="instagram" queries must
+            # keep meaning "the cookie pool" only.
+            CredentialHealthSnapshot(
+                platform="instagram_api",
+                label=t.label,
+                status=t.status,
+                failure_count=t.failure_count,
+                buc_usage_pct=t.buc_usage_pct,
+                instagram_api_token_id=t.id,
+            )
+            for t in tokens
         ]
         if not rows:
             return 0
