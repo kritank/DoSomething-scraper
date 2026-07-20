@@ -21,7 +21,7 @@ async def _run(pending_jobs, influencer, backend_for_result="graph"):
     influencer_repo_instance.get_by_id = AsyncMock(return_value=influencer)
 
     dispatch_instance = MagicMock()
-    dispatch_instance._backend_for = MagicMock(return_value=backend_for_result)
+    dispatch_instance._backend_for = AsyncMock(return_value=backend_for_result)
 
     mock_queue = AsyncMock()
 

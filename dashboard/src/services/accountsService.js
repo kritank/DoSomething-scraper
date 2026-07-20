@@ -28,3 +28,13 @@ export async function setAccountProxy(accountId, proxy) {
 export async function deleteAccount(accountId) {
   await apiClient.delete(`/admin/accounts/${accountId}`);
 }
+
+export async function getInstagramBackend() {
+  const { data } = await apiClient.get('/admin/settings/instagram-backend');
+  return data;
+}
+
+export async function setInstagramBackend(backend) {
+  const { data } = await apiClient.put('/admin/settings/instagram-backend', { backend });
+  return data;
+}

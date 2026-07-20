@@ -52,12 +52,24 @@ async def test_dispatch_scrape_job():
         assert called_msg.handle == "testuser"
 
 
-# ── _backend_for (pure function of an influencer-like object + settings) ──
+# ── _backend_for (influencer-like object + the DB-backed setting, falling
+# back to the static settings.INSTAGRAM_BACKEND default) ──────────────────
 
 def _influencer(platform="instagram", api_supported=None):
     return SimpleNamespace(platform=platform, api_supported=api_supported)
 
 
+async def _backend_for_with_override(monkeypatch, override, backend_setting, platform, api_supported):
+    """override=None means no AppSetting row exists -- falls back to the
+    static settings.INSTAGRAM_BACKEND default, same as a fresh environment
+    that's never had the dashboard toggle touched."""
+    monkeypatch.setattr(settings, "INSTAGRAM_BACKEND", backend_setting)
+    service = DispatchService(session=None)  # never touched directly -- app_setting_repo is swapped below
+    service.app_setting_repo = SimpleNamespace(get=AsyncMock(return_value=override))
+    return await service._backend_for(_influencer(platform, api_supported))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "backend_setting,platform,api_supported,expected",
     [
@@ -68,10 +80,25 @@ def _influencer(platform="instagram", api_supported=None):
         ("hybrid", "youtube", None, "cookies"),  # hybrid flag is Instagram-only
     ],
 )
-def test_backend_for_matrix(monkeypatch, backend_setting, platform, api_supported, expected):
-    monkeypatch.setattr(settings, "INSTAGRAM_BACKEND", backend_setting)
-    service = DispatchService(session=None)  # _backend_for never touches the session
-    assert service._backend_for(_influencer(platform, api_supported)) == expected
+async def test_backend_for_matrix_using_static_default(monkeypatch, backend_setting, platform, api_supported, expected):
+    # No DB override row (get() -> None) -- falls back to settings.INSTAGRAM_BACKEND.
+    result = await _backend_for_with_override(monkeypatch, None, backend_setting, platform, api_supported)
+    assert result == expected
+
+
+@pytest.mark.asyncio
+async def test_backend_for_db_override_wins_over_static_default(monkeypatch):
+    """Regression guard for the dashboard toggle: a DB override must take
+    priority over settings.INSTAGRAM_BACKEND, in both directions."""
+    result = await _backend_for_with_override(
+        monkeypatch, override="hybrid", backend_setting="cookies", platform="instagram", api_supported=None
+    )
+    assert result == "graph"  # DB says hybrid even though the static default says cookies
+
+    result = await _backend_for_with_override(
+        monkeypatch, override="cookies", backend_setting="hybrid", platform="instagram", api_supported=None
+    )
+    assert result == "cookies"  # DB says cookies even though the static default says hybrid
 
 
 @pytest.mark.asyncio

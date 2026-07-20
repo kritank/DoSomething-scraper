@@ -15,6 +15,7 @@ import Input from '../components/common/Input';
 import ErrorState from '../components/common/ErrorState';
 import EmptyState from '../components/common/EmptyState';
 import AddAccountForm from '../components/accounts/AddAccountForm';
+import InstagramBackendToggle from '../components/accounts/InstagramBackendToggle';
 import AddYoutubeKeyForm from '../components/youtube/AddYoutubeKeyForm';
 import { cn } from '../utils/cn';
 
@@ -203,6 +204,8 @@ export default function Accounts() {
           );
         })}
       </div>
+
+      {platform === 'instagram' && <InstagramBackendToggle />}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {platform === 'instagram' ? (

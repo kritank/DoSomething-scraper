@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.queue.base import ScrapeJobMessage
 from app.queue.factory import get_queue
+from app.repositories.app_setting_repo import INSTAGRAM_BACKEND_KEY, AppSettingRepo
 from app.repositories.influencer_repo import InfluencerRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
 
@@ -14,20 +15,29 @@ class DispatchService:
         self.session = session
         self.influencer_repo = InfluencerRepo(session)
         self.job_repo = ScrapeJobRepo(session)
+        self.app_setting_repo = AppSettingRepo(session)
 
-    def _backend_for(self, influencer) -> str:
+    async def _instagram_backend(self) -> str:
+        """DB-backed override, falling back to the static settings.*
+        default when no override row exists -- see AppSetting's docstring
+        for why this can't just be settings.INSTAGRAM_BACKEND: the
+        dashboard's toggle (PATCH /admin/settings/instagram-backend) only
+        ever runs inside the api container's process, which never shares
+        memory with the worker/scheduler containers that actually
+        dispatch and route jobs."""
+        override = await self.app_setting_repo.get(INSTAGRAM_BACKEND_KEY)
+        return override or settings.INSTAGRAM_BACKEND
+
+    async def _backend_for(self, influencer) -> str:
         """Decided once, here, at enqueue time -- stamped onto the message
         so worker_runner._run_one routes on the message alone, with no DB
-        lookup (see docs/INSTAGRAM_HYBRID_IMPLEMENTATION.md PR2 §2.3/2.4).
-        api_supported is not False lets both "true" (confirmed working)
-        and "null" (never tried) attempt the API path; only a confirmed
-        "false" (InstagramAccountNotProfessionalError) permanently routes
-        to cookies."""
-        if (
-            influencer.platform == "instagram"
-            and settings.INSTAGRAM_BACKEND == "hybrid"
-            and influencer.api_supported is not False
-        ):
+        lookup of its own (see docs/INSTAGRAM_HYBRID_IMPLEMENTATION.md PR2
+        §2.3/2.4). api_supported is not False lets both "true" (confirmed
+        working) and "null" (never tried) attempt the API path; only a
+        confirmed "false" (InstagramAccountNotProfessionalError)
+        permanently routes to cookies."""
+        backend = await self._instagram_backend()
+        if influencer.platform == "instagram" and backend == "hybrid" and influencer.api_supported is not False:
             return "graph"
         return "cookies"
 
@@ -43,7 +53,7 @@ class DispatchService:
             influencer_id=influencer.id,
             handle=influencer.handle,
             platform=influencer.platform,
-            backend=self._backend_for(influencer),
+            backend=await self._backend_for(influencer),
         )
         await queue.enqueue(message)
 
