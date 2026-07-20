@@ -241,3 +241,158 @@ async def test_record_metrics_snapshot_updates_in_place_without_touching_views()
     assert existing_snapshot.comments == 12
     assert existing_snapshot.views == 50000  # untouched
     assert existing_snapshot.reposts == 3  # untouched
+
+
+# ── _run_scrape respects scrape_posts_since (regression: found live against
+# real myntra data -- this cutoff was silently never checked at all) ──────
+
+@pytest.mark.asyncio
+async def test_run_scrape_stops_pagination_at_scrape_posts_since_cutoff(monkeypatch):
+    influencer_id = uuid4()
+    processor = InstagramGraphJobProcessor(
+        ScrapeJobMessage(job_id=uuid4(), influencer_id=influencer_id, handle="myntra", platform="instagram", backend="graph")
+    )
+    influencer = SimpleNamespace(
+        id=influencer_id, platform_user_id=None, profile_pic_url=None,
+        scrape_posts_since=datetime(2026, 1, 1).date(),
+    )
+    job = SimpleNamespace(id=uuid4(), posts_processed=0)
+
+    in_window_item = _media_item(code="IN_WINDOW", taken_at=int(datetime(2026, 6, 1, tzinfo=timezone.utc).timestamp()))
+    out_of_window_item = _media_item(code="TOO_OLD", taken_at=int(datetime(2025, 11, 15, tzinfo=timezone.utc).timestamp()))
+
+    processor.client = MagicMock()
+    processor.client.get_business_profile = AsyncMock(return_value={"placeholder": "bd"})
+    processor.client.get_business_media = AsyncMock()  # must never be called -- pagination stops first
+
+    monkeypatch.setattr("app.workers.instagram_graph_job_processor.parse_profile", MagicMock(return_value=SimpleNamespace(
+        username="myntra", pk="1", profile_pic_url=None, follower_count=1, following_count=1, media_count=1,
+        biography="", external_url=None, is_business_account=True, is_professional_account=True,
+    )))
+    monkeypatch.setattr(
+        "app.workers.instagram_graph_job_processor.parse_media_items",
+        MagicMock(return_value=[in_window_item, out_of_window_item]),
+    )
+    monkeypatch.setattr(
+        "app.workers.instagram_graph_job_processor.extract_media_cursor", MagicMock(return_value="some_cursor")
+    )
+
+    session = MagicMock()
+    session.get = AsyncMock(return_value=influencer)
+    session.commit = AsyncMock()
+    session.flush = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+    session.execute = AsyncMock(return_value=execute_result)
+
+    await processor._run_scrape(session, job)
+
+    assert job.posts_processed == 1  # only the in-window item
+    processor.client.get_business_media.assert_not_called()  # stopped before needing page 2
+
+
+# ── steady-state early-stop (regression: found live -- a repeat scrape of
+# the same account re-walked up to _MAX_MEDIA_PAGES from scratch every run) ─
+
+@pytest.mark.asyncio
+async def test_run_scrape_stops_at_known_post_outside_refresh_window(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "COMMENT_SYNC_WINDOW_DAYS", 90)
+    influencer_id = uuid4()
+    processor = InstagramGraphJobProcessor(
+        ScrapeJobMessage(job_id=uuid4(), influencer_id=influencer_id, handle="myntra", platform="instagram", backend="graph")
+    )
+    influencer = SimpleNamespace(
+        id=influencer_id, platform_user_id=None, profile_pic_url=None, scrape_posts_since=None,
+    )
+    job = SimpleNamespace(id=uuid4(), posts_processed=0)
+
+    new_item = _media_item(code="BRAND_NEW", taken_at=int(datetime.now(timezone.utc).timestamp()))
+    old_known_item = _media_item(
+        code="ALREADY_KNOWN_OLD",
+        taken_at=int((datetime.now(timezone.utc) - timedelta(days=200)).timestamp()),
+    )
+    existing_old_post = Post(id=uuid4(), shortcode="ALREADY_KNOWN_OLD")
+
+    processor.client = MagicMock()
+    processor.client.get_business_profile = AsyncMock(return_value={"placeholder": "bd"})
+    processor.client.get_business_media = AsyncMock()  # must never be called -- stops on page 1
+
+    monkeypatch.setattr("app.workers.instagram_graph_job_processor.parse_profile", MagicMock(return_value=SimpleNamespace(
+        username="myntra", pk="1", profile_pic_url=None, follower_count=1, following_count=1, media_count=1,
+        biography="", external_url=None, is_business_account=True, is_professional_account=True,
+    )))
+    monkeypatch.setattr(
+        "app.workers.instagram_graph_job_processor.parse_media_items",
+        MagicMock(return_value=[new_item, old_known_item]),
+    )
+    monkeypatch.setattr(
+        "app.workers.instagram_graph_job_processor.extract_media_cursor", MagicMock(return_value="some_cursor")
+    )
+
+    session = MagicMock()
+    session.get = AsyncMock(return_value=influencer)
+    session.commit = AsyncMock()
+    session.flush = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[existing_old_post])))
+    session.execute = AsyncMock(return_value=execute_result)
+
+    await processor._run_scrape(session, job)
+
+    assert job.posts_processed == 1  # only BRAND_NEW counted as new
+    processor.client.get_business_media.assert_not_called()  # stopped before page 2
+
+
+@pytest.mark.asyncio
+async def test_run_scrape_keeps_refreshing_known_post_inside_window(monkeypatch):
+    """A known post still inside the refresh window must have its metrics
+    refreshed AND pagination must continue past it (unlike the
+    outside-window case above)."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "COMMENT_SYNC_WINDOW_DAYS", 90)
+    influencer_id = uuid4()
+    processor = InstagramGraphJobProcessor(
+        ScrapeJobMessage(job_id=uuid4(), influencer_id=influencer_id, handle="myntra", platform="instagram", backend="graph")
+    )
+    influencer = SimpleNamespace(
+        id=influencer_id, platform_user_id=None, profile_pic_url=None, scrape_posts_since=None,
+    )
+    job = SimpleNamespace(id=uuid4(), posts_processed=0)
+
+    recent_known_item = _media_item(
+        code="KNOWN_RECENT", taken_at=int((datetime.now(timezone.utc) - timedelta(days=5)).timestamp())
+    )
+    existing_recent_post = Post(id=uuid4(), shortcode="KNOWN_RECENT", media_url="https://stale/old.mp4")
+
+    processor.client = MagicMock()
+    processor.client.get_business_profile = AsyncMock(return_value={"placeholder": "bd"})
+    processor.client.get_business_media = AsyncMock(return_value={"placeholder": "bd2"})
+
+    monkeypatch.setattr("app.workers.instagram_graph_job_processor.parse_profile", MagicMock(return_value=SimpleNamespace(
+        username="myntra", pk="1", profile_pic_url=None, follower_count=1, following_count=1, media_count=1,
+        biography="", external_url=None, is_business_account=True, is_professional_account=True,
+    )))
+    monkeypatch.setattr(
+        "app.workers.instagram_graph_job_processor.parse_media_items",
+        MagicMock(side_effect=[[recent_known_item], []]),  # page 2 empty -> loop ends naturally
+    )
+    cursor_mock = MagicMock(side_effect=["next_cursor", ""])
+    monkeypatch.setattr("app.workers.instagram_graph_job_processor.extract_media_cursor", cursor_mock)
+
+    session = MagicMock()
+    session.get = AsyncMock(return_value=influencer)
+    session.commit = AsyncMock()
+    session.flush = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[existing_recent_post])))
+    session.execute = AsyncMock(return_value=execute_result)
+
+    await processor._run_scrape(session, job)
+
+    assert job.posts_processed == 0  # no NEW posts -- only a known one refreshed
+    assert existing_recent_post.media_url == "https://cdn/video.mp4"  # refreshed, not the stale value
+    processor.client.get_business_media.assert_called_once()  # pagination continued past it
+

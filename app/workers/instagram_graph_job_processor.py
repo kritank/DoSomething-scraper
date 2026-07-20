@@ -22,7 +22,7 @@ import asyncio
 import time
 import uuid
 from uuid import UUID
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -345,10 +345,46 @@ class InstagramGraphJobProcessor:
         await session.commit()
 
         # 3. Paginate media, upserting posts + like/comment snapshots.
+        #
+        # Bounded by whichever comes first: scrape_posts_since (per-
+        # influencer -- how far back to discover at all, same convention
+        # as the cookie path's posts_since_cutoff) or _MAX_MEDIA_PAGES (a
+        # safety cap regardless of window size). Confirmed missing this
+        # entirely in the original PR2 landing: an influencer with
+        # scrape_posts_since set still paginated the full page cap
+        # regardless of date, pulling posts well outside its configured
+        # window (myntra: cutoff 2026-01-01, but posts back to 2025-11-15
+        # were fetched before this fix).
+        posts_since_cutoff: datetime | None = None
+        if influencer.scrape_posts_since is not None:
+            posts_since_cutoff = datetime.combine(
+                influencer.scrape_posts_since, datetime.min.time()
+            ).replace(tzinfo=timezone.utc)
+
+        # Steady-state optimization -- confirmed missing entirely in the
+        # original PR2 landing (found live: a repeat scrape of the same
+        # account re-walked up to _MAX_MEDIA_PAGES from scratch every
+        # single run, burning ~20 API calls/day forever on an account that
+        # already had all its recent posts). Mirrors the cookie path's own
+        # steady-state behavior (JobProcessor._run_scrape's
+        # `is_backfilling` branch): once we hit an ALREADY-KNOWN post
+        # that's also outside this refresh window, everything further
+        # back in this newest-first feed is both already-saved and not
+        # worth re-fetching metrics for -- stop. A known post still
+        # INSIDE the window keeps its metrics refreshed and pagination
+        # continues, same as cookie's within_comment_window branch.
+        # Reuses COMMENT_SYNC_WINDOW_DAYS rather than introducing a new
+        # setting -- same semantic question ("how far back do we still
+        # bother refreshing already-known content").
+        refresh_cutoff: datetime | None = None
+        if settings.COMMENT_SYNC_WINDOW_DAYS > 0:
+            refresh_cutoff = datetime.now(timezone.utc) - timedelta(days=settings.COMMENT_SYNC_WINDOW_DAYS)
+
         posts_processed = 0
         cursor = ""
         page_count = 0
-        while page_count < _MAX_MEDIA_PAGES:
+        stop_pagination = False
+        while page_count < _MAX_MEDIA_PAGES and not stop_pagination:
             items = parse_media_items(bd)
             if not items:
                 break
@@ -359,8 +395,35 @@ class InstagramGraphJobProcessor:
             for item in items:
                 if not item.code:
                     continue  # couldn't resolve a shortcode -- nothing to key this post on
+
+                item_posted_at = (
+                    datetime.fromtimestamp(item.taken_at, tz=timezone.utc) if item.taken_at else None
+                )
+                if (
+                    posts_since_cutoff is not None
+                    and item_posted_at is not None
+                    and item_posted_at < posts_since_cutoff
+                ):
+                    # Business Discovery's media connection is newest-first
+                    # with no documented pinned-post exemption (unlike the
+                    # cookie feed) -- everything further back is also out
+                    # of the window, so stop here rather than just
+                    # skipping this one item.
+                    stop_pagination = True
+                    break
+
                 existing = existing_by_code.get(item.code)
                 is_new = existing is None
+
+                if (
+                    not is_new
+                    and refresh_cutoff is not None
+                    and item_posted_at is not None
+                    and item_posted_at < refresh_cutoff
+                ):
+                    stop_pagination = True
+                    break
+
                 post = await self._upsert_post(session, item, existing)
                 await self._record_metrics_snapshot(session, post, item)
                 if is_new:
@@ -371,6 +434,9 @@ class InstagramGraphJobProcessor:
 
             await session.commit()
             page_count += 1
+
+            if stop_pagination:
+                break
 
             cursor = extract_media_cursor(bd)
             if not cursor:
