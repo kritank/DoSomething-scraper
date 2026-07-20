@@ -11,6 +11,9 @@ class CreatorSummary(BaseModel):
     platform: str
     category_name: Optional[str] = None
     country: Optional[str] = None
+    # Latest known avatar/channel-thumbnail URL, refreshed on every scrape.
+    # None until the first successful scrape.
+    profile_pic_url: Optional[str] = None
     # Days since the channel/account was created (YouTube: publishedAt from
     # platform_metadata; Instagram: no equivalent, always None).
     account_age_days: Optional[int] = None
@@ -37,6 +40,10 @@ class CreatorSummary(BaseModel):
     views_28d: Optional[int] = None
 
     posts_per_week: Optional[float] = None
+
+    # Date of the most recent successful scrape (ProfileSnapshot.scraped_at)
+    # backing this summary. None only when there's no snapshot at all yet.
+    updated_at: Optional[date] = None
 
 
 class GrowthPoint(BaseModel):
@@ -116,6 +123,12 @@ class FormatStats(BaseModel):
     # None when no post in this format/window has a usable view-or-likes
     # metric (see _PostMetricPoint.outlier_metric for the views==0 rule).
     avg_views: Optional[float] = None
+    # Mean of each post's own (likes + comments) / usable-metric ratio
+    # (same views-else-likes fallback as avg_views) -- an average of
+    # per-post rates, not total_likes+total_comments/total_views, so one
+    # viral post doesn't dominate the figure. None when no post in this
+    # format/window has any usable likes/comments/views data at all.
+    avg_engagement_rate: Optional[float] = None
     # Share (0..1) of the window's combined long_form + short_form views.
     views_share: float = 0.0
 
@@ -124,6 +137,36 @@ class FormatBreakdownOut(BaseModel):
     window_days: int
     formats: list[FormatStats]
     total_views: int
+
+
+class SponsorshipStats(BaseModel):
+    post_count: int = 0
+    # None when no post in this bucket has a usable view-or-likes metric
+    # (same views==0-means-no-metric rule as FormatStats.avg_views).
+    avg_views: Optional[float] = None
+    avg_likes: Optional[float] = None
+    avg_comments: Optional[float] = None
+
+
+class FormatSponsorshipStats(BaseModel):
+    # "long_form" | "short_form" -- same folding-live-into-long_form rule
+    # as FormatStats.
+    format: Literal["long_form", "short_form"]
+    organic: SponsorshipStats
+    sponsored: SponsorshipStats
+
+
+class SponsorshipBreakdownOut(BaseModel):
+    window_days: int
+    # Aggregated across both formats.
+    organic: SponsorshipStats
+    # "Sponsored" means Instagram's/YouTube's own paid-partnership /
+    # paid-product-placement disclosure flag was set on the post --
+    # creators who run sponsored content without using that official
+    # disclosure tool show up as organic here. See
+    # Post.is_paid_partnership and docs/DATABASE_ER_DIAGRAM.md.
+    sponsored: SponsorshipStats
+    formats: list[FormatSponsorshipStats]
 
 
 class AboutOut(BaseModel):
@@ -157,6 +200,70 @@ class KeyEvent(BaseModel):
     post_id: Optional[UUID] = None
     permalink: Optional[str] = None
     metric_value: Optional[float] = None
+    # "long_form" | "short_form" | "live" -- only set for type="top_post"
+    # (sourced from the underlying PostPerformance.format). None for
+    # "milestone" events, which aren't tied to any single post.
+    format: Optional[str] = None
+
+
+class PostingFrequencyPoint(BaseModel):
+    # Bucket start date -- the Monday of that week for bucket="week", or
+    # the day itself for bucket="day".
+    date: date
+    post_count: int
+
+
+class PostingTimeDistribution(BaseModel):
+    # Post counts by day of week, index 0=Monday .. 6=Sunday (Python's
+    # datetime.weekday() convention), over the requested window.
+    weekday_counts: list[int] = [0] * 7
+    # Post counts by hour of day (0-23), in UTC -- posted_at is stored in
+    # UTC, so this reflects the creator's UTC posting pattern, not their
+    # local audience's clock. Good enough for "do they post consistently
+    # around the same time" without claiming timezone precision we don't have.
+    hour_counts: list[int] = [0] * 24
+    # Joint weekday x hour counts -- matrix[weekday][hour], same indexing
+    # as weekday_counts/hour_counts. Powers the weekday-by-hour heatmap;
+    # weekday_counts/hour_counts remain as the pre-computed marginals so
+    # existing consumers don't need to sum the matrix themselves.
+    hourly_weekday_matrix: list[list[int]] = [[0] * 24 for _ in range(7)]
+    # None when there are no posts in the window to rank.
+    best_weekday: Optional[int] = None
+    best_hour: Optional[int] = None
+    total_posts: int = 0
+
+
+class ReplyTimeFormatStats(BaseModel):
+    # "long_form" | "short_form" -- same folding-live-into-long_form rule
+    # as FormatStats.
+    format: Literal["long_form", "short_form"]
+    reply_count: int
+    # None when no post in this format/window has a creator reply yet.
+    avg_reply_time_s: Optional[float] = None
+    # Post counts per ReplyTimeHeatmapOut.bucket_labels bucket, same
+    # indexing/length as bucket_labels -- powers the heatmap row for this
+    # format.
+    bucket_counts: list[int] = []
+    # Mean of the actual (not bucket-midpoint) reply times of posts that
+    # landed in each bucket, same indexing as bucket_counts. None where
+    # bucket_counts[i] == 0. Lets the heatmap tooltip show a real number
+    # ("avg 6m 40s") instead of just a bucket range + count.
+    bucket_avg_reply_time_s: list[Optional[float]] = []
+    # Mean total comment count (latest known, from PostMetricsSnapshot) of
+    # the posts in each bucket -- comment *volume* context alongside reply
+    # *speed*, since a bucket with 1 comment and a bucket with 200 both
+    # read the same from bucket_counts/bucket_avg_reply_time_s alone.
+    bucket_avg_comments: list[Optional[float]] = []
+
+
+class ReplyTimeHeatmapOut(BaseModel):
+    window_days: int
+    # Time-since-post bucket labels, e.g. "0-15m" .. "3.5h+" -- shared
+    # column ordering across both formats' bucket_counts.
+    bucket_labels: list[str]
+    formats: list[ReplyTimeFormatStats]
+    # Total posts (across both formats) with a measured creator reply time.
+    total_replies: int
 
 
 class CreatorStatsOut(BaseModel):
@@ -165,3 +272,67 @@ class CreatorStatsOut(BaseModel):
     earnings: Optional[EarningsEstimate] = None
     rankings: RankingsOut
     about: AboutOut
+
+
+class EngagementTrendPoint(BaseModel):
+    # Bucket start date -- Monday of that week for bucket="week", the day
+    # itself for bucket="day" (same convention as PostingFrequencyPoint).
+    date: date
+    # (likes+comments)/followers averaged across posts published in this
+    # bucket, using the influencer's *current* follower count as the
+    # denominator for every post (same simplification as EngagementOut) --
+    # None when no post in the bucket has usable like/comment data.
+    avg_engagement_rate: Optional[float] = None
+    post_count: int = 0
+
+
+class PerformanceDecayPoint(BaseModel):
+    # e.g. "0-1h", "1-3h", ... "30d+" -- see PerformanceDecayOut.bucket_labels.
+    bucket_label: str
+    # Average (views-else-likes metric / hours-since-posted) across every
+    # snapshot that landed in this age bucket -- the same lifetime-average
+    # velocity figure PostPerformance.velocity_per_hour uses, just bucketed
+    # by snapshot age instead of restricted to freshly-posted content. A
+    # falling curve across buckets is the expected "decay" shape: most
+    # metric accrues early, so the cumulative average rate drops as age
+    # outpaces it.
+    avg_velocity_per_hour: Optional[float] = None
+    sample_size: int = 0
+
+
+class PerformanceDecayOut(BaseModel):
+    window_days: int
+    bucket_labels: list[str]
+    points: list[PerformanceDecayPoint]
+
+
+class CommentEngagementStats(BaseModel):
+    # "overall" | "long_form" | "short_form"
+    format: str
+    comment_count: int = 0
+    # Share of comments authored by the creator themself -- None with no
+    # comments in this bucket.
+    creator_reply_rate: Optional[float] = None
+    # Share of comments from a platform-verified account.
+    verified_commenter_rate: Optional[float] = None
+    avg_child_comment_count: Optional[float] = None
+    avg_likes_per_comment: Optional[float] = None
+
+
+class CommentEngagementOut(BaseModel):
+    window_days: int
+    # Distinct posts contributing at least one comment -- comment coverage
+    # is naturally partial (only posts that had comments scraped), so this
+    # tells the UI how much of the post history this breakdown represents.
+    posts_with_comments: int
+    overall: CommentEngagementStats
+    formats: list[CommentEngagementStats]
+
+
+class FollowerRatioPoint(BaseModel):
+    date: date
+    followers: int
+    following: int
+    # followers/following -- None when following is 0 (division undefined,
+    # not "infinite ratio").
+    ratio: Optional[float] = None

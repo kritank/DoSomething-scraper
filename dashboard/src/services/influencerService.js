@@ -10,13 +10,14 @@ export async function createCategory(name) {
   return data;
 }
 
-export async function createInfluencer(handle, categoryId, scrapePostsSince, platform = 'instagram', creatorName = '') {
+export async function createInfluencer(handle, categoryId, scrapePostsSince, platform = 'instagram', creatorName = '', accountType = 'individual') {
   const { data } = await apiClient.post('/admin/influencers', {
     handle,
     category_id: categoryId,
     scrape_posts_since: scrapePostsSince || null,
     platform,
     creator_name: creatorName || undefined,
+    account_type: accountType,
   });
   return data;
 }
@@ -44,13 +45,16 @@ export async function updateInfluencerActive(influencerId, isActive) {
   return data;
 }
 
-export async function updateInfluencerDetails(influencerId, { handle, categoryId, creatorName }) {
+export async function updateInfluencerDetails(influencerId, { handle, categoryId, creatorName, accountType }) {
   const payload = { handle, category_id: categoryId };
   // Tri-state on the backend: omit the key entirely to leave the creator
   // link untouched (undefined here, not sent) -- only include it when the
   // caller explicitly passed a value (including "" to unlink).
   if (creatorName !== undefined) {
     payload.creator_name = creatorName;
+  }
+  if (accountType !== undefined) {
+    payload.account_type = accountType;
   }
   const { data } = await apiClient.patch(`/admin/influencers/${influencerId}/details`, payload);
   return data;
@@ -65,4 +69,29 @@ export async function updateInfluencerScrapeSettings(influencerId, scrapePostsSi
 
 export async function deleteInfluencer(influencerId) {
   await apiClient.delete(`/admin/influencers/${influencerId}`);
+}
+
+export async function bulkImportInfluencers(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  const { data } = await apiClient.post('/admin/influencers/bulk', formData, {
+    // Override the instance's default 'Content-Type: application/json' so
+    // the browser can set its own 'multipart/form-data; boundary=...'
+    // header for this one request -- axios/the browser only does that
+    // automatically when no Content-Type is already forced.
+    headers: { 'Content-Type': undefined },
+  });
+  return data;
+}
+
+export async function downloadBulkImportTemplate() {
+  const response = await apiClient.get('/admin/influencers/bulk/template', { responseType: 'blob' });
+  const url = window.URL.createObjectURL(new Blob([response.data]));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'influencer_bulk_import_template.xlsx';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
 }

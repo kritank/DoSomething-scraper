@@ -8,6 +8,8 @@ from app.core.database import init_db, close_db
 from app.queue.factory import get_queue
 from app.workers.account_login_processor import process_pending_logins
 from app.workers.account_revalidator import revalidate_checkpoint_accounts
+from app.workers.instagram_enrich_processor import InstagramEnrichProcessor
+from app.workers.instagram_graph_job_processor import InstagramGraphJobProcessor
 from app.workers.job_processor import JobProcessor
 from app.workers.youtube_job_processor import YouTubeJobProcessor
 
@@ -22,9 +24,16 @@ def handle_sigterm(*args):
 
 
 async def _run_one(receipt: str, msg, queue) -> None:
-    logger.info("Processing job", job_id=msg.job_id, platform=msg.platform)
+    logger.info("Processing job", job_id=msg.job_id, platform=msg.platform, job_type=msg.job_type, backend=msg.backend)
     try:
-        processor = YouTubeJobProcessor(msg) if msg.platform == "youtube" else JobProcessor(msg)
+        if msg.job_type == "enrich":
+            processor = InstagramEnrichProcessor(msg)
+        elif msg.platform == "youtube":
+            processor = YouTubeJobProcessor(msg)
+        elif msg.backend == "graph":
+            processor = InstagramGraphJobProcessor(msg)
+        else:
+            processor = JobProcessor(msg)
         await processor.process()
     except Exception as e:
         logger.error("Job raised unhandled error", job_id=msg.job_id, error=str(e))

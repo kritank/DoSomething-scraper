@@ -2,7 +2,19 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import { useAppStore } from '../store/useAppStore';
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api/v1';
+export const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api/v1';
+
+// Instagram's CDN sets Cross-Origin-Resource-Policy: same-origin on profile
+// pictures, which Chrome enforces even for a plain <img src> -- the browser
+// silently refuses to paint it when loaded directly from a different origin
+// (the dashboard). GET /influencers/{id}/avatar fetches it server-side
+// (not subject to browser CORP enforcement) and re-serves the bytes from our
+// own origin instead. No auth header needed -- an <img> tag can't attach
+// one anyway, and the endpoint is intentionally public (see its docstring).
+export function avatarUrl(influencerId) {
+  if (!influencerId) return null;
+  return `${BASE_URL}/influencers/${influencerId}/avatar`;
+}
 
 const apiClient = axios.create({
   baseURL: BASE_URL,

@@ -8,6 +8,7 @@ growth windows, NULL-vs-0 metric semantics).
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
 from dataclasses import dataclass
@@ -19,21 +20,37 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.analytics.earnings import youtube_rpm_range
+from app.analytics.earnings import instagram_value_per_1k_views_range, youtube_rpm_range
+from app.models.comment import Comment
+from app.models.feature_store import FeatureStore
 from app.models.influencer import Influencer
 from app.models.post import Post
 from app.models.snapshot import PostMetricsSnapshot, ProfileSnapshot
+from app.repositories.post_outlier_metrics_repo import PostOutlierMetricsRepo
 from app.schemas.creator_stats import (
     AboutOut,
+    CommentEngagementOut,
+    CommentEngagementStats,
     CreatorSummary,
     EngagementOut,
+    EngagementTrendPoint,
+    FollowerRatioPoint,
     FormatBreakdownOut,
     FormatStats,
     GrowthPoint,
     KeyEvent,
+    FormatSponsorshipStats,
+    PerformanceDecayOut,
+    PerformanceDecayPoint,
+    PostingFrequencyPoint,
+    PostingTimeDistribution,
     PostPerformance,
     RankingEntry,
     RankingsOut,
+    ReplyTimeFormatStats,
+    ReplyTimeHeatmapOut,
+    SponsorshipBreakdownOut,
+    SponsorshipStats,
 )
 
 # Instagram Reels ("clips") are short-form; everything else (feed photos,
@@ -63,6 +80,13 @@ MIN_POSTS_FOR_OUTLIER = 5
 # measured against. Matches vidiq's "vs channel average" framing without
 # being diluted by years of history on long-running channels.
 OUTLIER_LOOKBACK_POSTS = 30
+# Candidate pool scanned for sort="top" in get_post_performance -- see the
+# comment at its call site for the tradeoff this size encodes.
+TOP_SORT_CANDIDATE_POOL = 400
+# How many of an influencer's most recent posts recompute_outlier_metrics
+# re-scores and persists per call -- see its docstring for why older posts
+# aren't rewritten every time.
+RECENT_RESCORE_WINDOW = 50
 # A post is "fresh" enough for a velocity/hour figure within this window --
 # past it, lifetime-average views/hour stops meaning much (see
 # PostPerformance.velocity_per_hour docstring).
@@ -97,14 +121,39 @@ class _PostMetricPoint:
         return self.views if self.views else self.likes
 
 
-def _compute_outlier_and_velocity(
+@dataclass
+class _OutlierDetail:
+    """Everything the batch persistence path (docs/OUTLIERS_PLAN.md Phase 1)
+    needs beyond the (outlier_score, velocity_per_hour) tuple the live
+    profile endpoint uses -- notably the raw median, kept for explainability
+    tooltips, and engagement_ratio, Phase 2's composite-score input."""
+
+    outlier_score: Optional[float]
+    velocity_per_hour: Optional[float]
+    baseline_median: Optional[float]
+    engagement_ratio: Optional[float]
+
+
+def _point_engagement_rate(point: _PostMetricPoint) -> Optional[float]:
+    """(likes + comments) / outlier_metric for one post -- None when either
+    side is unmeasurable (metric missing/zero, or both likes and comments
+    hidden), never a fabricated 0/0."""
+    metric = point.outlier_metric
+    if not metric:
+        return None
+    if point.likes is None and point.comments is None:
+        return None
+    return ((point.likes or 0) + (point.comments or 0)) / metric
+
+
+def _compute_outlier_details(
     points_asc: list[_PostMetricPoint], platform: str, now: datetime
-) -> dict[UUID, tuple[Optional[float], Optional[float]]]:
+) -> dict[UUID, _OutlierDetail]:
     """Pure function (no DB access) so this logic is unit-testable in
-    isolation. `points_asc` must be sorted oldest-first. Returns
-    {post_id: (outlier_score, velocity_per_hour)}."""
+    isolation. `points_asc` must be sorted oldest-first."""
     fresh_window = YOUTUBE_FRESH_WINDOW if platform == "youtube" else INSTAGRAM_FRESH_WINDOW
-    results: dict[UUID, tuple[Optional[float], Optional[float]]] = {}
+    results: dict[UUID, _OutlierDetail] = {}
+    point_ers = [_point_engagement_rate(p) for p in points_asc]
 
     for i, point in enumerate(points_asc):
         prior = [
@@ -113,8 +162,10 @@ def _compute_outlier_and_velocity(
             if p.outlier_metric is not None
         ]
         outlier_score: Optional[float] = None
+        baseline_median: Optional[float] = None
         if len(prior) >= MIN_POSTS_FOR_OUTLIER and point.outlier_metric is not None:
             median = statistics.median(prior)
+            baseline_median = median
             if median > 0:
                 outlier_score = round(point.outlier_metric / median, 2)
 
@@ -125,15 +176,129 @@ def _compute_outlier_and_velocity(
                 hours = max(age.total_seconds() / 3600, 1 / 60)
                 velocity = round(point.outlier_metric / hours, 2)
 
-        results[point.post_id] = (outlier_score, velocity)
+        prior_ers = [
+            er for er in point_ers[max(0, i - OUTLIER_LOOKBACK_POSTS) : i] if er is not None
+        ]
+        engagement_ratio: Optional[float] = None
+        if len(prior_ers) >= MIN_POSTS_FOR_OUTLIER and point_ers[i] is not None:
+            baseline_er = statistics.median(prior_ers)
+            if baseline_er > 0:
+                engagement_ratio = round(point_ers[i] / baseline_er, 2)
+
+        results[point.post_id] = _OutlierDetail(
+            outlier_score=outlier_score,
+            velocity_per_hour=velocity,
+            baseline_median=baseline_median,
+            engagement_ratio=engagement_ratio,
+        )
 
     return results
 
 
+def _compute_vph_current(
+    current_metric: Optional[int],
+    current_date: date,
+    previous_metric: Optional[int],
+    previous_date: date,
+) -> Optional[float]:
+    """True views(or likes)-per-hour derived from the two most recent daily
+    snapshots -- unlike vph_lifetime (metric / age-since-posted), this
+    reflects *current* momentum and isn't restricted to freshly-posted
+    content (a 2-year-old video suddenly picking up views scores here).
+    Snapshots are day-granular, so the rate is coarse but real. A negative
+    delta (platform recount/correction) yields None rather than a negative
+    rate; same-day pairs (days <= 0) can't produce a rate at all."""
+    if current_metric is None or previous_metric is None:
+        return None
+    days = (current_date - previous_date).days
+    if days <= 0:
+        return None
+    delta = current_metric - previous_metric
+    if delta < 0:
+        return None
+    return round(delta / (days * 24), 2)
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _select_metric_pair(
+    platform: str,
+    current_views: Optional[int],
+    current_likes: Optional[int],
+    previous_views: Optional[int],
+    previous_likes: Optional[int],
+) -> tuple[Optional[int], Optional[int]]:
+    """Picks the same metric (views, or likes on the Instagram
+    no-view-count-for-this-post-type case) for both snapshots in a pair --
+    computing vph_current from views on one day and likes on the next would
+    produce a meaningless delta. Mirrors _PostMetricPoint.outlier_metric's
+    views-else-likes rule, decided from the *current* snapshot's views."""
+    if platform == "instagram" and not current_views:
+        return current_likes, previous_likes
+    return current_views, previous_views
+
+
+def _compute_composite_outlier_score(
+    baseline_multiple: Optional[float],
+    vph_current: Optional[float],
+    vph_lifetime: Optional[float],
+    engagement_ratio: Optional[float],
+) -> Optional[float]:
+    """Blends the baseline multiplier with current-momentum and engagement
+    signals into one ranking score for the cross-creator outliers feed (see
+    docs/OUTLIERS_PLAN.md Phase 2). Degrades gracefully to baseline_multiple
+    alone when velocity/engagement can't be computed -- an Instagram photo
+    post or a post with only one snapshot still gets a usable score, and
+    baseline_multiple is still exposed separately as the explainable "Nx"
+    figure the UI badges on.
+
+    Velocity is measured as vph_current relative to the post's *own*
+    vph_lifetime (is it accelerating past its own average pace?) rather
+    than a cross-post median -- self-relative, always defined once both
+    figures exist, and avoids a second full-lookback pass just to build a
+    fresh-post velocity distribution.
+    """
+    if baseline_multiple is None:
+        return None
+    score = baseline_multiple
+    if vph_current is not None and vph_lifetime and vph_lifetime > 0:
+        velocity_ratio = vph_current / vph_lifetime
+        if velocity_ratio > 1:
+            score *= 1 + 0.5 * math.log2(velocity_ratio)
+    if engagement_ratio is not None:
+        score *= _clamp(engagement_ratio, 0.75, 1.25)
+    return round(score, 2)
+
+
+def _compute_outlier_and_velocity(
+    points_asc: list[_PostMetricPoint], platform: str, now: datetime
+) -> dict[UUID, tuple[Optional[float], Optional[float]]]:
+    """Thin wrapper over `_compute_outlier_details` preserving the
+    (outlier_score, velocity_per_hour) tuple contract the live profile
+    endpoint (and existing tests) rely on. Returns
+    {post_id: (outlier_score, velocity_per_hour)}."""
+    details = _compute_outlier_details(points_asc, platform, now)
+    return {pid: (d.outlier_score, d.velocity_per_hour) for pid, d in details.items()}
+
+
 # Round-number follower thresholds milestone events are detected against --
-# see _detect_milestones. Capped at 500M since no tracked account will ever
-# cross higher, keeping the scan bounded.
-MILESTONE_THRESHOLDS = [10_000, 50_000, 100_000, 500_000] + [n * 1_000_000 for n in range(1, 501)]
+# see _detect_milestones. Denser below 1M than above it: a small/growing
+# account crossing 50M is nonsense, but a small/growing account crossing
+# 2K/5K/8K is exactly the kind of near-term progress that makes the key
+# events feed feel alive rather than going quiet for months between 10K/
+# 50K/100K -- coarse thresholds were the main reason events looked like
+# they'd "stopped updating" after the initial burst. Capped at 500M since
+# no tracked account will ever cross higher, keeping the scan bounded.
+MILESTONE_THRESHOLDS = (
+    [n * 1_000 for n in range(1, 10)]  # 1K, 2K, ..., 9K
+    + [n * 5_000 for n in range(2, 10)]  # 10K, 15K, ..., 45K
+    + [n * 10_000 for n in range(5, 10)]  # 50K, 60K, ..., 90K
+    + [n * 50_000 for n in range(2, 10)]  # 100K, 150K, ..., 450K
+    + [n * 100_000 for n in range(5, 10)]  # 500K, 600K, ..., 900K
+    + [n * 1_000_000 for n in range(1, 501)]  # 1M, 2M, ..., 500M
+)
 
 
 def _format_milestone_label(threshold: int) -> str:
@@ -165,6 +330,494 @@ def _detect_milestones(series: list[GrowthPoint]) -> list[KeyEvent]:
                     )
         high_water_mark = max(high_water_mark or 0, point.value or 0)
     return events
+
+
+def _strip_phantom_zero_lead(points: list[GrowthPoint]) -> list[GrowthPoint]:
+    """A leading 0-value point in a followers/total_views series is a
+    broken/seed snapshot, not "tracking started at zero" -- no tracked
+    account genuinely has 0 followers. Left in, it does two things wrong:
+    draws a misleading vertical cliff on the growth chart, and makes
+    _detect_milestones treat the very next real point as having crossed
+    every single threshold between 0 and that value at once (since
+    high_water_mark starts at 0 instead of None) -- a flood of milestone
+    events all dated the same day, which is exactly what makes the key
+    events feed look like it "shot up once on the first scrape and never
+    updated again": the flood was real events firing early and wrong, not
+    the feed being broken afterward.
+
+    Strips any leading zero(s) followed by a >=1000x jump, and clears the
+    new first point's daily_delta since it no longer has a real "previous
+    day" to diff against."""
+    if len(points) < 2:
+        return points
+    start = 0
+    while start < len(points) - 1 and (points[start].value or 0) == 0 and (points[start + 1].value or 0) >= 1000:
+        start += 1
+    if start == 0:
+        return points
+    rest = points[start:]
+    return [rest[0].model_copy(update={"daily_delta": None})] + rest[1:]
+
+
+def _bucket_posting_frequency(
+    posted_ats: list[datetime], bucket: str
+) -> list[PostingFrequencyPoint]:
+    """Pure function (no DB access) so this is unit-testable in isolation.
+    Groups post timestamps into Monday-start calendar weeks (bucket="week")
+    or individual days (bucket="day"), independent of dialect-specific
+    week-numbering."""
+    counts: dict[date, int] = {}
+    for posted_at in posted_ats:
+        bucket_date = (
+            posted_at.date() - timedelta(days=posted_at.weekday())
+            if bucket == "week"
+            else posted_at.date()
+        )
+        counts[bucket_date] = counts.get(bucket_date, 0) + 1
+    return [PostingFrequencyPoint(date=d, post_count=c) for d, c in sorted(counts.items())]
+
+
+@dataclass
+class _EngagementTrendRow:
+    posted_at: datetime
+    likes: Optional[int]
+    comments: Optional[int]
+
+
+def _bucket_engagement_trend(
+    rows: list[_EngagementTrendRow], followers: int, bucket: str
+) -> list[EngagementTrendPoint]:
+    """Pure function (no DB access) so this is unit-testable in isolation.
+    Same Monday-start week bucketing as _bucket_posting_frequency. Uses one
+    fixed `followers` count (the influencer's current total) as the
+    denominator for every post regardless of when it was published --
+    reconstructing "followers at post time" would need denser
+    ProfileSnapshot history than most accounts have yet (see
+    docs/CREATOR_STATS_PLAN.md), and EngagementOut already makes this same
+    simplification for its single-number engagement rate."""
+    post_counts: dict[date, int] = {}
+    rate_sums: dict[date, list[float]] = {}
+    for row in rows:
+        bucket_date = (
+            row.posted_at.date() - timedelta(days=row.posted_at.weekday())
+            if bucket == "week"
+            else row.posted_at.date()
+        )
+        post_counts[bucket_date] = post_counts.get(bucket_date, 0) + 1
+        # Likes-hidden posts are excluded rather than treated as 0 -- same
+        # null-safety rule as EngagementOut.
+        if row.likes is None and row.comments is None:
+            continue
+        rate = ((row.likes or 0) + (row.comments or 0)) / followers
+        rate_sums.setdefault(bucket_date, []).append(rate)
+
+    points = []
+    for d in sorted(post_counts):
+        rates = rate_sums.get(d, [])
+        points.append(
+            EngagementTrendPoint(
+                date=d,
+                avg_engagement_rate=round(sum(rates) / len(rates), 4) if rates else None,
+                post_count=post_counts[d],
+            )
+        )
+    return points
+
+
+# Age-since-posted buckets for the performance decay curve: dense in the
+# first 24h (most velocity decay happens early), coarser out to 30 days,
+# with a catch-all tail. Same (upper bound seconds/hours, label) shape as
+# _REPLY_TIME_BUCKETS -- here in hours, and None-upper must be last.
+_DECAY_BUCKETS: list[tuple[Optional[float], str]] = [
+    (1, "0-1h"),
+    (3, "1-3h"),
+    (6, "3-6h"),
+    (12, "6-12h"),
+    (24, "12-24h"),
+    (48, "1-2d"),
+    (96, "2-4d"),
+    (168, "4-7d"),
+    (336, "7-14d"),
+    (720, "14-30d"),
+    (None, "30d+"),
+]
+
+
+def _decay_bucket_index(hours: float) -> int:
+    for i, (upper, _label) in enumerate(_DECAY_BUCKETS):
+        if upper is None or hours < upper:
+            return i
+    return len(_DECAY_BUCKETS) - 1  # unreachable -- last bucket has upper=None
+
+
+@dataclass
+class _DecayRow:
+    hours_since_posted: float
+    velocity_per_hour: float
+
+
+def _aggregate_performance_decay(rows: list[_DecayRow], days: int) -> PerformanceDecayOut:
+    """Pure function (no DB access) so this is unit-testable in isolation."""
+    bucket_labels = [label for _, label in _DECAY_BUCKETS]
+    sums = [0.0] * len(bucket_labels)
+    counts = [0] * len(bucket_labels)
+    for row in rows:
+        idx = _decay_bucket_index(row.hours_since_posted)
+        sums[idx] += row.velocity_per_hour
+        counts[idx] += 1
+
+    points = [
+        PerformanceDecayPoint(
+            bucket_label=label,
+            avg_velocity_per_hour=round(sums[i] / counts[i], 2) if counts[i] else None,
+            sample_size=counts[i],
+        )
+        for i, label in enumerate(bucket_labels)
+    ]
+    return PerformanceDecayOut(window_days=days, bucket_labels=bucket_labels, points=points)
+
+
+@dataclass
+class _CommentEngagementRow:
+    """Pre-resolved input to _aggregate_comment_engagement -- `format` is
+    already folded ("live" -> "long_form"), same convention as _FormatRow."""
+
+    format: str  # "long_form" | "short_form"
+    is_from_creator: bool
+    is_verified: bool
+    child_comment_count: int
+    like_count: int
+
+
+def _empty_comment_bucket() -> dict:
+    return {"comment_count": 0, "creator_replies": 0, "verified": 0, "child_sum": 0, "like_sum": 0}
+
+
+def _comment_stats_from_bucket(format_label: str, bucket: dict) -> CommentEngagementStats:
+    n = bucket["comment_count"]
+    return CommentEngagementStats(
+        format=format_label,
+        comment_count=n,
+        creator_reply_rate=round(bucket["creator_replies"] / n, 4) if n else None,
+        verified_commenter_rate=round(bucket["verified"] / n, 4) if n else None,
+        avg_child_comment_count=round(bucket["child_sum"] / n, 2) if n else None,
+        avg_likes_per_comment=round(bucket["like_sum"] / n, 2) if n else None,
+    )
+
+
+def _aggregate_comment_engagement(
+    rows: list[_CommentEngagementRow], days: int, posts_with_comments: int
+) -> CommentEngagementOut:
+    """Pure function (no DB access) so this is unit-testable in isolation."""
+    overall = _empty_comment_bucket()
+    by_format = {"long_form": _empty_comment_bucket(), "short_form": _empty_comment_bucket()}
+    for row in rows:
+        for bucket in (overall, by_format[row.format]):
+            bucket["comment_count"] += 1
+            if row.is_from_creator:
+                bucket["creator_replies"] += 1
+            if row.is_verified:
+                bucket["verified"] += 1
+            bucket["child_sum"] += row.child_comment_count
+            bucket["like_sum"] += row.like_count
+
+    return CommentEngagementOut(
+        window_days=days,
+        posts_with_comments=posts_with_comments,
+        overall=_comment_stats_from_bucket("overall", overall),
+        formats=[_comment_stats_from_bucket(fmt, by_format[fmt]) for fmt in ("long_form", "short_form")],
+    )
+
+
+def _aggregate_posting_times(posted_ats: list[datetime]) -> PostingTimeDistribution:
+    """Pure function (no DB access) so this is unit-testable in isolation.
+    weekday index 0=Monday..6=Sunday (datetime.weekday() convention); hour
+    index 0-23 in whatever tz posted_at carries (UTC, as stored)."""
+    weekday_counts = [0] * 7
+    hour_counts = [0] * 24
+    matrix = [[0] * 24 for _ in range(7)]
+    for posted_at in posted_ats:
+        wd, hr = posted_at.weekday(), posted_at.hour
+        weekday_counts[wd] += 1
+        hour_counts[hr] += 1
+        matrix[wd][hr] += 1
+
+    total = len(posted_ats)
+    return PostingTimeDistribution(
+        weekday_counts=weekday_counts,
+        hour_counts=hour_counts,
+        hourly_weekday_matrix=matrix,
+        best_weekday=weekday_counts.index(max(weekday_counts)) if total else None,
+        best_hour=hour_counts.index(max(hour_counts)) if total else None,
+        total_posts=total,
+    )
+
+
+# Time-since-post buckets for the reply-time heatmap: 15-min resolution
+# out to 90 min (an audience/comment-response window is front-loaded --
+# most reply activity happens early), then coarser 1hr buckets out to
+# 3.5h, with a catch-all tail so every measured reply lands somewhere.
+# Each tuple is (upper bound in seconds, exclusive) -- None means "no
+# upper bound" and must be last.
+_REPLY_TIME_BUCKETS: list[tuple[Optional[int], str]] = [
+    (900, "0-15m"),
+    (1800, "15-30m"),
+    (2700, "30-45m"),
+    (3600, "45-60m"),
+    (4500, "60-75m"),
+    (5400, "75-90m"),
+    (9000, "1.5-2.5h"),
+    (12600, "2.5-3.5h"),
+    (None, "3.5h+"),
+]
+
+
+def _reply_time_bucket_index(seconds: int) -> int:
+    for i, (upper, _label) in enumerate(_REPLY_TIME_BUCKETS):
+        if upper is None or seconds < upper:
+            return i
+    return len(_REPLY_TIME_BUCKETS) - 1  # unreachable -- last bucket has upper=None
+
+
+@dataclass
+class _ReplyTimeRow:
+    """Pre-resolved input to _aggregate_reply_time_heatmap -- `format` is
+    already folded ("live" -> "long_form"), same convention as _FormatRow."""
+
+    format: str  # "long_form" | "short_form"
+    reply_time_s: int
+    # Latest known total comment count for the post (PostMetricsSnapshot),
+    # None when the post has never had a metrics snapshot with a comment
+    # count -- excluded from bucket_avg_comments rather than counted as 0.
+    comments: Optional[int]
+
+
+def _aggregate_reply_time_heatmap(rows: list[_ReplyTimeRow], days: int) -> ReplyTimeHeatmapOut:
+    """Pure function (no DB access) so this is unit-testable in isolation."""
+    bucket_labels = [label for _, label in _REPLY_TIME_BUCKETS]
+    n_buckets = len(bucket_labels)
+
+    def _empty_bucket() -> dict:
+        return {
+            "counts": [0] * n_buckets,
+            "bucket_reply_times": [[] for _ in range(n_buckets)],
+            "bucket_comments": [[] for _ in range(n_buckets)],
+            "reply_times": [],
+        }
+
+    buckets: dict[str, dict] = {"long_form": _empty_bucket(), "short_form": _empty_bucket()}
+    for row in rows:
+        bucket = buckets[row.format]
+        idx = _reply_time_bucket_index(row.reply_time_s)
+        bucket["counts"][idx] += 1
+        bucket["bucket_reply_times"][idx].append(row.reply_time_s)
+        bucket["reply_times"].append(row.reply_time_s)
+        if row.comments is not None:
+            bucket["bucket_comments"][idx].append(row.comments)
+
+    formats = []
+    for fmt in ("long_form", "short_form"):
+        b = buckets[fmt]
+        formats.append(
+            ReplyTimeFormatStats(
+                format=fmt,
+                reply_count=len(b["reply_times"]),
+                avg_reply_time_s=round(sum(b["reply_times"]) / len(b["reply_times"]), 1)
+                if b["reply_times"]
+                else None,
+                bucket_counts=b["counts"],
+                bucket_avg_reply_time_s=[
+                    round(sum(times) / len(times), 1) if times else None
+                    for times in b["bucket_reply_times"]
+                ],
+                bucket_avg_comments=[
+                    round(sum(comments) / len(comments), 1) if comments else None
+                    for comments in b["bucket_comments"]
+                ],
+            )
+        )
+
+    return ReplyTimeHeatmapOut(
+        window_days=days, bucket_labels=bucket_labels, formats=formats, total_replies=len(rows)
+    )
+
+
+@dataclass
+class _FormatRow:
+    """Pre-resolved input to _aggregate_format_breakdown -- `format` is
+    already folded ("live" -> "long_form")."""
+
+    format: str  # "long_form" | "short_form"
+    views: Optional[int]
+    likes: Optional[int]
+    comments: Optional[int]
+
+
+def _aggregate_format_breakdown(rows: list[_FormatRow], days: int) -> FormatBreakdownOut:
+    """Pure function (no DB access) so this is unit-testable in isolation."""
+    buckets: dict[str, dict] = {
+        "long_form": {"post_count": 0, "total_views": 0, "total_likes": 0, "total_comments": 0, "usable_values": [], "engagement_rates": []},
+        "short_form": {"post_count": 0, "total_views": 0, "total_likes": 0, "total_comments": 0, "usable_values": [], "engagement_rates": []},
+    }
+    for row in rows:
+        bucket = buckets[row.format]
+        bucket["post_count"] += 1
+        bucket["total_views"] += row.views or 0
+        bucket["total_likes"] += row.likes or 0
+        bucket["total_comments"] += row.comments or 0
+        # Same views==0-means-no-metric rule as outlier scoring.
+        usable = row.views if row.views else row.likes
+        if usable is not None:
+            bucket["usable_values"].append(usable)
+        # Same null-safety as _point_engagement_rate: skip when the usable
+        # metric or both likes/comments are unmeasurable, never a
+        # fabricated 0/0.
+        if usable and (row.likes is not None or row.comments is not None):
+            bucket["engagement_rates"].append(((row.likes or 0) + (row.comments or 0)) / usable)
+
+    total_views = sum(b["total_views"] for b in buckets.values())
+    formats = []
+    for fmt in ("long_form", "short_form"):
+        b = buckets[fmt]
+        avg_views = round(sum(b["usable_values"]) / len(b["usable_values"]), 1) if b["usable_values"] else None
+        avg_engagement_rate = (
+            round(sum(b["engagement_rates"]) / len(b["engagement_rates"]), 4)
+            if b["engagement_rates"]
+            else None
+        )
+        formats.append(
+            FormatStats(
+                format=fmt,
+                post_count=int(b["post_count"]),
+                total_views=int(b["total_views"]),
+                total_likes=int(b["total_likes"]),
+                total_comments=int(b["total_comments"]),
+                avg_views=avg_views,
+                avg_engagement_rate=avg_engagement_rate,
+                views_share=round(b["total_views"] / total_views, 4) if total_views > 0 else 0.0,
+            )
+        )
+
+    return FormatBreakdownOut(window_days=days, formats=formats, total_views=int(total_views))
+
+
+@dataclass
+class _SponsorshipRow:
+    """Pre-resolved input to _aggregate_sponsorship_breakdown -- `format`
+    is already folded ("live" -> "long_form") so the aggregation itself
+    doesn't need the influencer's platform."""
+
+    format: str  # "long_form" | "short_form"
+    is_paid_partnership: bool
+    views: Optional[int]
+    likes: Optional[int]
+    comments: Optional[int]
+
+
+def _empty_sponsorship_bucket() -> dict:
+    return {"post_count": 0, "total_likes": 0, "total_comments": 0, "usable_values": []}
+
+
+def _sponsorship_stats_from_bucket(bucket: dict) -> SponsorshipStats:
+    post_count = bucket["post_count"]
+    return SponsorshipStats(
+        post_count=post_count,
+        avg_views=round(sum(bucket["usable_values"]) / len(bucket["usable_values"]), 1)
+        if bucket["usable_values"]
+        else None,
+        avg_likes=round(bucket["total_likes"] / post_count, 1) if post_count else None,
+        avg_comments=round(bucket["total_comments"] / post_count, 1) if post_count else None,
+    )
+
+
+def _aggregate_sponsorship_breakdown(
+    rows: list[_SponsorshipRow], days: int
+) -> SponsorshipBreakdownOut:
+    """Pure function (no DB access) so this is unit-testable in isolation.
+    Buckets posts by is_paid_partnership both overall and crossed with
+    format, using the same views-else-likes "usable metric" rule as
+    get_format_breakdown."""
+    overall = {False: _empty_sponsorship_bucket(), True: _empty_sponsorship_bucket()}
+    by_format = {
+        "long_form": {False: _empty_sponsorship_bucket(), True: _empty_sponsorship_bucket()},
+        "short_form": {False: _empty_sponsorship_bucket(), True: _empty_sponsorship_bucket()},
+    }
+    for row in rows:
+        usable = row.views if row.views else row.likes
+        for bucket in (overall[row.is_paid_partnership], by_format[row.format][row.is_paid_partnership]):
+            bucket["post_count"] += 1
+            bucket["total_likes"] += row.likes or 0
+            bucket["total_comments"] += row.comments or 0
+            if usable is not None:
+                bucket["usable_values"].append(usable)
+
+    return SponsorshipBreakdownOut(
+        window_days=days,
+        organic=_sponsorship_stats_from_bucket(overall[False]),
+        sponsored=_sponsorship_stats_from_bucket(overall[True]),
+        formats=[
+            FormatSponsorshipStats(
+                format=fmt,
+                organic=_sponsorship_stats_from_bucket(by_format[fmt][False]),
+                sponsored=_sponsorship_stats_from_bucket(by_format[fmt][True]),
+            )
+            for fmt in ("long_form", "short_form")
+        ],
+    )
+
+
+@dataclass
+class _InstagramMetricSnapshotRow:
+    post_id: UUID
+    scraped_at: date
+    views: Optional[int]
+    likes: Optional[int]
+
+
+def _reconstruct_daily_views_series(
+    baseline_values: dict[UUID, int], window_rows: list[_InstagramMetricSnapshotRow]
+) -> list[GrowthPoint]:
+    """Pure function (no DB access) so this is unit-testable in isolation.
+
+    Instagram has no channel-level lifetime view counter (unlike YouTube's
+    ProfileSnapshot.total_views), so a daily views series has to be
+    reconstructed bottom-up from per-post snapshots -- the daily-series
+    analog of _instagram_views_in_window's single-window total. Forward-
+    fills each post's last known usable-metric value (views-else-likes,
+    same convention as elsewhere in this module) across days it wasn't
+    re-scraped, summing across posts per day to get that day's cumulative
+    reconstructed total, then diffs consecutive days for daily_delta.
+
+    `baseline_values` seeds each pre-existing post's contribution with its
+    last known value from before the window, so a post that already had
+    views doesn't appear to "start from 0" -- a genuinely new post with no
+    baseline starts at 0 and jumps to its full value on its first
+    snapshot, which is correct: that value is all real growth within the
+    window."""
+    if not window_rows:
+        return []
+    current_value = dict(baseline_values)
+    by_date: dict[date, list[_InstagramMetricSnapshotRow]] = {}
+    for row in window_rows:
+        by_date.setdefault(row.scraped_at, []).append(row)
+
+    points: list[GrowthPoint] = []
+    previous_total: Optional[int] = None
+    for day in sorted(by_date):
+        for row in by_date[day]:
+            v = row.views if row.views else row.likes
+            if v is not None:
+                current_value[row.post_id] = v
+        total = sum(current_value.values())
+        points.append(
+            GrowthPoint(
+                date=day,
+                value=total,
+                daily_delta=(total - previous_total) if previous_total is not None else None,
+            )
+        )
+        previous_total = total
+    return points
 
 
 class CreatorStatsService:
@@ -280,6 +933,63 @@ class CreatorStatsService:
                 total += row.latest_likes - (row.start_likes or 0)
         return max(total, 0)
 
+    async def _instagram_views_daily_series(
+        self, influencer_id: UUID, days: int
+    ) -> list[GrowthPoint]:
+        """Reconstructs a daily cumulative-views series for Instagram from
+        per-post PostMetricsSnapshot rows -- the daily-series analog of
+        _instagram_views_in_window's single-window total. See
+        _reconstruct_daily_views_series for the actual aggregation (kept
+        as a pure function so it's unit-testable without a DB)."""
+        cutoff = date.today() - timedelta(days=days)
+
+        baseline_sq = (
+            select(
+                PostMetricsSnapshot.post_id,
+                PostMetricsSnapshot.views,
+                PostMetricsSnapshot.likes,
+                func.row_number()
+                .over(
+                    partition_by=PostMetricsSnapshot.post_id,
+                    order_by=PostMetricsSnapshot.scraped_at.desc(),
+                )
+                .label("rn"),
+            )
+            .where(PostMetricsSnapshot.scraped_at < cutoff)
+            .subquery("baseline")
+        )
+        baseline_stmt = (
+            select(baseline_sq.c.post_id, baseline_sq.c.views, baseline_sq.c.likes)
+            .select_from(baseline_sq)
+            .join(Post, Post.id == baseline_sq.c.post_id)
+            .where(baseline_sq.c.rn == 1, Post.influencer_id == influencer_id)
+        )
+        baseline_rows = (await self.session.execute(baseline_stmt)).all()
+        baseline_values = {
+            row.post_id: (row.views if row.views else row.likes) or 0 for row in baseline_rows
+        }
+
+        window_stmt = (
+            select(
+                PostMetricsSnapshot.post_id,
+                PostMetricsSnapshot.scraped_at,
+                PostMetricsSnapshot.views,
+                PostMetricsSnapshot.likes,
+            )
+            .select_from(PostMetricsSnapshot)
+            .join(Post, Post.id == PostMetricsSnapshot.post_id)
+            .where(Post.influencer_id == influencer_id, PostMetricsSnapshot.scraped_at >= cutoff)
+            .order_by(PostMetricsSnapshot.scraped_at.asc())
+        )
+        window_rows_raw = (await self.session.execute(window_stmt)).all()
+        window_rows = [
+            _InstagramMetricSnapshotRow(
+                post_id=r.post_id, scraped_at=r.scraped_at, views=r.views, likes=r.likes
+            )
+            for r in window_rows_raw
+        ]
+        return _reconstruct_daily_views_series(baseline_values, window_rows)
+
     async def get_summary(self, influencer_id: UUID) -> Optional[CreatorSummary]:
         influencer = (
             await self.session.execute(
@@ -298,6 +1008,7 @@ class CreatorStatsService:
                 handle=influencer.handle,
                 platform=influencer.platform,
                 category_name=influencer.category.name if influencer.category else None,
+                profile_pic_url=influencer.profile_pic_url,
                 followers=0,
                 post_count=0,
             )
@@ -346,6 +1057,7 @@ class CreatorStatsService:
             handle=influencer.handle,
             platform=influencer.platform,
             category_name=influencer.category.name if influencer.category else None,
+            profile_pic_url=influencer.profile_pic_url,
             country=metadata.get("country"),
             account_age_days=account_age_days,
             followers=latest.followers,
@@ -358,6 +1070,7 @@ class CreatorStatsService:
             actual_window_days_28=actual_window_days_28,
             views_28d=views_28d,
             posts_per_week=round(posts_28d / 4, 2),
+            updated_at=latest.scraped_at,
         )
 
     async def get_growth_series(
@@ -365,6 +1078,17 @@ class CreatorStatsService:
     ) -> list[GrowthPoint]:
         if metric == "earnings":
             return await self._get_earnings_series(influencer_id, days)
+
+        if metric == "total_views":
+            influencer = (
+                await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+            ).scalar_one_or_none()
+            if influencer is not None and influencer.platform != "youtube":
+                # No channel-level view counter on Instagram -- reconstruct
+                # from post snapshots instead of reading ProfileSnapshot.
+                # total_views, which is always NULL there.
+                points = await self._instagram_views_daily_series(influencer_id, days)
+                return _strip_phantom_zero_lead(points)
 
         column = {
             "followers": ProfileSnapshot.followers,
@@ -414,24 +1138,37 @@ class CreatorStatsService:
                 )
             )
             previous_value = value
+        # Only for cumulative counters where 0 is never a real value for a
+        # tracked account -- "posts" legitimately starts at 0 for a
+        # brand-new account with no posts yet, so it's excluded.
+        if metric in ("followers", "total_views"):
+            points = _strip_phantom_zero_lead(points)
         return points
 
     async def _get_earnings_series(self, influencer_id: UUID, days: int) -> list[GrowthPoint]:
         """Daily estimated-earnings band: each point is that day's view
-        growth times the channel's country RPM range -- a per-day
-        estimate, not a cumulative total. YouTube only (Instagram earnings
-        are per-post, not time-based -- see get_about's docstring in
-        docs/CREATOR_STATS_V2_PLAN.md Phase B1); returns [] for Instagram.
+        growth times a platform-appropriate per-1000-views rate -- a
+        per-day estimate, not a cumulative total. YouTube uses real
+        country AdSense RPM benchmarks; Instagram (no ad-revenue-share
+        program at this granularity -- see estimate_instagram_earnings'
+        docstring for the platform's actual per-sponsored-post economics)
+        uses a rough per-view content-value heuristic instead. Both roll
+        up from the same total_views daily series -- real for YouTube,
+        reconstructed from post snapshots for Instagram (see
+        get_growth_series / _instagram_views_daily_series).
         """
         influencer = (
             await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
         ).scalar_one_or_none()
-        if influencer is None or influencer.platform != "youtube":
+        if influencer is None:
             return []
 
-        latest = await self._closest_snapshot(influencer_id, date.today())
-        country = (latest.platform_metadata or {}).get("country") if latest else None
-        low_rpm, high_rpm = youtube_rpm_range(country)
+        if influencer.platform == "youtube":
+            latest = await self._closest_snapshot(influencer_id, date.today())
+            country = (latest.platform_metadata or {}).get("country") if latest else None
+            low_rate, high_rate = youtube_rpm_range(country)
+        else:
+            low_rate, high_rate = instagram_value_per_1k_views_range()
 
         views_series = await self.get_growth_series(influencer_id, days=days, metric="total_views")
         points: list[GrowthPoint] = []
@@ -441,8 +1178,8 @@ class CreatorStatsService:
             points.append(
                 GrowthPoint(
                     date=point.date,
-                    value_low=round(point.daily_delta * low_rpm / 1000, 2),
-                    value_high=round(point.daily_delta * high_rpm / 1000, 2),
+                    value_low=round(point.daily_delta * low_rate / 1000, 2),
+                    value_high=round(point.daily_delta * high_rate / 1000, 2),
                 )
             )
         return points
@@ -497,15 +1234,14 @@ class CreatorStatsService:
             engagement_rate=round(rate, 4), sample_size=len(usable), lookback_posts=last_n_posts
         )
 
-    async def get_post_performance(
-        self, influencer_id: UUID, limit: int = 20, content_format_filter: Optional[str] = None
-    ) -> list[PostPerformance]:
-        influencer = (
-            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
-        ).scalar_one_or_none()
-        if influencer is None:
-            return []
-
+    async def _fetch_metric_points_asc(
+        self, influencer_id: UUID, fetch_count: int
+    ) -> tuple[list[_PostMetricPoint], list]:
+        """Shared by get_post_performance and recompute_outlier_metrics --
+        the last `fetch_count` posts (by posted_at) with their latest
+        metrics snapshot, oldest-first. Returns (points_asc, raw_rows_asc)
+        -- callers that need Post.product_type (for content_format) use the
+        raw rows; the pure-function scoring path only needs points_asc."""
         latest_metric_sq = (
             select(
                 PostMetricsSnapshot.post_id,
@@ -521,14 +1257,6 @@ class CreatorStatsService:
             )
             .subquery("latest_metric")
         )
-
-        # Outlier medians are always computed over ALL formats (a Short's
-        # views are still compared against the channel's overall median,
-        # matching vidiq) -- content_format_filter only narrows what's
-        # returned, applied client-side after scoring. When filtering,
-        # fetch a much larger candidate pool so `limit` filtered posts can
-        # actually be found even on a channel that's mostly one format.
-        fetch_count = (limit * 8 if content_format_filter else limit) + OUTLIER_LOOKBACK_POSTS
         stmt = (
             select(
                 Post.id,
@@ -552,11 +1280,7 @@ class CreatorStatsService:
         )
         rows = (await self.session.execute(stmt)).all()
         rows_asc = list(reversed(rows))
-
-        formats_by_post: dict[UUID, str] = {
-            row.id: content_format(influencer.platform, row.product_type) for row in rows_asc
-        }
-        points_asc = [
+        return [
             _PostMetricPoint(
                 post_id=row.id,
                 posted_at=row.posted_at,
@@ -567,14 +1291,70 @@ class CreatorStatsService:
                 comments=row.comments,
             )
             for row in rows_asc
-        ]
+        ], rows_asc
+
+    async def get_post_performance(
+        self,
+        influencer_id: UUID,
+        limit: int = 20,
+        content_format_filter: Optional[str] = None,
+        sort: str = "latest",
+    ) -> list[PostPerformance]:
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return []
+
+        # Outlier medians are always computed over ALL formats (a Short's
+        # views are still compared against the channel's overall median,
+        # matching vidiq) -- content_format_filter only narrows what's
+        # returned, applied client-side after scoring. When filtering,
+        # fetch a much larger candidate pool so `limit` filtered posts can
+        # actually be found even on a channel that's mostly one format.
+        #
+        # sort="top" re-ranks by outlier_score/views instead of recency, so
+        # it needs a much wider candidate pool than "latest" -- otherwise
+        # it could only ever find "top of the last `limit` posts" rather
+        # than anything resembling top-of-all-time. TOP_SORT_CANDIDATE_POOL
+        # trades off against outlier_score staying correct (it needs the
+        # OUTLIER_LOOKBACK_POSTS immediately preceding each candidate,
+        # which this single posted_at-ordered fetch already provides) vs.
+        # not scanning a channel's entire multi-thousand-post history on
+        # every request.
+        if sort == "top":
+            fetch_count = TOP_SORT_CANDIDATE_POOL * (2 if content_format_filter else 1)
+        else:
+            fetch_count = (limit * 8 if content_format_filter else limit) + OUTLIER_LOOKBACK_POSTS
+
+        points_asc, rows_asc = await self._fetch_metric_points_asc(influencer_id, fetch_count)
+        formats_by_post: dict[UUID, str] = {
+            row.id: content_format(influencer.platform, row.product_type) for row in rows_asc
+        }
         now = datetime.now(timezone.utc)
         scores = _compute_outlier_and_velocity(points_asc, influencer.platform, now)
 
-        newest_first = list(reversed(points_asc))
+        ordered = list(reversed(points_asc))
         if content_format_filter:
-            newest_first = [p for p in newest_first if formats_by_post[p.post_id] == content_format_filter]
-        newest_first = newest_first[:limit]
+            ordered = [p for p in ordered if formats_by_post[p.post_id] == content_format_filter]
+        if sort == "top":
+            ordered = sorted(
+                ordered,
+                key=lambda p: (scores[p.post_id][0] if scores[p.post_id][0] is not None else -1, p.views or p.likes or 0),
+                reverse=True,
+            )
+        newest_first = ordered[:limit]
+
+        # True current velocity (docs/OUTLIERS_PLAN.md Phase 2) -- only
+        # computed for the page actually being returned (<= limit posts),
+        # not the whole candidate pool, since it needs a snapshot-pair
+        # query per post. Falls back to the age-restricted lifetime-average
+        # figure (scores[...][1]) for posts with only one snapshot so far
+        # (freshly posted, no delta yet) -- otherwise None, meaning "not
+        # enough scrape history yet", not "too old".
+        vph_by_post = await self._compute_vph_current_by_post(
+            [p.post_id for p in newest_first], influencer.platform
+        )
 
         return [
             PostPerformance(
@@ -586,11 +1366,148 @@ class CreatorStatsService:
                 likes=p.likes,
                 comments=p.comments,
                 outlier_score=scores[p.post_id][0],
-                velocity_per_hour=scores[p.post_id][1],
+                velocity_per_hour=(
+                    vph_by_post[p.post_id]
+                    if vph_by_post[p.post_id] is not None
+                    else scores[p.post_id][1]
+                ),
                 format=formats_by_post[p.post_id],
             )
             for p in newest_first
         ]
+
+    async def _fetch_last_two_snapshots(
+        self, post_ids: list[UUID]
+    ) -> dict[UUID, list[tuple[date, Optional[int], Optional[int]]]]:
+        """For each post_id, its up-to-2 most recent *distinct-day* metrics
+        snapshots (views, likes), newest first -- the raw material for true
+        VPH (docs/OUTLIERS_PLAN.md Phase 2). Same-day duplicate snapshots
+        are deduped by created_at DESC first, matching the convention used
+        elsewhere in this module."""
+        if not post_ids:
+            return {}
+        daily = (
+            select(
+                PostMetricsSnapshot.post_id,
+                PostMetricsSnapshot.scraped_at,
+                PostMetricsSnapshot.views,
+                PostMetricsSnapshot.likes,
+                func.row_number()
+                .over(
+                    partition_by=(PostMetricsSnapshot.post_id, PostMetricsSnapshot.scraped_at),
+                    order_by=PostMetricsSnapshot.created_at.desc(),
+                )
+                .label("day_rn"),
+            )
+            .where(PostMetricsSnapshot.post_id.in_(post_ids))
+            .subquery("daily")
+        )
+        ranked = (
+            select(
+                daily.c.post_id,
+                daily.c.scraped_at,
+                daily.c.views,
+                daily.c.likes,
+                func.row_number()
+                .over(partition_by=daily.c.post_id, order_by=daily.c.scraped_at.desc())
+                .label("rn"),
+            )
+            .where(daily.c.day_rn == 1)
+            .subquery("ranked")
+        )
+        stmt = select(ranked).where(ranked.c.rn <= 2)
+        rows = (await self.session.execute(stmt)).all()
+
+        result: dict[UUID, list[tuple[date, Optional[int], Optional[int]]]] = {}
+        for row in rows:
+            result.setdefault(row.post_id, []).append((row.scraped_at, row.views, row.likes))
+        for pid, snaps in result.items():
+            snaps.sort(key=lambda s: s[0], reverse=True)
+        return result
+
+    async def _compute_vph_current_by_post(
+        self, post_ids: list[UUID], platform: str
+    ) -> dict[UUID, Optional[float]]:
+        """True current velocity (docs/OUTLIERS_PLAN.md Phase 2) for a batch
+        of posts, keyed by post_id -- None where fewer than 2 distinct-day
+        snapshots exist yet. Shared by recompute_outlier_metrics (batch
+        persistence) and get_post_performance (the live profile endpoint),
+        so a post's velocity doesn't drift depending on which path
+        computed it."""
+        snapshots_by_post = await self._fetch_last_two_snapshots(post_ids)
+        result: dict[UUID, Optional[float]] = {}
+        for post_id in post_ids:
+            snaps = snapshots_by_post.get(post_id, [])
+            if len(snaps) < 2:
+                result[post_id] = None
+                continue
+            (cur_date, cur_views, cur_likes), (prev_date, prev_views, prev_likes) = snaps[0], snaps[1]
+            cur_metric, prev_metric = _select_metric_pair(platform, cur_views, cur_likes, prev_views, prev_likes)
+            result[post_id] = _compute_vph_current(cur_metric, cur_date, prev_metric, prev_date)
+        return result
+
+    async def recompute_outlier_metrics(self, influencer_id: UUID) -> int:
+        """Batch counterpart to get_post_performance's live scoring --
+        persists baseline_multiple/vph_current/vph_lifetime/engagement_ratio
+        and a blended composite outlier_score into post_outlier_metrics for
+        an influencer's recent posts. Called after a scrape lands new
+        PostMetricsSnapshot rows (see JobProcessor._record_metrics_snapshot)
+        and by scripts/backfill_outlier_metrics.py. See
+        docs/OUTLIERS_PLAN.md Phase 1/2. Returns the number of posts
+        upserted.
+
+        Only re-scores the last RECENT_RESCORE_WINDOW posts, not full
+        history: older posts' medians don't meaningfully shift once their
+        surrounding window is stable, and rescanning a channel's entire
+        multi-thousand-post history on every scrape doesn't pay for itself.
+        """
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return 0
+
+        points_asc, _ = await self._fetch_metric_points_asc(
+            influencer_id, RECENT_RESCORE_WINDOW + OUTLIER_LOOKBACK_POSTS
+        )
+        if not points_asc:
+            return 0
+
+        now = datetime.now(timezone.utc)
+        details = _compute_outlier_details(points_asc, influencer.platform, now)
+
+        # Only the most recent RECENT_RESCORE_WINDOW posts are written --
+        # the leading OUTLIER_LOOKBACK_POSTS exist purely to feed those
+        # posts' rolling medians and don't need their own rows rewritten.
+        to_persist = points_asc[-RECENT_RESCORE_WINDOW:]
+        vph_by_post = await self._compute_vph_current_by_post(
+            [p.post_id for p in to_persist], influencer.platform
+        )
+
+        rows = []
+        for p in to_persist:
+            detail = details[p.post_id]
+            vph_current = vph_by_post[p.post_id]
+
+            outlier_score = _compute_composite_outlier_score(
+                baseline_multiple=detail.outlier_score,
+                vph_current=vph_current,
+                vph_lifetime=detail.velocity_per_hour,
+                engagement_ratio=detail.engagement_ratio,
+            )
+            rows.append(
+                {
+                    "post_id": p.post_id,
+                    "outlier_score": outlier_score,
+                    "baseline_multiple": detail.outlier_score,
+                    "vph_current": vph_current,
+                    "vph_lifetime": detail.velocity_per_hour,
+                    "engagement_ratio": detail.engagement_ratio,
+                    "baseline_median": detail.baseline_median,
+                }
+            )
+        await PostOutlierMetricsRepo(self.session).upsert_many(rows)
+        return len(rows)
 
     async def get_format_breakdown(self, influencer_id: UUID, days: int) -> Optional[FormatBreakdownOut]:
         influencer = (
@@ -631,42 +1548,353 @@ class CreatorStatsService:
         )
         rows = (await self.session.execute(stmt)).all()
 
-        buckets: dict[str, dict[str, float]] = {
-            "long_form": {"post_count": 0, "total_views": 0, "total_likes": 0, "total_comments": 0, "usable_values": []},
-            "short_form": {"post_count": 0, "total_views": 0, "total_likes": 0, "total_comments": 0, "usable_values": []},
-        }
+        format_rows = []
         for row in rows:
             fmt = content_format(influencer.platform, row.product_type)
             if fmt == "live":
                 fmt = "long_form"  # folded into long_form for this breakdown, see FormatStats
-            bucket = buckets[fmt]
-            bucket["post_count"] += 1
-            bucket["total_views"] += row.views or 0
-            bucket["total_likes"] += row.likes or 0
-            bucket["total_comments"] += row.comments or 0
-            # Same views==0-means-no-metric rule as outlier scoring.
-            usable = row.views if row.views else row.likes
-            if usable is not None:
-                bucket["usable_values"].append(usable)
+            format_rows.append(
+                _FormatRow(format=fmt, views=row.views, likes=row.likes, comments=row.comments)
+            )
 
-        total_views = sum(b["total_views"] for b in buckets.values())
-        formats = []
-        for fmt in ("long_form", "short_form"):
-            b = buckets[fmt]
-            avg_views = round(sum(b["usable_values"]) / len(b["usable_values"]), 1) if b["usable_values"] else None
-            formats.append(
-                FormatStats(
+        return _aggregate_format_breakdown(format_rows, days)
+
+    async def get_sponsorship_breakdown(
+        self, influencer_id: UUID, days: int
+    ) -> Optional[SponsorshipBreakdownOut]:
+        """Officially-disclosed sponsored (Post.is_paid_partnership) vs
+        organic performance, overall and crossed with format. Undercounts
+        real sponsorships -- only catches posts where the creator used the
+        platform's own paid-partnership/paid-promotion disclosure tool --
+        see Post.is_paid_partnership and SponsorshipBreakdownOut's docstring."""
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return None
+
+        latest_metric_sq = (
+            select(
+                PostMetricsSnapshot.post_id,
+                PostMetricsSnapshot.views,
+                PostMetricsSnapshot.likes,
+                PostMetricsSnapshot.comments,
+                func.row_number()
+                .over(
+                    partition_by=PostMetricsSnapshot.post_id,
+                    order_by=PostMetricsSnapshot.scraped_at.desc(),
+                )
+                .label("rn"),
+            )
+            .subquery("latest_metric")
+        )
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        stmt = (
+            select(
+                Post.product_type,
+                Post.is_paid_partnership,
+                latest_metric_sq.c.views,
+                latest_metric_sq.c.likes,
+                latest_metric_sq.c.comments,
+            )
+            .select_from(Post)
+            .outerjoin(
+                latest_metric_sq,
+                (latest_metric_sq.c.post_id == Post.id) & (latest_metric_sq.c.rn == 1),
+            )
+            .where(Post.influencer_id == influencer_id, Post.posted_at >= cutoff)
+        )
+        rows = (await self.session.execute(stmt)).all()
+
+        sponsorship_rows = []
+        for row in rows:
+            fmt = content_format(influencer.platform, row.product_type)
+            if fmt == "live":
+                fmt = "long_form"
+            sponsorship_rows.append(
+                _SponsorshipRow(
                     format=fmt,
-                    post_count=int(b["post_count"]),
-                    total_views=int(b["total_views"]),
-                    total_likes=int(b["total_likes"]),
-                    total_comments=int(b["total_comments"]),
-                    avg_views=avg_views,
-                    views_share=round(b["total_views"] / total_views, 4) if total_views > 0 else 0.0,
+                    is_paid_partnership=row.is_paid_partnership,
+                    views=row.views,
+                    likes=row.likes,
+                    comments=row.comments,
                 )
             )
 
-        return FormatBreakdownOut(window_days=days, formats=formats, total_views=int(total_views))
+        return _aggregate_sponsorship_breakdown(sponsorship_rows, days)
+
+    async def get_posting_frequency(
+        self, influencer_id: UUID, days: int, bucket: str = "week"
+    ) -> list[PostingFrequencyPoint]:
+        """How many posts landed per week (or day) over the window --
+        answers "are they posting consistently" at a glance, which none of
+        the existing growth/format charts show. Bucketed in Python rather
+        than a DB date_trunc so "week" always means "Monday-start calendar
+        week" regardless of dialect-specific week-numbering quirks."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        stmt = (
+            select(Post.posted_at)
+            .where(Post.influencer_id == influencer_id, Post.posted_at >= cutoff)
+            .order_by(Post.posted_at.asc())
+        )
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return _bucket_posting_frequency(list(rows), bucket)
+
+    async def get_posting_time_distribution(
+        self, influencer_id: UUID, days: int
+    ) -> PostingTimeDistribution:
+        """Post counts by weekday and by hour-of-day (UTC) -- surfaces
+        whether a creator has a consistent posting rhythm, using data
+        that's already on every Post row (posted_at); no extra table or
+        backfill needed."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        stmt = select(Post.posted_at).where(
+            Post.influencer_id == influencer_id, Post.posted_at >= cutoff
+        )
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return _aggregate_posting_times(list(rows))
+
+    async def get_reply_time_heatmap(
+        self, influencer_id: UUID, days: int
+    ) -> Optional[ReplyTimeHeatmapOut]:
+        """How quickly the creator replies to comments, bucketed by
+        time-since-post and crossed with format -- built entirely from
+        FeatureStore.time_to_first_creator_reply_s (real platform comment
+        timestamps, computed in comment_sync.py), no new scraping needed."""
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return None
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        latest_metric_sq = (
+            select(
+                PostMetricsSnapshot.post_id,
+                PostMetricsSnapshot.comments,
+                func.row_number()
+                .over(
+                    partition_by=PostMetricsSnapshot.post_id,
+                    order_by=PostMetricsSnapshot.scraped_at.desc(),
+                )
+                .label("rn"),
+            )
+            .subquery("latest_metric")
+        )
+        stmt = (
+            select(
+                Post.product_type,
+                FeatureStore.time_to_first_creator_reply_s,
+                latest_metric_sq.c.comments,
+            )
+            .select_from(Post)
+            .join(FeatureStore, FeatureStore.post_id == Post.id)
+            .outerjoin(
+                latest_metric_sq,
+                (latest_metric_sq.c.post_id == Post.id) & (latest_metric_sq.c.rn == 1),
+            )
+            .where(
+                Post.influencer_id == influencer_id,
+                Post.posted_at >= cutoff,
+                FeatureStore.time_to_first_creator_reply_s.is_not(None),
+            )
+        )
+        rows = (await self.session.execute(stmt)).all()
+
+        reply_rows = []
+        for row in rows:
+            fmt = content_format(influencer.platform, row.product_type)
+            if fmt == "live":
+                fmt = "long_form"
+            reply_rows.append(
+                _ReplyTimeRow(
+                    format=fmt,
+                    reply_time_s=row.time_to_first_creator_reply_s,
+                    comments=row.comments,
+                )
+            )
+
+        return _aggregate_reply_time_heatmap(reply_rows, days)
+
+    async def get_engagement_trend(
+        self, influencer_id: UUID, days: int, bucket: str = "week"
+    ) -> list[EngagementTrendPoint]:
+        """Engagement rate ((likes+comments)/followers), averaged per
+        posting-date bucket -- the time-series extension of
+        get_engagement_rate, built entirely from existing PostMetricsSnapshot
+        data. Empty when there's no usable follower count yet (mirrors
+        get_engagement_rate's own guard)."""
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        latest = await self._closest_snapshot(influencer_id, date.today())
+        if influencer is None or latest is None or latest.subscribers_hidden or latest.followers <= 0:
+            return []
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        latest_metric_sq = (
+            select(
+                PostMetricsSnapshot.post_id,
+                PostMetricsSnapshot.likes,
+                PostMetricsSnapshot.comments,
+                func.row_number()
+                .over(
+                    partition_by=PostMetricsSnapshot.post_id,
+                    order_by=PostMetricsSnapshot.scraped_at.desc(),
+                )
+                .label("rn"),
+            )
+            .subquery("latest_metric")
+        )
+        stmt = (
+            select(Post.posted_at, latest_metric_sq.c.likes, latest_metric_sq.c.comments)
+            .select_from(Post)
+            .outerjoin(
+                latest_metric_sq,
+                (latest_metric_sq.c.post_id == Post.id) & (latest_metric_sq.c.rn == 1),
+            )
+            .where(Post.influencer_id == influencer_id, Post.posted_at >= cutoff)
+            .order_by(Post.posted_at.asc())
+        )
+        rows = (await self.session.execute(stmt)).all()
+        trend_rows = [
+            _EngagementTrendRow(posted_at=row.posted_at, likes=row.likes, comments=row.comments)
+            for row in rows
+        ]
+        return _bucket_engagement_trend(trend_rows, latest.followers, bucket)
+
+    async def get_performance_decay(
+        self, influencer_id: UUID, days: int
+    ) -> Optional[PerformanceDecayOut]:
+        """Cohort views/likes-per-hour decay curve: every PostMetricsSnapshot
+        for posts published in the window, bucketed by how many hours old
+        the post was at that snapshot. Built as a cohort curve rather than
+        per-post -- most posts only get re-scraped a handful of times (see
+        docs/analysis backing this feature), so a single post rarely has
+        enough snapshots to plot its own decay, but averaging across posts
+        per age bucket is reliable with current snapshot volume."""
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return None
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        stmt = (
+            select(Post.posted_at, PostMetricsSnapshot.scraped_at, PostMetricsSnapshot.views, PostMetricsSnapshot.likes)
+            .select_from(PostMetricsSnapshot)
+            .join(Post, Post.id == PostMetricsSnapshot.post_id)
+            .where(Post.influencer_id == influencer_id, Post.posted_at >= cutoff)
+        )
+        rows = (await self.session.execute(stmt)).all()
+
+        decay_rows = []
+        for posted_at, scraped_at, views, likes in rows:
+            metric = views if views else likes
+            if metric is None:
+                continue
+            # scraped_at is date-only; treat it as end-of-day for the age
+            # calculation since the real scrape time within that day isn't
+            # recorded -- coarse, but consistent across every snapshot.
+            scraped_dt = datetime.combine(scraped_at, datetime.max.time(), tzinfo=timezone.utc)
+            hours = (scraped_dt - posted_at).total_seconds() / 3600
+            if hours <= 0:
+                continue
+            decay_rows.append(_DecayRow(hours_since_posted=hours, velocity_per_hour=metric / hours))
+
+        return _aggregate_performance_decay(decay_rows, days)
+
+    async def get_comment_engagement(
+        self, influencer_id: UUID, days: int
+    ) -> Optional[CommentEngagementOut]:
+        """Audience-quality signal built entirely from the comments table:
+        creator-reply rate, verified-commenter share, and thread depth,
+        overall and crossed with format. Coverage is naturally partial --
+        only posts that had comments scraped contribute -- see
+        CommentEngagementOut.posts_with_comments."""
+        influencer = (
+            await self.session.execute(select(Influencer).where(Influencer.id == influencer_id))
+        ).scalar_one_or_none()
+        if influencer is None:
+            return None
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        stmt = (
+            select(
+                Post.id,
+                Post.product_type,
+                Comment.is_from_creator,
+                Comment.is_verified,
+                Comment.child_comment_count,
+                Comment.like_count,
+            )
+            .select_from(Comment)
+            .join(Post, Post.id == Comment.post_id)
+            .where(Post.influencer_id == influencer_id, Post.posted_at >= cutoff)
+        )
+        rows = (await self.session.execute(stmt)).all()
+
+        comment_rows = []
+        posts_with_comments = set()
+        for post_id, product_type, is_from_creator, is_verified, child_comment_count, like_count in rows:
+            posts_with_comments.add(post_id)
+            fmt = content_format(influencer.platform, product_type)
+            if fmt == "live":
+                fmt = "long_form"
+            comment_rows.append(
+                _CommentEngagementRow(
+                    format=fmt,
+                    is_from_creator=is_from_creator,
+                    is_verified=is_verified,
+                    child_comment_count=child_comment_count,
+                    like_count=like_count,
+                )
+            )
+
+        return _aggregate_comment_engagement(comment_rows, days, len(posts_with_comments))
+
+    async def get_follower_ratio_series(
+        self, influencer_id: UUID, days: int
+    ) -> list[FollowerRatioPoint]:
+        """Daily followers/following, plus the derived ratio -- trivial off
+        ProfileSnapshot, but not surfaced as its own trend anywhere yet.
+        Same same-day dedupe as get_growth_series."""
+        cutoff = date.today() - timedelta(days=days)
+        row_number = (
+            func.row_number()
+            .over(
+                partition_by=ProfileSnapshot.scraped_at,
+                order_by=ProfileSnapshot.created_at.desc(),
+            )
+        )
+        subq = (
+            select(
+                ProfileSnapshot.scraped_at,
+                ProfileSnapshot.followers,
+                ProfileSnapshot.following,
+                row_number.label("rn"),
+            )
+            .where(
+                ProfileSnapshot.influencer_id == influencer_id,
+                ProfileSnapshot.scraped_at >= cutoff,
+            )
+            .subquery("daily_snapshot")
+        )
+        stmt = (
+            select(subq.c.scraped_at, subq.c.followers, subq.c.following)
+            .where(subq.c.rn == 1)
+            .order_by(subq.c.scraped_at.asc())
+        )
+        rows = (await self.session.execute(stmt)).all()
+        return [
+            FollowerRatioPoint(
+                date=scraped_at,
+                followers=followers,
+                following=following,
+                ratio=round(followers / following, 2) if following else None,
+            )
+            for scraped_at, followers, following in rows
+        ]
 
     async def get_about(self, influencer_id: UUID) -> Optional[AboutOut]:
         influencer = (
@@ -753,6 +1981,7 @@ class CreatorStatsService:
                     post_id=p.post_id,
                     permalink=p.permalink,
                     metric_value=metric_value,
+                    format=p.format,
                 )
             )
 

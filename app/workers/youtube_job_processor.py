@@ -7,10 +7,12 @@ import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from app.analytics.creator_stats import CreatorStatsService
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.database import get_session
 from app.core.exceptions import (
+    InfluencerHandleNotFoundError,
     InfluencerNotFoundError,
     NoUsableYouTubeKeyError,
     ScraperBlockedError,
@@ -112,10 +114,29 @@ class YouTubeJobProcessor:
                     await self._run_scrape(session, job)
                     job.status = "completed"
                     job.error_message = None
+                    await self._recompute_outlier_metrics(session)
                 except JobCancelledError:
                     logger.info("Scrape cancelled", job_id=job.id)
                     outcome = "cancelled"
                     job.error_message = None
+                except InfluencerHandleNotFoundError as e:
+                    # The handle/channel itself doesn't resolve -- every API
+                    # key would fail this identically, and retrying won't
+                    # make a bad handle start existing, so this fails the
+                    # job outright and deactivates the influencer instead of
+                    # burning SCRAPER_MAX_RETRIES attempts (see
+                    # InfluencerHandleNotFoundError's docstring).
+                    logger.warning("Scrape handle not found", job_id=job.id, error=str(e))
+                    outcome = "target_not_found"
+                    job.error_message = str(e)
+                    await self._deactivate_for_missing_handle(session)
+                except InfluencerNotFoundError as e:
+                    # Our own Influencer row got deleted while this job sat
+                    # queued -- a race, not a data problem, so there's
+                    # nothing to deactivate, but also nothing a retry fixes.
+                    logger.warning("Scrape target not found", job_id=job.id, error=str(e))
+                    outcome = "target_not_found"
+                    job.error_message = str(e)
                 except ScraperBlockedError as e:
                     logger.exception("Scrape blocked", exc_info=e)
                     outcome = "blocked"
@@ -132,6 +153,10 @@ class YouTubeJobProcessor:
                 finally:
                     if outcome == "cancelled":
                         job.status = "cancelled"
+                    elif outcome == "target_not_found":
+                        # See the InfluencerHandleNotFoundError/
+                        # InfluencerNotFoundError handlers above.
+                        job.status = "failed"
                     elif outcome != "success":
                         job.retry_count += 1
                         job.status = (
@@ -155,6 +180,36 @@ class YouTubeJobProcessor:
                     await heartbeat_task
                 except asyncio.CancelledError:
                     pass
+
+    async def _deactivate_for_missing_handle(self, session: AsyncSession) -> None:
+        """Same as JobProcessor's counterpart -- the platform confirmed
+        this handle doesn't resolve to any channel, so deactivate the
+        influencer instead of dispatching it every day forever. Mutates
+        in-session only; the caller's existing finally-block commit
+        persists this alongside the job status update, same transaction."""
+        influencer = await session.get(Influencer, self.message.influencer_id)
+        if influencer is None:
+            return
+        influencer.is_active = False
+        influencer.deactivation_reason = "handle_not_found"
+
+    async def _recompute_outlier_metrics(self, session: AsyncSession) -> None:
+        """Best-effort: re-score and persist this channel's recent videos'
+        outlier metrics (docs/OUTLIERS_PLAN.md Phase 1) now that new
+        PostMetricsSnapshot rows landed. Never fails the scrape job -- an
+        outlier-scoring bug shouldn't take down data collection."""
+        try:
+            await CreatorStatsService(session).recompute_outlier_metrics(
+                self.message.influencer_id
+            )
+            await session.commit()
+        except Exception:
+            logger.warning(
+                "Outlier metrics recompute failed",
+                influencer_id=self.message.influencer_id,
+                exc_info=True,
+            )
+            await session.rollback()
 
     async def _heartbeat(self, job_id: UUID) -> None:
         """Same liveness ticker as JobProcessor._heartbeat, minus account
@@ -189,19 +244,23 @@ class YouTubeJobProcessor:
             # channels.list returned zero items -- deleted channel, or (the
             # common case in practice) the registered handle doesn't match
             # any real channel's forHandle value exactly. A 200 with an
-            # empty list, not an HTTP error, so the client can't
-            # distinguish this from "unavailable" on its own; surfaced
-            # here as blocked (counted retry, clear message) same as
-            # JobProcessor treats an unresolvable target. Once the
-            # influencer's handle is corrected (Influencers page -> edit),
-            # the next daily scrape resolves it with no other action needed.
-            raise ScraperBlockedError(
-                handle=f"{handle} (no channel found for this handle -- verify it's exact, e.g. via youtube.com/{handle})",
-                platform="youtube",
-            )
+            # empty list, not an HTTP error. This is a bad *target*, not a
+            # blocked *key* -- every key would resolve this identically, so
+            # (matching InstagramClient.get_user_info's own empty-profile
+            # case) it's raised as InfluencerHandleNotFoundError, which
+            # deactivates the influencer instead of burning retries on a
+            # handle that isn't going to start existing. Once corrected
+            # (Influencers page -> edit) and reactivated, the next daily
+            # scrape resolves it with no other action needed.
+            raise InfluencerHandleNotFoundError(handle, "youtube")
 
         if influencer.platform_user_id is None:
             influencer.platform_user_id = channel.channel_id
+        # Refreshed every scrape, same as job_processor.py's Instagram
+        # side -- channel thumbnails can change and (like Instagram's) are
+        # served from an expiring-link CDN.
+        if channel.thumbnail_url:
+            influencer.profile_pic_url = channel.thumbnail_url
 
         session.add(
             ProfileSnapshot(

@@ -76,20 +76,30 @@ class InfluencerRepo:
 
     async def create(self, data: InfluencerCreate) -> Influencer:
         handle = self.normalize_handle(data.platform, data.handle)
+        # Every influencer gets a Creator group, not just ones explicitly
+        # linked at creation -- an unnamed one defaults to the handle
+        # (stripped of YouTube's "@" prefix), so every account gets its own
+        # combined creator profile from day one ("linked across 1
+        # platform") instead of that page requiring an explicit link first.
+        # get_or_create_by_name's case-insensitive matching means two
+        # accounts registered with the same default name (e.g. the same
+        # handle string reused across platforms) still merge into one
+        # creator, consistent with how an explicit creator_name links
+        # platforms together.
+        #
         # Resolved before constructing the Influencer row -- if the
         # get-or-create races another request on a duplicate name and
         # rolls back, nothing else in this transaction is lost yet.
-        creator_id = None
-        if data.creator_name and data.creator_name.strip():
-            creator = await CreatorRepo(self.session).get_or_create_by_name(data.creator_name)
-            creator_id = creator.id
+        creator_name = (data.creator_name or "").strip() or handle.lstrip("@")
+        creator = await CreatorRepo(self.session).get_or_create_by_name(creator_name)
 
         influencer = Influencer(
             handle=handle,
             category_id=data.category_id,
             platform=data.platform,
             scrape_posts_since=data.scrape_posts_since,
-            creator_id=creator_id,
+            creator_id=creator.id,
+            account_type=data.account_type,
         )
         self.session.add(influencer)
         try:
@@ -111,9 +121,18 @@ class InfluencerRepo:
         """Pause/resume tracking without touching any scraped data -- the
         default, reversible "remove" action. run_daily_scrapes() and the
         dashboard's add-influencer flow already only consider is_active
-        influencers."""
+        influencers.
+
+        Always clears paused_by_category: a direct per-influencer toggle is
+        now the explicit source of truth for this row, so a later category
+        reactivate (CategoryRepo.update, which only resumes influencers it
+        itself paused) must not touch it -- e.g. re-deactivating a single
+        influencer someone just reactivated by hand shouldn't be silently
+        undone the next time its category cycles off and back on."""
         influencer = await self.get_by_id(influencer_id)
         influencer.is_active = data.is_active
+        influencer.paused_by_category = False
+        influencer.deactivation_reason = None
         await self.session.commit()
         return influencer
 
@@ -125,6 +144,13 @@ class InfluencerRepo:
         influencer = await self.get_by_id(influencer_id)
         if data.handle is not None:
             influencer.handle = self.normalize_handle(influencer.platform, data.handle)
+            # A handle correction is exactly the fix a "handle not found,
+            # please recheck" deactivation was asking for -- clear the flag
+            # so the next scrape gets a real chance instead of the influencer
+            # silently staying deactivated with a now-stale reason. Doesn't
+            # touch is_active itself: the corrected handle still needs the
+            # normal reactivate action (or the edit form can do both at once).
+            influencer.deactivation_reason = None
         if data.category_id is not None:
             influencer.category_id = data.category_id
         if data.creator_name is not None:
@@ -133,6 +159,8 @@ class InfluencerRepo:
                 influencer.creator_id = creator.id
             else:
                 influencer.creator_id = None
+        if data.account_type is not None:
+            influencer.account_type = data.account_type
         try:
             await self.session.commit()
         except IntegrityError:

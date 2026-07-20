@@ -43,6 +43,29 @@ class InfluencerNotFoundError(NotFoundError):
         super().__init__(f"Influencer not found: {handle_or_id}")
 
 
+class InfluencerHandleNotFoundError(NotFoundError):
+    """The platform itself confirms this handle/channel doesn't exist --
+    distinct from InfluencerNotFoundError (our own Influencer row vanished
+    mid-flight, nothing to act on) and from ScraperBlockedError (the
+    scraper's session/account is the problem, not the target). Raised by
+    InstagramClient.get_user_info on a definitively empty profile lookup,
+    and by YouTubeJobProcessor._run_scrape when channels.list resolves to
+    nothing -- both job processors respond by deactivating the influencer
+    (see JobProcessor/YouTubeJobProcessor._deactivate_for_missing_handle)
+    instead of endlessly retrying a handle that will never resolve, and
+    without penalizing the scraper account/API key that happened to run it,
+    since every other account would fail identically on this same target."""
+
+    code = "INFLUENCER_HANDLE_NOT_FOUND"
+
+    def __init__(self, handle: str, platform: str) -> None:
+        self.handle = handle
+        self.platform = platform
+        super().__init__(
+            f"No {platform} account found for handle '{handle}' -- verify it's correct."
+        )
+
+
 class CategoryNotFoundError(NotFoundError):
     code = "CATEGORY_NOT_FOUND"
 
@@ -78,11 +101,18 @@ class YouTubeApiKeyNotFoundError(NotFoundError):
         super().__init__(f"YouTube API key not found: {key_id}")
 
 
-class InstagramGraphTokenNotFoundError(NotFoundError):
+class InstagramApiTokenNotFoundError(NotFoundError):
+    code = "INSTAGRAM_API_TOKEN_NOT_FOUND"
+
+    def __init__(self, token_id: str) -> None:
+        super().__init__(f"Instagram API token not found: {token_id}")
+
+
+class InstagramGraphTokenNotFoundError(InstagramApiTokenNotFoundError):
     code = "INSTAGRAM_GRAPH_TOKEN_NOT_FOUND"
 
     def __init__(self, token_id: str) -> None:
-        super().__init__(f"Instagram Graph token not found: {token_id}")
+        super().__init__(token_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -226,6 +256,34 @@ class NoUsableYouTubeKeyError(ScraperError):
 
     def __init__(self) -> None:
         super().__init__("No usable YouTube API key available (all exhausted, invalid, or disabled).")
+
+
+class NoUsableInstagramTokenError(ScraperError):
+    """Every registered Instagram Graph API token is on cooldown or invalid
+    -- mirrors NoUsableYouTubeKeyError/"no healthy Instagram accounts
+    available": the job never got to attempt anything, so it routes to
+    retry_pending uncounted against SCRAPER_MAX_RETRIES rather than being
+    treated as a real scrape failure."""
+    code = "NO_USABLE_INSTAGRAM_TOKEN"
+
+    def __init__(self) -> None:
+        super().__init__("No usable Instagram API token available (all on cooldown or invalid).")
+
+
+class InstagramAccountNotProfessionalError(ScraperError):
+    """Business Discovery can only read Instagram professional (Business or
+    Creator) accounts -- a personal account is a permanent, not transient,
+    miss. Callers set Influencer.api_supported=False and route the
+    influencer to the legacy cookie scraper (see
+    docs/INSTAGRAM_HYBRID_IMPLEMENTATION.md PR2 2.1) rather than retrying
+    the API call, which would fail identically forever."""
+    code = "INSTAGRAM_ACCOUNT_NOT_PROFESSIONAL"
+
+    def __init__(self, username: str) -> None:
+        super().__init__(
+            f"{username} is not an Instagram professional account -- not readable via Business Discovery.",
+            username=username,
+        )
 
 
 class YouTubeResourceGoneError(ScraperError):

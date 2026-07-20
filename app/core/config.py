@@ -135,6 +135,26 @@ class Settings(BaseSettings):
     # mid-scrape on a key that's about to run dry.
     YOUTUBE_QUOTA_SOFT_STOP: int = 200
 
+    # ── Instagram Graph API (Business Discovery) ────────────────────────────
+    # See docs/INSTAGRAM_GRAPH_API_PLAN.md / INSTAGRAM_HYBRID_IMPLEMENTATION.md.
+    # "cookies" = today's behavior, byte-identical (default). "hybrid" =
+    # Graph API primary + cookie enrichment/fallback (PR2+).
+    INSTAGRAM_BACKEND: str = "cookies"
+    # v23.0 (the plan's original assumption) is deprecated as of this
+    # writing -- Meta auto-upgrades unversioned/old calls to v25.0 with a
+    # warning header; confirmed live against the real API during Phase 0.5
+    # verification, not just docs.
+    INSTAGRAM_GRAPH_API_VERSION: str = "v25.0"
+    # Budget, not a hard Meta-enforced number -- see the x-app-usage header
+    # parsing in instagram_graph_client.py, which is the real signal this
+    # trades off against.
+    INSTAGRAM_GRAPH_RATE_PER_HOUR: int = 150
+    INSTAGRAM_GRAPH_MEDIA_PAGE_SIZE: int = 25
+    # How often (in scrape cycles) a successful Graph API scrape enqueues a
+    # cookie enrichment follow-on (PR3) -- 1 = every cycle.
+    INSTAGRAM_ENRICH_EVERY_N_CYCLES: int = 1
+    INSTAGRAM_ENRICH_FEED_PAGES: int = 2
+
     # ── Scheduler ─────────────────────────────────────────────────────────────
     SCHEDULER_TIMEZONE: str = "UTC"
     CRON_PROFILE_UPDATE: str = "0 2 * * *"

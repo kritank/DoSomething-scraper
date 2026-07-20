@@ -16,9 +16,9 @@ export async function getCreatorGrowth(influencerId, days, metric) {
   return data;
 }
 
-export async function getCreatorPostPerformance(influencerId, limit = 20, format = undefined) {
+export async function getCreatorPostPerformance(influencerId, limit = 20, format = undefined, sort = 'latest') {
   const { data } = await apiClient.get(`/influencers/${influencerId}/posts/performance`, {
-    params: { limit, format },
+    params: { limit, format, sort },
   });
   return data;
 }
@@ -32,6 +32,62 @@ export async function getCreatorFormatBreakdown(influencerId, days) {
 
 export async function getCreatorKeyEvents(influencerId, days) {
   const { data } = await apiClient.get(`/influencers/${influencerId}/events`, {
+    params: { days },
+  });
+  return data;
+}
+
+export async function getCreatorPostingFrequency(influencerId, days, bucket = 'week') {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/posting-frequency`, {
+    params: { days, bucket },
+  });
+  return data;
+}
+
+export async function getCreatorPostingTimes(influencerId, days) {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/posting-times`, {
+    params: { days },
+  });
+  return data;
+}
+
+export async function getCreatorSponsorshipBreakdown(influencerId, days) {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/sponsorship`, {
+    params: { days },
+  });
+  return data;
+}
+
+export async function getCreatorReplyTimeHeatmap(influencerId, days) {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/reply-time-heatmap`, {
+    params: { days },
+  });
+  return data;
+}
+
+export async function getCreatorEngagementTrend(influencerId, days, bucket = 'week') {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/engagement-trend`, {
+    params: { days, bucket },
+  });
+  return data;
+}
+
+export async function getCreatorPerformanceDecay(influencerId, days) {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/performance-decay`, {
+    params: { days },
+  });
+  return data;
+}
+
+export async function getCreatorCommentEngagement(influencerId, days) {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/comment-engagement`, {
+    params: { days },
+  });
+  return data;
+}
+
+export async function getCreatorFollowerRatio(influencerId, days) {
+  const { data } = await apiClient.get(`/influencers/${influencerId}/follower-ratio`, {
     params: { days },
   });
   return data;

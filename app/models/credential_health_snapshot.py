@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -11,6 +11,7 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.instagram_account import InstagramAccount
+    from app.models.instagram_api_token import InstagramApiToken
     from app.models.youtube_api_key import YouTubeApiKey
 
 
@@ -45,6 +46,8 @@ class CredentialHealthSnapshot(Base):
     failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # YouTube-only -- NULL for Instagram snapshots.
     quota_used_today: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Instagram Graph API token pool only -- NULL for the other two platforms.
+    buc_usage_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     instagram_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
@@ -58,9 +61,20 @@ class CredentialHealthSnapshot(Base):
         nullable=True,
         index=True,
     )
+    # "instagram_api" platform rows only -- NULL otherwise. A separate
+    # platform value (not "instagram") so existing dashboard queries
+    # filtering platform="instagram" keep meaning "the cookie pool"
+    # unchanged rather than silently including Graph API tokens too.
+    instagram_api_token_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("instagram_api_tokens.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     instagram_account: Mapped[Optional["InstagramAccount"]] = relationship("InstagramAccount")
     youtube_api_key: Mapped[Optional["YouTubeApiKey"]] = relationship("YouTubeApiKey")
+    instagram_api_token: Mapped[Optional["InstagramApiToken"]] = relationship("InstagramApiToken")
 
     def __repr__(self) -> str:
         return f"<CredentialHealthSnapshot platform={self.platform} label={self.label} status={self.status}>"

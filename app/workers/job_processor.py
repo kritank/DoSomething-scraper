@@ -7,10 +7,16 @@ import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from app.analytics.creator_stats import CreatorStatsService
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.database import get_session
-from app.core.exceptions import InfluencerNotFoundError, ScraperBlockedError, ScraperRateLimitError
+from app.core.exceptions import (
+    InfluencerHandleNotFoundError,
+    InfluencerNotFoundError,
+    ScraperBlockedError,
+    ScraperRateLimitError,
+)
 from app.models.scrape_job import ScrapeJob
 from app.models.influencer import Influencer
 from app.models.snapshot import ProfileSnapshot, PostMetricsSnapshot
@@ -20,15 +26,13 @@ from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
 from app.scraper.client import InstagramClient
 from app.scraper.parser import InstagramParser
-from app.schemas.instagram import InstagramComment, InstagramMediaItem
+from app.schemas.instagram import InstagramMediaItem
 from app.queue.base import ScrapeJobMessage
 from app.feature_extraction.extractor import FeatureExtractor
 from app.workers.comment_sync import (
-    NormalizedComment,
+    sync_comments_for_post,
     last_comment_count,
-    previous_child_counts,
     update_engagement_timing_features,
-    upsert_comments_bulk,
 )
 from app.workers.job_common import WORKER_ID, JobCancelledError
 
@@ -36,9 +40,6 @@ from app.workers.job_common import WORKER_ID, JobCancelledError
 logger = get_logger(__name__)
 
 MEDIA_TYPE_LABELS = {1: "image", 2: "video", 8: "carousel"}
-
-MAX_COMMENT_PAGES = 50   # per post, safety cap (~750 top-level comments/post)
-MAX_REPLY_PAGES = 20     # per comment thread, safety cap
 
 
 class JobProcessor:
@@ -136,17 +137,33 @@ class JobProcessor:
                     # retry_count and all) -- otherwise a job that eventually
                     # succeeds still displays its last failure's message.
                     job.error_message = None
+                    await self._recompute_outlier_metrics(session)
                 except JobCancelledError:
                     logger.info("Scrape cancelled", job_id=job.id)
                     outcome = "cancelled"
                     job.error_message = None
+                except InfluencerHandleNotFoundError as e:
+                    # The Instagram handle itself doesn't resolve to any
+                    # account -- retrying won't help (every account would
+                    # fail identically, and the handle isn't going to start
+                    # existing on the next attempt), so this skips the
+                    # normal retry_pending loop and fails the job outright,
+                    # and deactivates the influencer so it stops being
+                    # dispatched daily forever. account_at_fault stays
+                    # False -- the account's session did nothing wrong.
+                    logger.warning("Scrape handle not found", job_id=job.id, error=str(e))
+                    outcome = "target_not_found"
+                    account_at_fault = False
+                    job.error_message = str(e)
+                    await self._deactivate_for_missing_handle(session)
                 except InfluencerNotFoundError as e:
-                    # Wrong/nonexistent Instagram handle, or the Influencer row
-                    # got deleted while this job sat queued -- the job legitimately
-                    # fails/retries, but the account's session is not implicated
-                    # (see account_at_fault above).
+                    # Our own Influencer row got deleted while this job sat
+                    # queued -- a race, not a data problem, so there's
+                    # nothing to deactivate. Still not worth retrying (the
+                    # row won't come back), but the account's session is
+                    # not implicated either way.
                     logger.warning("Scrape target not found", job_id=job.id, error=str(e))
-                    outcome = "error"
+                    outcome = "target_not_found"
                     account_at_fault = False
                     job.error_message = str(e)
                 except ScraperBlockedError as e:
@@ -167,6 +184,13 @@ class JobProcessor:
                         # A user-requested stop, not a failure -- doesn't
                         # spend retry_count or route through retry_pending.
                         job.status = "cancelled"
+                    elif outcome == "target_not_found":
+                        # See the InfluencerHandleNotFoundError/
+                        # InfluencerNotFoundError handlers above -- neither
+                        # case improves on a retry, so this fails outright
+                        # instead of spending SCRAPER_MAX_RETRIES attempts
+                        # on a target that can't resolve.
+                        job.status = "failed"
                     elif outcome != "success":
                         job.retry_count += 1
                         job.status = (
@@ -190,6 +214,37 @@ class JobProcessor:
                     await heartbeat_task
                 except asyncio.CancelledError:
                     pass
+
+    async def _deactivate_for_missing_handle(self, session: AsyncSession) -> None:
+        """The platform confirmed this handle doesn't resolve to any
+        account -- deactivates the influencer so it stops being dispatched
+        every day forever, and flags why so the dashboard can say "recheck
+        the handle" instead of just "inactive". Mutates in-session only;
+        the caller's existing finally-block commit persists this alongside
+        the job status update, same transaction."""
+        influencer = await session.get(Influencer, self.message.influencer_id)
+        if influencer is None:
+            return
+        influencer.is_active = False
+        influencer.deactivation_reason = "handle_not_found"
+
+    async def _recompute_outlier_metrics(self, session: AsyncSession) -> None:
+        """Best-effort: re-score and persist this influencer's recent posts'
+        outlier metrics (docs/OUTLIERS_PLAN.md Phase 1) now that new
+        PostMetricsSnapshot rows landed. Never fails the scrape job -- an
+        outlier-scoring bug shouldn't take down data collection."""
+        try:
+            await CreatorStatsService(session).recompute_outlier_metrics(
+                self.message.influencer_id
+            )
+            await session.commit()
+        except Exception:
+            logger.warning(
+                "Outlier metrics recompute failed",
+                influencer_id=self.message.influencer_id,
+                exc_info=True,
+            )
+            await session.rollback()
 
     async def _heartbeat(self, job_id: UUID) -> None:
         """Background ticker for the duration of process(): every
@@ -224,6 +279,18 @@ class JobProcessor:
         # 1. Fetch User Info
         raw_user = await self.client.get_user_info(handle)
         parsed_user = InstagramParser.parse_user_info(raw_user)
+
+        # Resolve platform_user_id from Instagram's numeric pk on first
+        # scrape, same as youtube_job_processor.py does with the channel
+        # ID -- lets a handle rename survive without orphaning this row.
+        # Never overwritten once set, since a pk is permanent for the
+        # account's lifetime (unlike the handle).
+        if influencer.platform_user_id is None and parsed_user.pk:
+            influencer.platform_user_id = str(parsed_user.pk)
+        # Refreshed every scrape, unlike platform_user_id above -- Instagram's
+        # profile_pic_url is a signed, expiring CDN link.
+        if parsed_user.profile_pic_url:
+            influencer.profile_pic_url = parsed_user.profile_pic_url
 
         # Create profile snapshot
         snapshot = ProfileSnapshot(
@@ -513,76 +580,8 @@ class JobProcessor:
         )
 
     async def _sync_comments_for_post(self, session: AsyncSession, post: Post) -> int:
-        after: str | None = None
-        total = 0
-        for _ in range(MAX_COMMENT_PAGES):
-            connection = await self.client.get_media_comments(post.media_pk, post.permalink, after)
-            comments, next_after, has_more = InstagramParser.parse_comments(connection)
-            if not comments:
-                break
-
-            # Diff each comment's reply count against what's already stored
-            # *before* upserting -- otherwise every comment with any replies
-            # gets its whole thread re-walked on every single run, even when
-            # nothing about it changed since last time. Comparing against
-            # the incoming count (not just >0) means only genuinely new
-            # comments and threads with new replies since last sync cost a
-            # request; an unchanged thread costs zero.
-            prev_child_counts = await previous_child_counts(session, [c.comment_id for c in comments])
-
-            await upsert_comments_bulk(session, post.id, [self._normalize_comment(c) for c in comments])
-            await session.commit()
-            total += len(comments)
-
-            for comment in comments:
-                if (
-                    comment.child_comment_count > 0
-                    and comment.child_comment_count != prev_child_counts.get(comment.comment_id)
-                ):
-                    total += await self._sync_replies(session, post, comment)
-
-            if not has_more or not next_after:
-                break
-            after = next_after
-        return total
-
-    async def _sync_replies(self, session: AsyncSession, post: Post, parent: InstagramComment) -> int:
-        after: str | None = None
-        total = 0
-        for _ in range(MAX_REPLY_PAGES):
-            connection = await self.client.get_comment_replies(post.media_pk, parent.comment_id, post.permalink, after)
-            replies, next_after, has_more = InstagramParser.parse_replies(connection, parent.comment_id)
-            if not replies:
-                break
-
-            await upsert_comments_bulk(session, post.id, [self._normalize_comment(c) for c in replies])
-            await session.commit()
-            total += len(replies)
-
-            if not has_more or not next_after:
-                break
-            after = next_after
-        return total
-
-    def _normalize_comment(self, comment: InstagramComment) -> NormalizedComment:
-        return NormalizedComment(
-            comment_id=comment.comment_id,
-            parent_comment_id=comment.parent_comment_id,
-            username=comment.username,
-            full_name=comment.full_name,
-            is_verified=comment.is_verified,
-            is_from_creator=comment.username.lower() == self.message.handle.lower(),
-            author_profile_pic_url=comment.author_profile_pic_url,
-            author_is_private=comment.author_is_private,
-            text=comment.text,
-            like_count=comment.like_count,
-            child_comment_count=comment.child_comment_count,
-            liked_by_creator=comment.liked_by_creator,
-            is_edited=comment.is_edited,
-            reported_as_spam=comment.reported_as_spam,
-            commented_at=(
-                datetime.fromtimestamp(comment.created_at, tz=timezone.utc)
-                if comment.created_at
-                else datetime.now(timezone.utc)
-            ),
-        )
+        """Delegates to the platform-agnostic-signature shared function
+        (app.workers.comment_sync) also used by InstagramEnrichProcessor
+        (PR3) -- see that module for the actual logic, unchanged by this
+        extraction."""
+        return await sync_comments_for_post(session, self.client, post, self.message.handle)

@@ -4,8 +4,9 @@ import { toast } from 'sonner';
 import { format, startOfYear } from 'date-fns';
 import Input from '../common/Input';
 import Button from '../common/Button';
+import PlatformIcon from '../common/PlatformIcon';
 import { cn } from '../../utils/cn';
-import { formatHandle } from '../../utils/platform';
+import { formatHandle, platformLabel } from '../../utils/platform';
 import { createInfluencer } from '../../services/influencerService';
 
 // Jan 1 of the current year -- a sensible default backfill boundary so a
@@ -15,16 +16,14 @@ function defaultScrapeSince() {
   return format(startOfYear(new Date()), 'yyyy-MM-dd');
 }
 
-const PLATFORMS = [
-  { id: 'instagram', label: 'Instagram' },
-  { id: 'youtube', label: 'YouTube' },
-];
+const PLATFORMS = ['instagram', 'youtube'];
 
 export default function AddInfluencerForm({ categories, creators = [], onCreated }) {
   const [platform, setPlatform] = useState('instagram');
   const [handle, setHandle] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [creatorName, setCreatorName] = useState('');
+  const [accountType, setAccountType] = useState('individual');
   const [scrapePostsSince, setScrapePostsSince] = useState(defaultScrapeSince);
   const [submitting, setSubmitting] = useState(false);
 
@@ -48,7 +47,7 @@ export default function AddInfluencerForm({ categories, creators = [], onCreated
     setSubmitting(true);
     try {
       const created = await createInfluencer(
-        cleanHandle, effectiveCategoryId, scrapePostsSince, platform, creatorName.trim(),
+        cleanHandle, effectiveCategoryId, scrapePostsSince, platform, creatorName.trim(), accountType,
       );
       toast.success(`${formatHandle(created.handle, created.platform)} added`);
       setHandle('');
@@ -67,20 +66,22 @@ export default function AddInfluencerForm({ categories, creators = [], onCreated
       <div className="flex gap-2">
         {PLATFORMS.map((p) => (
           <button
-            key={p.id}
+            key={p}
             type="button"
-            onClick={() => setPlatform(p.id)}
-            className={cn(
-              'px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
-              platform === p.id ? 'text-white' : '',
-            )}
+            title={platformLabel(p)}
+            aria-label={platformLabel(p)}
+            aria-pressed={platform === p}
+            onClick={() => setPlatform(p)}
+            className={cn('flex items-center gap-2 pl-1.5 pr-3 py-1 rounded-lg text-xs font-medium transition-all')}
             style={{
-              background: platform === p.id ? 'var(--color-accent)' : 'var(--color-bg-secondary)',
-              color: platform === p.id ? 'white' : 'var(--color-text-secondary)',
-              border: '1px solid ' + (platform === p.id ? 'var(--color-accent)' : 'var(--color-border-default)'),
+              outline: platform === p ? '2px solid var(--color-accent)' : '2px solid transparent',
+              outlineOffset: 2,
+              opacity: platform === p ? 1 : 0.55,
+              color: 'var(--color-text-primary)',
             }}
           >
-            {p.label}
+            <PlatformIcon platform={p} className="w-8 h-8 rounded-lg" />
+            {platformLabel(p)}
           </button>
         ))}
       </div>
@@ -115,6 +116,25 @@ export default function AddInfluencerForm({ categories, creators = [], onCreated
             {categories.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
+          </select>
+        </div>
+
+        <div className="min-w-[140px]">
+          <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+            Type
+          </label>
+          <select
+            value={accountType}
+            onChange={(e) => setAccountType(e.target.value)}
+            className="w-full px-3.5 py-2.5 rounded-xl text-sm outline-none border"
+            style={{
+              background: 'var(--color-bg-secondary)',
+              color: 'var(--color-text-primary)',
+              borderColor: 'var(--color-border-default)',
+            }}
+          >
+            <option value="individual">Individual</option>
+            <option value="business">Business</option>
           </select>
         </div>
 

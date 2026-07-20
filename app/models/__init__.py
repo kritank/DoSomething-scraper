@@ -1,5 +1,6 @@
 from app.core.database import Base
 from app.models.analytics_cache import AnalyticsCache
+from app.models.app_setting import AppSetting
 from app.models.audit_log import AuditLog
 from app.models.benchmark import CategoryBenchmark
 from app.models.category import Category
@@ -11,6 +12,7 @@ from app.models.influencer import Influencer
 from app.models.instagram_account import InstagramAccount
 from app.models.instagram_graph_token import InstagramGraphToken
 from app.models.post import Post
+from app.models.post_outlier_metrics import PostOutlierMetrics
 from app.models.queue_depth_snapshot import QueueDepthSnapshot
 from app.models.raw_response import RawResponse
 from app.models.recommendation import Recommendation
@@ -21,6 +23,7 @@ from app.models.youtube_api_key import YouTubeApiKey
 
 __all__ = [
     "AnalyticsCache",
+    "AppSetting",
     "AuditLog",
     "Base",
     "Category",
@@ -34,6 +37,7 @@ __all__ = [
     "InstagramGraphToken",
     "Post",
     "PostMetricsSnapshot",
+    "PostOutlierMetrics",
     "ProfileSnapshot",
     "QueueDepthSnapshot",
     "RawResponse",
@@ -43,3 +47,5 @@ __all__ = [
     "ScrapeRun",
     "YouTubeApiKey",
 ]
+
+InstagramApiToken = InstagramGraphToken

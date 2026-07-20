@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, ExternalLink, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { ArrowLeft, TrendingUp, TrendingDown, RefreshCw, BadgeCheck, Video, Calendar, Clock } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import {
   getCreatorStats,
@@ -8,8 +8,15 @@ import {
   getCreatorPostPerformance,
   getCreatorFormatBreakdown,
   getCreatorKeyEvents,
+  getCreatorPostingFrequency,
+  getCreatorPostingTimes,
+  getCreatorSponsorshipBreakdown,
+  getCreatorReplyTimeHeatmap,
 } from '../services/creatorStatsService';
 import PlatformBadge from '../components/common/PlatformBadge';
+import ScrapeStatusIndicator from '../components/common/ScrapeStatusIndicator';
+import { getInfluencerJobs } from '../services/influencerJobsService';
+import Avatar from '../components/common/Avatar';
 import EmptyState from '../components/common/EmptyState';
 import Button from '../components/common/Button';
 import Skeleton from '../components/common/Skeleton';
@@ -18,39 +25,25 @@ import Banner from '../components/common/Banner';
 import GrowthChart from '../components/charts/GrowthChart';
 import DailyGrowthChart from '../components/charts/DailyGrowthChart';
 import FormatSplitCard from '../components/creator/FormatSplitCard';
+import PostingFrequencyCard from '../components/creator/PostingFrequencyCard';
+import SponsorshipCard from '../components/creator/SponsorshipCard';
+import ReplyTimeCard from '../components/creator/ReplyTimeCard';
 import AboutSection from '../components/creator/AboutSection';
+import PostsTable from '../components/creator/PostsTable';
+import DailyGrowthHistoryTable from '../components/creator/DailyGrowthHistoryTable';
+import HeaderPill from '../components/common/HeaderPill';
+import { avatarUrl } from '../services/apiClient';
 import { formatHandle, platformLabel, PLATFORM_COLORS } from '../utils/platform';
-import { formatCompactNumber, formatSignedCompact, formatUsdRange, formatPercent } from '../utils/format';
+import { formatCompactNumber, formatSignedCompact, formatUsdRange, formatPercent, countryFlagEmoji, formatAccountAge } from '../utils/format';
+import { GROWTH_RANGES } from '../utils/growthRanges';
 
-const GROWTH_RANGES = [
-  { label: '7D', days: 7 },
-  { label: '28D', days: 28 },
-  { label: '3M', days: 90 },
-  { label: '1Y', days: 365 },
-  { label: 'Max', days: 3650 },
-];
-
-// A leading 0-value point in the followers series is a broken/seed
-// snapshot, not "tracking started at zero" -- no tracked account actually
-// has 0 followers. Left as-is it draws a vertical cliff on GrowthChart and
-// turns into a misleadingly huge first bar on DailyGrowthChart. Strip any
-// leading zero(s) followed by a >=10x jump, and clear the new first
-// point's daily_delta since it no longer has a real "previous day" to
-// diff against -- DailyGrowthChart already drops null-delta points.
-function stripPhantomZeroLead(points) {
-  if (!points || points.length < 2) return points ?? [];
-  let start = 0;
-  while (
-    start < points.length - 1 &&
-    points[start].value === 0 &&
-    points[start + 1].value >= 1000
-  ) {
-    start++;
-  }
-  if (start === 0) return points;
-  const rest = points.slice(start);
-  return [{ ...rest[0], daily_delta: null }, ...rest.slice(1)];
-}
+// Leading phantom-zero seed snapshots (a broken first data point that
+// would otherwise draw a vertical cliff / flood the key-events feed) are
+// now stripped server-side, in CreatorStatsService.get_growth_series --
+// see app/analytics/creator_stats.py's _strip_phantom_zero_lead. Every
+// consumer of getCreatorGrowth (this page and CombinedCreatorProfile.jsx)
+// gets clean data for free, including get_key_events' milestone detection,
+// which a frontend-only fix here never could have reached.
 
 const TOOLTIPS = {
   followersYoutube: 'Latest scraped count. YouTube rounds subscriber counts to 3 significant figures, so large channels move in visible steps.',
@@ -62,8 +55,6 @@ const TOOLTIPS = {
   earningsYoutube: 'Rough industry-rate estimate (not real revenue): monthly views × typical ad RPM for the channel’s country.',
   earningsInstagram: 'Estimated price for one sponsored post: follower count × typical rate, adjusted by engagement rate.',
   rank: 'Rank among the accounts tracked in this dashboard only — not a global or industry rank.',
-  outlier: "This post's views (or likes) vs the account's median over its previous 30 posts. 2× = twice the typical post.",
-  velocity: 'Average views (or likes) per hour since publishing. Shown only for posts under 7 days (YouTube) / 48 hours (Instagram) old.',
   formatSplitYoutube: 'Shorts are videos of 3 minutes or less, as classified by YouTube.',
   formatSplitInstagram: 'Reels vs regular posts (photos, carousels).',
   dailyGrowth: 'Day-over-day change between consecutive daily snapshots. Gaps mean no snapshot was captured that day.',
@@ -110,13 +101,21 @@ function SectionHeading({ children, infoTip }) {
 
 export default function CreatorProfile() {
   const { influencerId } = useParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+  // location.key is 'default' when there's no previous entry in this
+  // session's history (e.g. the URL was opened directly/refreshed) --
+  // navigate(-1) would be a dead end there, so fall back to the
+  // influencers list instead of guessing where "back" should mean.
+  const handleBack = () => (location.key !== 'default' ? navigate(-1) : navigate('/influencers'));
 
   const [stats, setStats] = useState(null);
+  const [latestJob, setLatestJob] = useState(null);
   const [notFound, setNotFound] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const [growthMetric, setGrowthMetric] = useState('followers');
-  const [growthDays, setGrowthDays] = useState(90);
+  const [growthDays, setGrowthDays] = useState(28);
   const [growthPoints, setGrowthPoints] = useState([]);
   const [growthLoading, setGrowthLoading] = useState(true);
   const [events, setEvents] = useState([]);
@@ -125,9 +124,28 @@ export default function CreatorProfile() {
   const [formatBreakdown, setFormatBreakdown] = useState(null);
   const [formatLoading, setFormatLoading] = useState(true);
 
+  const [postingDays, setPostingDays] = useState(28);
+  const [postingFrequency, setPostingFrequency] = useState([]);
+  const [postingTimeDistribution, setPostingTimeDistribution] = useState(null);
+  const [postingLoading, setPostingLoading] = useState(true);
+
+  const [sponsorshipDays, setSponsorshipDays] = useState(90);
+  const [sponsorshipBreakdown, setSponsorshipBreakdown] = useState(null);
+  const [sponsorshipLoading, setSponsorshipLoading] = useState(true);
+
+  const [replyTimeDays, setReplyTimeDays] = useState(90);
+  const [replyTimeHeatmap, setReplyTimeHeatmap] = useState(null);
+  const [replyTimeLoading, setReplyTimeLoading] = useState(true);
+
   const [postsFilter, setPostsFilter] = useState('all');
+  const [postsSort, setPostsSort] = useState('top');
   const [posts, setPosts] = useState([]);
   const [postsLoading, setPostsLoading] = useState(true);
+
+  const [historyFollowers, setHistoryFollowers] = useState([]);
+  const [historyViews, setHistoryViews] = useState([]);
+  const [historyEarnings, setHistoryEarnings] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
 
   const overviewRef = useRef(null);
   const contentRef = useRef(null);
@@ -140,6 +158,14 @@ export default function CreatorProfile() {
     try {
       const data = await getCreatorStats(influencerId);
       setStats(data);
+      try {
+        const jobs = await getInfluencerJobs(influencerId, 1);
+        setLatestJob(jobs[0] ?? null);
+      } catch {
+        // Non-fatal -- the scrape-status dot just stays "never scraped"
+        // rather than taking down the whole profile page over it.
+        setLatestJob(null);
+      }
     } catch {
       // apiClient's interceptor discards the HTTP status (see
       // apiClient.js), so -- same convention as Insights.jsx's
@@ -165,7 +191,7 @@ export default function CreatorProfile() {
     ])
       .then(([growthData, eventsData]) => {
         if (cancelled) return;
-        setGrowthPoints(growthMetric === 'followers' ? stripPhantomZeroLead(growthData) : growthData);
+        setGrowthPoints(growthData);
         setEvents(eventsData);
       })
       .finally(() => { if (!cancelled) setGrowthLoading(false); });
@@ -185,12 +211,73 @@ export default function CreatorProfile() {
   useEffect(() => {
     if (!stats) return;
     let cancelled = false;
+    setPostingLoading(true);
+    Promise.all([
+      getCreatorPostingFrequency(influencerId, postingDays, 'day'),
+      getCreatorPostingTimes(influencerId, postingDays),
+    ])
+      .then(([freq, times]) => {
+        if (cancelled) return;
+        setPostingFrequency(freq);
+        setPostingTimeDistribution(times);
+      })
+      .finally(() => { if (!cancelled) setPostingLoading(false); });
+    return () => { cancelled = true; };
+  }, [influencerId, postingDays, stats]);
+
+  useEffect(() => {
+    if (!stats) return;
+    let cancelled = false;
+    setSponsorshipLoading(true);
+    getCreatorSponsorshipBreakdown(influencerId, sponsorshipDays)
+      .then((data) => { if (!cancelled) setSponsorshipBreakdown(data); })
+      .finally(() => { if (!cancelled) setSponsorshipLoading(false); });
+    return () => { cancelled = true; };
+  }, [influencerId, sponsorshipDays, stats]);
+
+  useEffect(() => {
+    if (!stats) return;
+    let cancelled = false;
+    setReplyTimeLoading(true);
+    getCreatorReplyTimeHeatmap(influencerId, replyTimeDays)
+      .then((data) => { if (!cancelled) setReplyTimeHeatmap(data); })
+      .finally(() => { if (!cancelled) setReplyTimeLoading(false); });
+    return () => { cancelled = true; };
+  }, [influencerId, replyTimeDays, stats]);
+
+  useEffect(() => {
+    if (!stats) return;
+    let cancelled = false;
     setPostsLoading(true);
-    getCreatorPostPerformance(influencerId, 20, postsFilter === 'all' ? undefined : postsFilter)
+    getCreatorPostPerformance(influencerId, 20, postsFilter === 'all' ? undefined : postsFilter, postsSort)
       .then((data) => { if (!cancelled) setPosts(data); })
       .finally(() => { if (!cancelled) setPostsLoading(false); });
     return () => { cancelled = true; };
-  }, [influencerId, postsFilter, stats]);
+  }, [influencerId, postsFilter, postsSort, stats]);
+
+  // Independent of growthMetric (that only drives the chart above) --
+  // the Daily Growth History table always wants followers + views +
+  // earnings side by side, regardless of which single metric is charted.
+  // Fetched for both platforms -- see growthMetricOptions above for why
+  // Instagram's views/earnings are just as real as YouTube's here.
+  useEffect(() => {
+    if (!stats) return;
+    let cancelled = false;
+    setHistoryLoading(true);
+    Promise.all([
+      getCreatorGrowth(influencerId, growthDays, 'followers'),
+      getCreatorGrowth(influencerId, growthDays, 'total_views'),
+      getCreatorGrowth(influencerId, growthDays, 'earnings'),
+    ])
+      .then(([followers, views, earnings]) => {
+        if (cancelled) return;
+        setHistoryFollowers(followers);
+        setHistoryViews(views);
+        setHistoryEarnings(earnings);
+      })
+      .finally(() => { if (!cancelled) setHistoryLoading(false); });
+    return () => { cancelled = true; };
+  }, [influencerId, growthDays, stats]);
 
   const scrollTo = (ref) => ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
@@ -206,42 +293,72 @@ export default function CreatorProfile() {
   // Hooks must run unconditionally on every render -- this stays above
   // the `notFound` early return below, even though its result is unused
   // in that branch.
-  const growthMetricOptions = useMemo(() => {
-    if (!isYoutube) return [{ value: 'followers', label: followersLabel }];
-    return [
-      { value: 'followers', label: followersLabel },
-      { value: 'total_views', label: 'Views' },
-      { value: 'earnings', label: 'Earnings' },
-    ];
-  }, [isYoutube, followersLabel]);
+  //
+  // Views/Earnings are available for both platforms: YouTube reads a real
+  // channel view counter, Instagram reconstructs one from per-post
+  // snapshots (see CreatorStatsService._instagram_views_daily_series) --
+  // both are honest daily series, just derived differently server-side.
+  const growthMetricOptions = useMemo(() => [
+    { value: 'followers', label: followersLabel },
+    { value: 'total_views', label: 'Views' },
+    { value: 'earnings', label: 'Earnings' },
+  ], [followersLabel]);
 
   if (notFound) {
     return <EmptyState title="Influencer not found" message="This influencer may have been deleted." />;
   }
 
   return (
-    <div className="flex flex-col gap-6 min-w-0">
+    // gap-10 (40px), not gap-6 (24px) -- the sticky in-page nav below
+    // renders ~44px tall, taller than the old gap. Since it's
+    // position: sticky, it visually sits wherever the current section
+    // boundary happens to be scrolled to, not just below its own DOM
+    // position -- so with a 24px gap it was cutting into the tail end
+    // of whichever section preceded the one you just jumped to via the
+    // nav. 40px comfortably clears the bar's height at every boundary.
+    <div className="flex flex-col gap-10 min-w-0">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <Link to="/influencers">
-            <Button variant="ghost" size="sm">
-              <ArrowLeft className="w-3.5 h-3.5" />
-              Back
-            </Button>
-          </Link>
+          <Button variant="ghost" size="sm" onClick={handleBack}>
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Back
+          </Button>
+          {!loading && <Avatar src={s.profile_pic_url ? avatarUrl(influencerId) : null} handle={s.handle} />}
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h2 className="text-xl font-semibold truncate" style={{ color: 'var(--color-text-primary)' }}>
                 {loading ? 'Loading…' : formatHandle(s.handle, s.platform)}
               </h2>
-              {!loading && <PlatformBadge platform={s.platform} />}
+              {!loading && stats?.about?.is_verified && (
+                <BadgeCheck
+                  className="w-4 h-4 shrink-0"
+                  style={{ color: 'var(--color-accent)' }}
+                  aria-label="Verified"
+                />
+              )}
+              {!loading && (
+                <span className="inline-flex items-center gap-1.5">
+                  <PlatformBadge platform={s.platform} handle={s.handle} />
+                  <ScrapeStatusIndicator status={latestJob?.status} />
+                </span>
+              )}
             </div>
             {!loading && (
-              <p className="text-sm mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-                {[s.category_name, s.country, s.account_age_days != null ? `${Math.floor(s.account_age_days / 365)}y old` : null]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </p>
+              <div className="flex items-center flex-wrap gap-1.5 mt-1.5">
+                {s.category_name && <HeaderPill>{s.category_name}</HeaderPill>}
+                <HeaderPill icon={Video}>{formatCompactNumber(s.post_count)} {longFormLabel.toLowerCase()}</HeaderPill>
+                {formatAccountAge(s.account_age_days) && (
+                  <HeaderPill icon={Calendar}>{formatAccountAge(s.account_age_days)}</HeaderPill>
+                )}
+                {countryFlagEmoji(s.country) && (
+                  <HeaderPill>
+                    <span>{countryFlagEmoji(s.country)}</span> {s.country}
+                  </HeaderPill>
+                )}
+                {s.updated_at && (
+                  <HeaderPill icon={Clock}>Updated {format(parseISO(s.updated_at), 'MMM d, yyyy')}</HeaderPill>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -287,7 +404,7 @@ export default function CreatorProfile() {
           </div>
 
           {/* ── Overview ─────────────────────────────────────────────── */}
-          <div ref={overviewRef} className="flex flex-col gap-4 scroll-mt-16">
+          <div ref={overviewRef} className="flex flex-col gap-4 scroll-mt-24">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <StatTile
                 label={followersLabel}
@@ -324,6 +441,30 @@ export default function CreatorProfile() {
               longFormLabel={longFormLabel}
               shortFormLabel={shortFormLabel}
               infoTip={isYoutube ? TOOLTIPS.formatSplitYoutube : TOOLTIPS.formatSplitInstagram}
+            />
+
+            <PostingFrequencyCard
+              frequencyPoints={postingFrequency}
+              timeDistribution={postingTimeDistribution}
+              loading={postingLoading}
+              days={postingDays}
+              onDaysChange={setPostingDays}
+            />
+
+            <SponsorshipCard
+              breakdown={sponsorshipBreakdown}
+              loading={sponsorshipLoading}
+              days={sponsorshipDays}
+              onDaysChange={setSponsorshipDays}
+            />
+
+            <ReplyTimeCard
+              heatmap={replyTimeHeatmap}
+              loading={replyTimeLoading}
+              days={replyTimeDays}
+              onDaysChange={setReplyTimeDays}
+              longFormLabel={longFormLabel}
+              shortFormLabel={shortFormLabel}
             />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -367,111 +508,22 @@ export default function CreatorProfile() {
           </div>
 
           {/* ── Content ──────────────────────────────────────────────── */}
-          <div ref={contentRef} className="card p-5 flex flex-col gap-3 min-w-0 scroll-mt-16">
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <SectionHeading>Recent {isYoutube ? 'videos' : 'posts'}</SectionHeading>
-              <div className="flex items-center gap-1">
-                {[
-                  { value: 'all', label: 'All' },
-                  { value: 'long_form', label: longFormLabel },
-                  { value: 'short_form', label: shortFormLabel },
-                ].map((opt) => (
-                  <button
-                    key={opt.value}
-                    onClick={() => setPostsFilter(opt.value)}
-                    className="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors"
-                    style={{
-                      background: postsFilter === opt.value ? 'var(--color-accent-dim)' : 'transparent',
-                      color: postsFilter === opt.value ? 'var(--color-accent)' : 'var(--color-text-muted)',
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            {postsLoading ? (
-              <Skeleton className="h-48 w-full" />
-            ) : posts.length === 0 ? (
-              <EmptyState title="No posts yet" message="Posts will show up here after the next scrape." />
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                      <Th>Title</Th>
-                      <Th>Type</Th>
-                      <Th>Posted</Th>
-                      <Th>Views</Th>
-                      <Th>Likes</Th>
-                      <Th>Comments</Th>
-                      <Th infoTip={TOOLTIPS.outlier}>Outlier</Th>
-                      <Th infoTip={TOOLTIPS.velocity}>Velocity/hr</Th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {posts.map((p) => (
-                      <tr key={p.post_id} className="hover:bg-[var(--color-bg-card-hover)]" style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                        <td className="py-2.5 px-3 max-w-xs truncate" style={{ color: 'var(--color-text-primary)' }} title={p.title ?? ''}>
-                          {p.title || '(untitled)'}
-                        </td>
-                        <td className="py-2.5 px-3 whitespace-nowrap">
-                          <span
-                            className="px-2 py-0.5 rounded-full text-xs"
-                            style={{
-                              background: p.format === 'short_form' ? 'rgba(6,182,212,0.12)' : 'var(--color-accent-dim)',
-                              color: p.format === 'short_form' ? 'var(--color-chart-2)' : 'var(--color-accent)',
-                            }}
-                          >
-                            {p.format === 'short_form' ? shortFormLabel.replace(/s$/, '') : longFormLabel.replace(/s$/, '')}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
-                          {format(parseISO(p.posted_at), 'MMM d, yyyy')}
-                        </td>
-                        {/* Falsy check (not != null) is deliberate: Instagram
-                            photo/carousel posts come back with views=0 (not a
-                            real NULL) since they have no public view metric --
-                            same "0 means unavailable" rule the backend already
-                            applies for outlier scoring and the format
-                            breakdown (see _PostMetricPoint.outlier_metric). */}
-                        <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.views ? formatCompactNumber(p.views) : '—'}</td>
-                        <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.likes != null ? formatCompactNumber(p.likes) : '—'}</td>
-                        <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.comments != null ? formatCompactNumber(p.comments) : '—'}</td>
-                        <td className="py-2.5 px-3">
-                          {p.outlier_score != null ? (
-                            <span
-                              className="px-2 py-0.5 rounded-full text-xs font-semibold"
-                              style={{
-                                background: p.outlier_score >= 2 ? 'var(--color-success-muted)' : 'var(--color-bg-card-hover)',
-                                color: p.outlier_score >= 2 ? 'var(--color-success)' : 'var(--color-text-muted)',
-                              }}
-                            >
-                              {p.outlier_score.toFixed(1)}×
-                            </span>
-                          ) : '—'}
-                        </td>
-                        <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>
-                          {p.velocity_per_hour != null ? formatCompactNumber(p.velocity_per_hour) : '—'}
-                        </td>
-                        <td className="py-2.5 px-3">
-                          {p.permalink && (
-                            <a href={p.permalink} target="_blank" rel="noreferrer">
-                              <ExternalLink className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
-                            </a>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+          <div ref={contentRef} className="card p-5 flex flex-col gap-3 min-w-0 scroll-mt-24">
+            <SectionHeading>{isYoutube ? 'Videos' : 'Posts'}</SectionHeading>
+            <PostsTable
+              posts={posts}
+              loading={postsLoading}
+              sortMode={postsSort}
+              onSortModeChange={setPostsSort}
+              formatFilter={postsFilter}
+              onFormatFilterChange={setPostsFilter}
+              longFormLabel={longFormLabel}
+              shortFormLabel={shortFormLabel}
+            />
           </div>
 
           {/* ── Growth ───────────────────────────────────────────────── */}
-          <div ref={growthRef} className="card p-5 flex flex-col gap-4 min-w-0 scroll-mt-16">
+          <div ref={growthRef} className="card p-5 flex flex-col gap-4 min-w-0 scroll-mt-24">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <SectionHeading infoTip={TOOLTIPS.keyEvents}>Growth</SectionHeading>
               <div className="flex items-center gap-4 flex-wrap">
@@ -536,27 +588,29 @@ export default function CreatorProfile() {
                 )}
               </>
             )}
+
+            <div className="flex items-center gap-1.5 pt-2" style={{ borderTop: '1px solid var(--color-border-subtle)' }}>
+              <h4 className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-muted)' }}>
+                Daily {followersLabel.toLowerCase()} growth & view history
+              </h4>
+            </div>
+            <DailyGrowthHistoryTable
+              followersSeries={historyFollowers}
+              viewsSeries={historyViews}
+              earningsSeries={historyEarnings}
+              followersLabel={followersLabel}
+              loading={historyLoading}
+            />
           </div>
 
           {/* ── About ────────────────────────────────────────────────── */}
-          <div ref={aboutRef} className="flex flex-col gap-2 scroll-mt-16">
+          <div ref={aboutRef} className="flex flex-col gap-2 scroll-mt-24">
             <SectionHeading>About</SectionHeading>
             <AboutSection about={stats?.about} loading={loading} isYoutube={isYoutube} />
           </div>
         </>
       )}
     </div>
-  );
-}
-
-function Th({ children, infoTip }) {
-  return (
-    <th className="text-left py-2.5 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
-      <span className="inline-flex items-center gap-1">
-        {children}
-        {infoTip && <InfoTip text={infoTip} />}
-      </span>
-    </th>
   );
 }
 

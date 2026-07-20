@@ -4,8 +4,8 @@ from uuid import UUID
 
 import os
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,13 +32,14 @@ from app.schemas.youtube_api_key import (
     YouTubeApiKeyStatusUpdate,
 )
 from app.schemas.category import CategoryCreate, CategoryOut, CategoryUpdate
-from app.schemas.creator import CreatorOut, CreatorRename
+from app.schemas.creator import CreatorDetailOut, CreatorInfluencerRef, CreatorOut, CreatorRename
 from app.schemas.dashboard import (
     CredentialHealthOut,
     DashboardMetricsOut,
     DashboardStatusRow,
     QueueDepthHistoryOut,
 )
+from app.schemas.bulk_import import BulkImportResult
 from app.schemas.db_schema import SchemaTable
 from app.schemas.influencer import (
     InfluencerActiveUpdate,
@@ -47,8 +48,10 @@ from app.schemas.influencer import (
     InfluencerOut,
     InfluencerScrapeSettingsUpdate,
 )
-from app.core.exceptions import ActiveJobExistsError
+from app.core.exceptions import ActiveJobExistsError, CreatorNotFoundError
+from app.repositories.app_setting_repo import INSTAGRAM_BACKEND_KEY, AppSettingRepo
 from app.schemas.alert import AlertOut
+from app.schemas.app_setting import InstagramBackendOut, InstagramBackendUpdate
 from app.schemas.instagram_account import AccountStatusUpdate, InstagramAccountOut
 from app.schemas.instagram_graph_token import (
     InstagramGraphTokenOut,
@@ -62,6 +65,11 @@ from app.services.alerts_service import get_alerts
 from app.services.dashboard_service import DashboardService
 from app.services.dispatch_service import DispatchService
 from app.services.db_export_service import create_dump
+from app.services.influencer_bulk_import import (
+    build_bulk_import_template,
+    read_bulk_import_workbook,
+    run_bulk_import,
+)
 from app.services.query_console_service import list_schema_tables, run_readonly_query
 
 
@@ -116,6 +124,26 @@ async def list_creators(db: AsyncSession = Depends(get_db)):
     ]
 
 
+@router.get("/creators/{creator_id}", response_model=CreatorDetailOut)
+async def get_creator(creator_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Powers the combined cross-platform creator view -- just the name and
+    each linked influencer's id/platform/handle, so the frontend can fetch
+    each one's full stats through the existing single-influencer endpoints
+    rather than this duplicating that aggregation."""
+    creators = await CreatorRepo(db).get_all_with_influencers()
+    creator = next((c for c in creators if c.id == creator_id), None)
+    if creator is None:
+        raise CreatorNotFoundError(str(creator_id))
+    return CreatorDetailOut(
+        id=creator.id,
+        name=creator.name,
+        influencers=[
+            CreatorInfluencerRef(influencer_id=i.id, platform=i.platform, handle=i.handle)
+            for i in creator.influencers
+        ],
+    )
+
+
 @router.patch("/creators/{creator_id}", response_model=CreatorOut)
 async def rename_creator(creator_id: UUID, data: CreatorRename, db: AsyncSession = Depends(get_db)):
     creator = await CreatorRepo(db).rename(creator_id, data.name)
@@ -152,6 +180,32 @@ async def register_influencer(data: InfluencerCreate, db: AsyncSession = Depends
 async def list_influencers(db: AsyncSession = Depends(get_db)):
     repo = InfluencerRepo(db)
     return await repo.get_all()
+
+
+@router.get("/influencers/bulk/template")
+async def download_bulk_import_template():
+    return Response(
+        content=build_bulk_import_template(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=influencer_bulk_import_template.xlsx"},
+    )
+
+
+@router.post("/influencers/bulk", response_model=BulkImportResult)
+async def bulk_import_influencers(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(status_code=400, detail="Upload an .xlsx file.")
+    content = await file.read()
+    try:
+        raw_rows = read_bulk_import_workbook(content)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not read the uploaded file -- make sure it's a valid .xlsx workbook.",
+        )
+    if not raw_rows:
+        raise HTTPException(status_code=400, detail="The uploaded file has no data rows.")
+    return await run_bulk_import(db, raw_rows)
 
 
 @router.patch("/influencers/{influencer_id}/details", response_model=InfluencerOut)
@@ -199,8 +253,15 @@ async def delete_influencer(influencer_id: UUID, db: AsyncSession = Depends(get_
 
 
 @router.get("/influencers/{influencer_id}/jobs", response_model=list[ScrapeJobOut])
-async def list_influencer_jobs(influencer_id: UUID, db: AsyncSession = Depends(get_db)):
-    return await ScrapeJobRepo(db).get_by_influencer(influencer_id)
+async def list_influencer_jobs(
+    influencer_id: UUID,
+    # Callers that only need the most recent run (e.g. a per-platform
+    # scrape-status indicator on the creator profile header) can ask for
+    # limit=1 instead of paying for the full 50-row history every time.
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    return await ScrapeJobRepo(db).get_by_influencer(influencer_id, limit=limit)
 
 
 @router.post("/scrape")
@@ -228,8 +289,15 @@ async def cancel_job(job_id: UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/dashboard/status", response_model=list[DashboardStatusRow])
-async def get_dashboard_status(db: AsyncSession = Depends(get_db)):
-    return await DashboardService(db).get_status_rows()
+async def get_dashboard_status(
+    # None (default) = lifetime reliability, matching the original
+    # behavior. Any other value scopes job_success_rate/consecutive_job_
+    # failures/total_job_runs to just jobs created in the last N days --
+    # see ScrapeJobRepo.get_job_stats_by_influencer.
+    reliability_window_days: int | None = Query(default=None, ge=1, le=3650),
+    db: AsyncSession = Depends(get_db),
+):
+    return await DashboardService(db).get_status_rows(reliability_window_days=reliability_window_days)
 
 
 @router.get("/dashboard/metrics", response_model=DashboardMetricsOut)
@@ -354,6 +422,23 @@ async def update_instagram_graph_token_status(
 async def delete_instagram_graph_token(token_id: UUID, db: AsyncSession = Depends(get_db)):
     await InstagramGraphTokenRepo(db).delete(token_id)
 
+@router.get("/settings/instagram-backend", response_model=InstagramBackendOut)
+async def get_instagram_backend(db: AsyncSession = Depends(get_db)):
+    override = await AppSettingRepo(db).get(INSTAGRAM_BACKEND_KEY)
+    return InstagramBackendOut(
+        backend=override or settings.INSTAGRAM_BACKEND, override_active=override is not None
+    )
+
+
+@router.put("/settings/instagram-backend", response_model=InstagramBackendOut)
+async def set_instagram_backend(data: InstagramBackendUpdate, db: AsyncSession = Depends(get_db)):
+    # Live, DB-backed toggle -- see AppSetting's docstring for why this
+    # can't just mutate settings.INSTAGRAM_BACKEND in-process: the api,
+    # worker, and scheduler containers are separate processes, and only a
+    # DB row is visible to all three without a redeploy.
+    await AppSettingRepo(db).set(INSTAGRAM_BACKEND_KEY, data.backend)
+    return InstagramBackendOut(backend=data.backend, override_active=True)
+
 
 @router.get("/youtube-keys", response_model=list[YouTubeApiKeyOut])
 async def list_youtube_keys(db: AsyncSession = Depends(get_db)):
@@ -397,6 +482,10 @@ async def list_posts(
     # filtered server-side (not client-side after fetching everything)
     # since this endpoint is paginated and `total` must reflect the filter.
     platforms: list[str] | None = Query(default=None),
+    account_type: str | None = Query(default=None),
+    # Cross-creator outliers feed (docs/OUTLIERS_PLAN.md Phase 3) -- e.g.
+    # 2.0 to match the "2x+" badge threshold used elsewhere in the UI.
+    min_score: float | None = Query(default=None),
     sort: str = Query(default="posted_at"),
     sort_dir: str = Query(default="desc"),
     limit: int = Query(default=50, ge=1, le=200),
@@ -407,6 +496,8 @@ async def list_posts(
         influencer_id=influencer_id,
         category_id=category_id,
         platforms=platforms,
+        account_type=account_type,
+        min_score=min_score,
         sort=sort,
         sort_dir=sort_dir,
         limit=limit,

@@ -13,7 +13,17 @@ class DashboardStatusRow(BaseModel):
     creator_name: Optional[str] = None
     category_id: UUID
     category_name: str
+    account_type: str
     is_active: bool
+    # True when is_active=false was set by that category being deactivated,
+    # not a direct per-influencer toggle -- lets the UI distinguish "paused
+    # because its category is held" from "manually paused".
+    paused_by_category: bool
+    # Set only when a scrape job itself deactivated this influencer because
+    # the platform confirmed the handle doesn't resolve (currently only
+    # "handle_not_found") -- None for a manual deactivate or a category
+    # pause. See Influencer.deactivation_reason.
+    deactivation_reason: Optional[str] = None
     backfill_completed: bool
     scrape_posts_since: Optional[date] = None
     last_job_id: Optional[UUID] = None
@@ -25,6 +35,19 @@ class DashboardStatusRow(BaseModel):
     last_job_posts_processed: Optional[int] = None
     last_job_comments_processed: Optional[int] = None
     last_job_scraper_account: Optional[str] = None
+    # Lifetime job reliability (docs -- see ScrapeJobRepo.get_job_stats_by_influencer):
+    # counts only terminal runs (completed/failed), so a currently
+    # queued/running job doesn't skew the rate. total_job_runs is every
+    # ScrapeJob row ever created for this influencer, terminal or not.
+    total_job_runs: int = 0
+    completed_job_runs: int = 0
+    failed_job_runs: int = 0
+    job_success_rate: Optional[float] = None
+    # How many of the most recent *terminal* jobs in a row failed, walking
+    # back from the latest -- 0 the moment a completed run breaks the
+    # streak. This is what "failing frequently right now" means, as
+    # distinct from a poor lifetime average that already recovered.
+    consecutive_job_failures: int = 0
     # No ConfigDict(from_attributes=True) -- unlike every other *Out schema
     # in this repo, this is an aggregated view model assembled in
     # DashboardService by merging influencers + latest-job-per-influencer,

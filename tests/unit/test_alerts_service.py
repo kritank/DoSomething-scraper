@@ -21,8 +21,10 @@ async def test_all_healthy_produces_no_alerts():
     with (
         patch("app.services.alerts_service.InstagramAccountRepo") as MockAccountRepo,
         patch("app.services.alerts_service.ScrapeJobRepo") as MockJobRepo,
+        patch("app.services.alerts_service.AppSettingRepo") as MockAppSettingRepo,
         patch("app.services.alerts_service.settings") as mock_settings,
     ):
+        MockAppSettingRepo.return_value.get = AsyncMock(return_value=None)  # no DB override
         MockAccountRepo.return_value.get_all = AsyncMock(return_value=[_account()])
         MockJobRepo.return_value.get_latest_per_influencer = AsyncMock(return_value=[_job()])
         mock_settings.is_sqs_queue = False
@@ -41,8 +43,10 @@ async def test_in_use_account_does_not_trigger_no_healthy_alert():
     with (
         patch("app.services.alerts_service.InstagramAccountRepo") as MockAccountRepo,
         patch("app.services.alerts_service.ScrapeJobRepo") as MockJobRepo,
+        patch("app.services.alerts_service.AppSettingRepo") as MockAppSettingRepo,
         patch("app.services.alerts_service.settings") as mock_settings,
     ):
+        MockAppSettingRepo.return_value.get = AsyncMock(return_value=None)  # no DB override
         MockAccountRepo.return_value.get_all = AsyncMock(return_value=[_account(status="in_use")])
         MockJobRepo.return_value.get_latest_per_influencer = AsyncMock(return_value=[_job()])
         mock_settings.is_sqs_queue = False
@@ -57,8 +61,10 @@ async def test_zero_active_accounts_is_critical():
     with (
         patch("app.services.alerts_service.InstagramAccountRepo") as MockAccountRepo,
         patch("app.services.alerts_service.ScrapeJobRepo") as MockJobRepo,
+        patch("app.services.alerts_service.AppSettingRepo") as MockAppSettingRepo,
         patch("app.services.alerts_service.settings") as mock_settings,
     ):
+        MockAppSettingRepo.return_value.get = AsyncMock(return_value=None)  # no DB override
         MockAccountRepo.return_value.get_all = AsyncMock(return_value=[_account(status="disabled")])
         MockJobRepo.return_value.get_latest_per_influencer = AsyncMock(return_value=[])
         mock_settings.is_sqs_queue = False
@@ -73,8 +79,10 @@ async def test_account_needing_manual_resolution_is_warning():
     with (
         patch("app.services.alerts_service.InstagramAccountRepo") as MockAccountRepo,
         patch("app.services.alerts_service.ScrapeJobRepo") as MockJobRepo,
+        patch("app.services.alerts_service.AppSettingRepo") as MockAppSettingRepo,
         patch("app.services.alerts_service.settings") as mock_settings,
     ):
+        MockAppSettingRepo.return_value.get = AsyncMock(return_value=None)  # no DB override
         MockAccountRepo.return_value.get_all = AsyncMock(
             return_value=[_account(username="stuck", status="checkpoint_required")]
         )
