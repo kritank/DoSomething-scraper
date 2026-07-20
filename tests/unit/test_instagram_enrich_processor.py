@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -48,6 +48,20 @@ def test_apply_cookie_only_fields_sets_expected_columns():
     assert post.tagged_usernames == [{"username": "z"}]
     assert post.accessibility_caption == "a video"
     assert post.counts_disabled is False
+
+
+def test_apply_cookie_only_fields_backfills_original_dimensions():
+    """Regression: Business Discovery never returns original media
+    dimensions, so a Graph-created post's original_height/width stayed
+    None forever until enrichment backfills them from the cookie feed."""
+    processor = _processor()
+    post = Post(id=uuid4(), shortcode="ABC123", original_height=None, original_width=None)
+    item = _media_item(original_height=1920, original_width=1080)
+
+    processor._apply_cookie_only_fields(post, item)
+
+    assert post.original_height == 1920
+    assert post.original_width == 1080
 
 
 # ── _merge_metrics_snapshot ───────────────────────────────────────────────
@@ -129,7 +143,7 @@ async def test_run_enrich_skips_unmatched_feed_items_without_erroring(monkeypatc
     raise. The next API cycle picks it up."""
     processor = _processor()
     influencer_id = processor.message.influencer_id
-    influencer = SimpleNamespace(id=influencer_id, handle="myntra")
+    influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None)
 
     job = SimpleNamespace(id=uuid4(), comments_processed=0)
 
@@ -160,7 +174,7 @@ async def test_run_enrich_skips_unmatched_feed_items_without_erroring(monkeypatc
 async def test_run_enrich_syncs_comments_for_matched_posts(monkeypatch):
     processor = _processor()
     influencer_id = processor.message.influencer_id
-    influencer = SimpleNamespace(id=influencer_id, handle="myntra")
+    influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None)
     job = SimpleNamespace(id=uuid4(), comments_processed=0)
 
     existing_post = Post(id=uuid4(), shortcode="ABC123", media_pk="1")
@@ -193,6 +207,116 @@ async def test_run_enrich_syncs_comments_for_matched_posts(monkeypatch):
     await processor._run_enrich(session, job)
 
     assert job.comments_processed == 5
+
+
+@pytest.mark.asyncio
+async def test_run_enrich_skips_comment_sync_when_count_unchanged(monkeypatch):
+    """Regression: every matched post was re-synced for comments on every
+    single enrich run, even when nothing about its comment count had
+    changed since last time -- same diffing optimization JobProcessor
+    already has, just never ported here."""
+    processor = _processor()
+    influencer_id = processor.message.influencer_id
+    influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None)
+    job = SimpleNamespace(id=uuid4(), comments_processed=0)
+
+    existing_post = Post(id=uuid4(), shortcode="ABC123", media_pk="1")
+    item = _media_item(code="ABC123", comment_count=5)
+
+    processor.client = MagicMock()
+    processor.client.get_user_feed = AsyncMock(return_value={"items": []})
+
+    monkeypatch.setattr(
+        "app.workers.instagram_enrich_processor.InstagramParser.parse_feed",
+        MagicMock(return_value=([item], "")),
+    )
+    sync_mock = AsyncMock(return_value=5)
+    monkeypatch.setattr("app.workers.instagram_enrich_processor.sync_comments_for_post", sync_mock)
+    monkeypatch.setattr("app.workers.instagram_enrich_processor.update_engagement_timing_features", AsyncMock())
+
+    post_lookup_result = MagicMock()
+    post_lookup_result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[existing_post])))
+    metrics_lookup_result = MagicMock()
+    metrics_lookup_result.scalar_one_or_none = MagicMock(return_value=None)  # no same-day snapshot yet
+    comment_count_result = MagicMock()
+    comment_count_result.scalar_one_or_none = MagicMock(return_value=5)  # matches item.comment_count -- unchanged
+
+    session = MagicMock()
+    session.get = AsyncMock(return_value=influencer)
+    session.commit = AsyncMock()
+    session.execute = AsyncMock(side_effect=[post_lookup_result, metrics_lookup_result, comment_count_result])
+
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=session)
+    session_cm.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr("app.workers.instagram_enrich_processor.get_session", MagicMock(return_value=session_cm))
+
+    await processor._run_enrich(session, job)
+
+    sync_mock.assert_not_called()
+    assert job.comments_processed == 0
+
+
+@pytest.mark.asyncio
+async def test_run_enrich_stops_pagination_at_scrape_posts_since_cutoff(monkeypatch):
+    """Regression: enrichment never checked scrape_posts_since either --
+    it would walk INSTAGRAM_ENRICH_FEED_PAGES worth of history regardless
+    of a configured cutoff."""
+    processor = _processor()
+    influencer_id = processor.message.influencer_id
+    influencer = SimpleNamespace(
+        id=influencer_id, handle="myntra", scrape_posts_since=datetime(2026, 1, 1).date(),
+    )
+    job = SimpleNamespace(id=uuid4(), comments_processed=0)
+
+    old_item = _media_item(code="TOO_OLD", taken_at=int(datetime(2025, 11, 15, tzinfo=timezone.utc).timestamp()))
+
+    processor.client = MagicMock()
+    processor.client.get_user_feed = AsyncMock(return_value={"items": []})
+
+    monkeypatch.setattr(
+        "app.workers.instagram_enrich_processor.InstagramParser.parse_feed",
+        MagicMock(return_value=([old_item], "next_cursor")),  # has a next page, but must not be fetched
+    )
+
+    session = MagicMock()
+    session.get = AsyncMock(return_value=influencer)
+    session.commit = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+    session.execute = AsyncMock(return_value=execute_result)
+
+    await processor._run_enrich(session, job)
+
+    assert processor.client.get_user_feed.call_count == 1  # stopped, didn't fetch page 2
+
+
+@pytest.mark.asyncio
+async def test_run_enrich_captures_raw_response(monkeypatch):
+    """Regression: enrichment never captured a RawResponse at all for its
+    get_user_feed calls, unlike JobProcessor's own "one raw payload per
+    run" convention used for diagnosing field-shape drift."""
+    processor = _processor()
+    influencer_id = processor.message.influencer_id
+    influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None)
+    job = SimpleNamespace(id=uuid4(), comments_processed=0)
+
+    processor.client = MagicMock()
+    processor.client.get_user_feed = AsyncMock(return_value={"items": []})
+
+    monkeypatch.setattr(
+        "app.workers.instagram_enrich_processor.InstagramParser.parse_feed", MagicMock(return_value=([], ""))
+    )
+
+    session = MagicMock()
+    session.get = AsyncMock(return_value=influencer)
+    session.commit = AsyncMock()
+
+    await processor._run_enrich(session, job)
+
+    from app.models.raw_response import RawResponse
+    added = [call.args[0] for call in session.add.call_args_list]
+    assert any(isinstance(obj, RawResponse) and obj.endpoint == "ig_enrich_get_user_feed" for obj in added)
 
 
 # ── _maybe_dispatch_enrich cycle gating ───────────────────────────────────

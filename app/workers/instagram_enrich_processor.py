@@ -24,6 +24,7 @@ import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from app.analytics.creator_stats import CreatorStatsService
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.database import get_session
@@ -33,6 +34,7 @@ from app.core.exceptions import (
 )
 from app.models.scrape_job import ScrapeJob
 from app.models.influencer import Influencer
+from app.models.raw_response import RawResponse
 from app.models.snapshot import PostMetricsSnapshot
 from app.models.post import Post
 from app.repositories.instagram_account_repo import InstagramAccountRepo
@@ -41,7 +43,7 @@ from app.scraper.client import InstagramClient
 from app.scraper.parser import InstagramParser
 from app.schemas.instagram import InstagramMediaItem
 from app.queue.base import ScrapeJobMessage
-from app.workers.comment_sync import sync_comments_for_post, update_engagement_timing_features
+from app.workers.comment_sync import last_comment_count, sync_comments_for_post, update_engagement_timing_features
 from app.workers.job_common import WORKER_ID, JobCancelledError
 
 logger = get_logger(__name__)
@@ -95,6 +97,15 @@ class InstagramEnrichProcessor:
                     await self._run_enrich(session, job)
                     job.status = "completed"
                     job.error_message = None
+                    # Confirmed missing entirely in the original PR3
+                    # landing: enrichment is often the FIRST time a real
+                    # view count exists for a post (the API scrape writes
+                    # views=None) -- outlier scoring falls back to likes
+                    # until something recomputes, so skipping this left
+                    # scores stale until the *next* Graph API cycle even
+                    # though the real view data was already sitting in
+                    # the DB right after this job finished.
+                    await self._recompute_outlier_metrics(session)
                 except JobCancelledError:
                     logger.info("Enrichment cancelled", job_id=job.id)
                     outcome = "cancelled"
@@ -134,6 +145,20 @@ class InstagramEnrichProcessor:
                 except asyncio.CancelledError:
                     pass
 
+    async def _recompute_outlier_metrics(self, session: AsyncSession) -> None:
+        """Best-effort, same as JobProcessor/InstagramGraphJobProcessor's
+        counterpart -- an outlier-scoring bug shouldn't take down
+        enrichment."""
+        try:
+            await CreatorStatsService(session).recompute_outlier_metrics(self.message.influencer_id)
+            await session.commit()
+        except Exception:
+            logger.warning(
+                "Outlier metrics recompute failed after enrichment",
+                influencer_id=self.message.influencer_id, exc_info=True,
+            )
+            await session.rollback()
+
     async def _heartbeat(self, job_id: UUID) -> None:
         while True:
             await asyncio.sleep(settings.JOB_HEARTBEAT_INTERVAL_S)
@@ -158,6 +183,15 @@ class InstagramEnrichProcessor:
         post.tagged_usernames = item.tagged_usernames or None
         post.accessibility_caption = item.accessibility_caption
         post.counts_disabled = item.counts_disabled
+        # Business Discovery doesn't return original media dimensions --
+        # confirmed missing entirely for Graph-created posts until
+        # enrichment backfills them here (JobProcessor sets these on
+        # cookie-created posts directly; Graph-created ones had no
+        # equivalent source until now).
+        if item.original_height is not None:
+            post.original_height = item.original_height
+        if item.original_width is not None:
+            post.original_width = item.original_width
 
     async def _merge_metrics_snapshot(self, session: AsyncSession, post: Post, item: InstagramMediaItem) -> None:
         """Updates today's PostMetricsSnapshot in place with view/play data
@@ -201,16 +235,38 @@ class InstagramEnrichProcessor:
         if influencer is None:
             return
 
+        # Same cutoff as InstagramGraphJobProcessor -- confirmed missing
+        # here too originally. Lower-severity than the Graph side (this
+        # only ever walks INSTAGRAM_ENRICH_FEED_PAGES, small by default),
+        # but a configured cutoff should still stop pagination rather than
+        # wasting cookie-account requests scanning pages entirely outside
+        # the influencer's configured window.
+        posts_since_cutoff: datetime | None = None
+        if influencer.scrape_posts_since is not None:
+            posts_since_cutoff = datetime.combine(
+                influencer.scrape_posts_since, datetime.min.time()
+            ).replace(tzinfo=timezone.utc)
+
         max_id = ""
         matched_shortcodes: set[str] = set()
         sync_candidates: dict[UUID, Post] = {}
         unmatched_count = 0
+        raw_feed_captured = False
+        stop_pagination = False
 
         for _ in range(settings.INSTAGRAM_ENRICH_FEED_PAGES):
             if self._cancel_event.is_set():
                 raise JobCancelledError()
+            if stop_pagination:
+                break
 
             raw_feed = await self.client.get_user_feed(handle, max_id)
+            if not raw_feed_captured:
+                # Same "one raw payload per run" convention as
+                # JobProcessor -- confirmed missing here originally.
+                session.add(RawResponse(endpoint="ig_enrich_get_user_feed", handle=handle, payload=raw_feed, status=200))
+                raw_feed_captured = True
+
             items, next_max_id = InstagramParser.parse_feed(raw_feed)
             if not items:
                 break
@@ -219,6 +275,15 @@ class InstagramEnrichProcessor:
             existing_by_code = {p.shortcode: p for p in (await session.execute(stmt)).scalars().all()}
 
             for item in items:
+                item_posted_at = datetime.fromtimestamp(item.taken_at, tz=timezone.utc)
+                if (
+                    posts_since_cutoff is not None
+                    and item_posted_at < posts_since_cutoff
+                    and not item.is_pinned
+                ):
+                    stop_pagination = True
+                    break
+
                 post = existing_by_code.get(item.code)
                 if post is None:
                     # Posted since the API scrape ran -- the next API cycle
@@ -238,11 +303,19 @@ class InstagramEnrichProcessor:
                 self._apply_cookie_only_fields(post, item)
                 await self._merge_metrics_snapshot(session, post, item)
                 matched_shortcodes.add(item.code)
-                sync_candidates[post.id] = post
+
+                # Confirmed missing originally: every matched post was
+                # re-synced for comments on every single enrich run, even
+                # when nothing about its comment count had changed since
+                # last time -- same diffing optimization JobProcessor
+                # already uses, just never ported here.
+                prev_count = await last_comment_count(session, post.id)
+                if prev_count is None or prev_count != item.comment_count:
+                    sync_candidates[post.id] = post
 
             await session.commit()
 
-            if not next_max_id:
+            if stop_pagination or not next_max_id:
                 break
             max_id = next_max_id
 
