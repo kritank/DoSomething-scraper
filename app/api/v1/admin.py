@@ -48,7 +48,9 @@ from app.schemas.influencer import (
     InfluencerScrapeSettingsUpdate,
 )
 from app.core.exceptions import ActiveJobExistsError, CreatorNotFoundError
+from app.repositories.app_setting_repo import INSTAGRAM_BACKEND_KEY, AppSettingRepo
 from app.schemas.alert import AlertOut
+from app.schemas.app_setting import InstagramBackendOut, InstagramBackendUpdate
 from app.schemas.instagram_account import AccountStatusUpdate, InstagramAccountOut
 from app.schemas.post import PostListOut, PostOut
 from app.schemas.query_console import QueryRequest, QueryResult
@@ -389,6 +391,24 @@ async def delete_account(account_id: UUID, db: AsyncSession = Depends(get_db)):
     # Irreversible; the dashboard gates this behind an explicit confirm,
     # disabling (PATCH status) is the default/reversible action.
     await InstagramAccountRepo(db).delete(account_id)
+
+
+@router.get("/settings/instagram-backend", response_model=InstagramBackendOut)
+async def get_instagram_backend(db: AsyncSession = Depends(get_db)):
+    override = await AppSettingRepo(db).get(INSTAGRAM_BACKEND_KEY)
+    return InstagramBackendOut(
+        backend=override or settings.INSTAGRAM_BACKEND, override_active=override is not None
+    )
+
+
+@router.put("/settings/instagram-backend", response_model=InstagramBackendOut)
+async def set_instagram_backend(data: InstagramBackendUpdate, db: AsyncSession = Depends(get_db)):
+    # Live, DB-backed toggle -- see AppSetting's docstring for why this
+    # can't just mutate settings.INSTAGRAM_BACKEND in-process: the api,
+    # worker, and scheduler containers are separate processes, and only a
+    # DB row is visible to all three without a redeploy.
+    await AppSettingRepo(db).set(INSTAGRAM_BACKEND_KEY, data.backend)
+    return InstagramBackendOut(backend=data.backend, override_active=True)
 
 
 @router.get("/youtube-keys", response_model=list[YouTubeApiKeyOut])

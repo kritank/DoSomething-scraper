@@ -1,5 +1,6 @@
 from app.core.database import Base
 from app.models.analytics_cache import AnalyticsCache
+from app.models.app_setting import AppSetting
 from app.models.audit_log import AuditLog
 from app.models.benchmark import CategoryBenchmark
 from app.models.category import Category
@@ -22,6 +23,7 @@ from app.models.youtube_api_key import YouTubeApiKey
 
 __all__ = [
     "AnalyticsCache",
+    "AppSetting",
     "AuditLog",
     "Base",
     "Category",

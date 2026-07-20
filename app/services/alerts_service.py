@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from app.core.config import settings
 from app.queue.factory import get_queue
+from app.repositories.app_setting_repo import INSTAGRAM_BACKEND_KEY, AppSettingRepo
 from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.repositories.instagram_api_token_repo import InstagramApiTokenRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
@@ -46,7 +47,8 @@ async def get_alerts(session: AsyncSession) -> list[AlertOut]:
                 message=f"{dlq_depth} job(s) in the dead-letter queue -- check for a systemic failure",
             ))
 
-    if settings.INSTAGRAM_BACKEND == "hybrid":
+    instagram_backend = await AppSettingRepo(session).get(INSTAGRAM_BACKEND_KEY) or settings.INSTAGRAM_BACKEND
+    if instagram_backend == "hybrid":
         tokens = await InstagramApiTokenRepo(session).get_all()
         if tokens and not any(t.status == "active" for t in tokens):
             alerts.append(AlertOut(

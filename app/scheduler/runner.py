@@ -109,7 +109,7 @@ async def retry_failed_scrapes():
             if not influencer.is_active:
                 continue
 
-            backend = "cookies" if job.job_type == "enrich" else dispatch_service._backend_for(influencer)
+            backend = "cookies" if job.job_type == "enrich" else await dispatch_service._backend_for(influencer)
 
             job.status = "queued"
             await session.commit()
