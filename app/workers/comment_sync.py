@@ -10,7 +10,7 @@ platform-agnostic, working only against the Comment ORM model itself.
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -22,6 +22,15 @@ from app.models.comment import Comment
 from app.models.feature_store import FeatureStore
 from app.models.post import Post
 from app.models.snapshot import PostMetricsSnapshot
+from app.scraper.client import InstagramClient
+from app.scraper.parser import InstagramParser
+from app.schemas.instagram import InstagramComment
+
+# Same caps JobProcessor originally hardcoded -- per post / per comment
+# thread, safety nets against a pathologically large comment section
+# turning one scrape into an unbounded number of requests.
+MAX_COMMENT_PAGES = 50
+MAX_REPLY_PAGES = 20
 
 
 @dataclass
@@ -160,3 +169,89 @@ async def update_engagement_timing_features(session: AsyncSession, post: Post) -
         else None
     )
     await session.commit()
+
+
+def normalize_comment(comment: InstagramComment, creator_handle: str) -> NormalizedComment:
+    """Extracted from JobProcessor._normalize_comment -- creator_handle is
+    now an explicit parameter (was self.message.handle) so this is usable
+    from both JobProcessor and InstagramEnrichProcessor without either
+    holding a reference to the other."""
+    return NormalizedComment(
+        comment_id=comment.comment_id,
+        parent_comment_id=comment.parent_comment_id,
+        username=comment.username,
+        full_name=comment.full_name,
+        is_verified=comment.is_verified,
+        is_from_creator=comment.username.lower() == creator_handle.lower(),
+        author_profile_pic_url=comment.author_profile_pic_url,
+        author_is_private=comment.author_is_private,
+        text=comment.text,
+        like_count=comment.like_count,
+        child_comment_count=comment.child_comment_count,
+        liked_by_creator=comment.liked_by_creator,
+        is_edited=comment.is_edited,
+        reported_as_spam=comment.reported_as_spam,
+        commented_at=(
+            datetime.fromtimestamp(comment.created_at, tz=timezone.utc)
+            if comment.created_at
+            else datetime.now(timezone.utc)
+        ),
+    )
+
+
+async def sync_replies(
+    session: AsyncSession, client: InstagramClient, post: Post, parent: InstagramComment, creator_handle: str
+) -> int:
+    """Extracted from JobProcessor._sync_replies -- identical behavior,
+    just parameterized on (session, client, post) instead of reading
+    self.client/self.message from a JobProcessor instance, so
+    InstagramEnrichProcessor (PR3) can call it too."""
+    after: str | None = None
+    total = 0
+    for _ in range(MAX_REPLY_PAGES):
+        connection = await client.get_comment_replies(post.media_pk, parent.comment_id, post.permalink, after)
+        replies, next_after, has_more = InstagramParser.parse_replies(connection, parent.comment_id)
+        if not replies:
+            break
+
+        await upsert_comments_bulk(session, post.id, [normalize_comment(c, creator_handle) for c in replies])
+        await session.commit()
+        total += len(replies)
+
+        if not has_more or not next_after:
+            break
+        after = next_after
+    return total
+
+
+async def sync_comments_for_post(
+    session: AsyncSession, client: InstagramClient, post: Post, creator_handle: str
+) -> int:
+    """Extracted from JobProcessor._sync_comments_for_post -- same
+    diffing logic (only re-walk a thread whose reply count actually
+    changed since last sync), now shared with InstagramEnrichProcessor."""
+    after: str | None = None
+    total = 0
+    for _ in range(MAX_COMMENT_PAGES):
+        connection = await client.get_media_comments(post.media_pk, post.permalink, after)
+        comments, next_after, has_more = InstagramParser.parse_comments(connection)
+        if not comments:
+            break
+
+        prev_child_counts = await previous_child_counts(session, [c.comment_id for c in comments])
+
+        await upsert_comments_bulk(session, post.id, [normalize_comment(c, creator_handle) for c in comments])
+        await session.commit()
+        total += len(comments)
+
+        for comment in comments:
+            if (
+                comment.child_comment_count > 0
+                and comment.child_comment_count != prev_child_counts.get(comment.comment_id)
+            ):
+                total += await sync_replies(session, client, post, comment, creator_handle)
+
+        if not has_more or not next_after:
+            break
+        after = next_after
+    return total

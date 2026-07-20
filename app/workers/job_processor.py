@@ -26,15 +26,13 @@ from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
 from app.scraper.client import InstagramClient
 from app.scraper.parser import InstagramParser
-from app.schemas.instagram import InstagramComment, InstagramMediaItem
+from app.schemas.instagram import InstagramMediaItem
 from app.queue.base import ScrapeJobMessage
 from app.feature_extraction.extractor import FeatureExtractor
 from app.workers.comment_sync import (
-    NormalizedComment,
+    sync_comments_for_post,
     last_comment_count,
-    previous_child_counts,
     update_engagement_timing_features,
-    upsert_comments_bulk,
 )
 from app.workers.job_common import WORKER_ID, JobCancelledError
 
@@ -42,9 +40,6 @@ from app.workers.job_common import WORKER_ID, JobCancelledError
 logger = get_logger(__name__)
 
 MEDIA_TYPE_LABELS = {1: "image", 2: "video", 8: "carousel"}
-
-MAX_COMMENT_PAGES = 50   # per post, safety cap (~750 top-level comments/post)
-MAX_REPLY_PAGES = 20     # per comment thread, safety cap
 
 
 class JobProcessor:
@@ -585,76 +580,8 @@ class JobProcessor:
         )
 
     async def _sync_comments_for_post(self, session: AsyncSession, post: Post) -> int:
-        after: str | None = None
-        total = 0
-        for _ in range(MAX_COMMENT_PAGES):
-            connection = await self.client.get_media_comments(post.media_pk, post.permalink, after)
-            comments, next_after, has_more = InstagramParser.parse_comments(connection)
-            if not comments:
-                break
-
-            # Diff each comment's reply count against what's already stored
-            # *before* upserting -- otherwise every comment with any replies
-            # gets its whole thread re-walked on every single run, even when
-            # nothing about it changed since last time. Comparing against
-            # the incoming count (not just >0) means only genuinely new
-            # comments and threads with new replies since last sync cost a
-            # request; an unchanged thread costs zero.
-            prev_child_counts = await previous_child_counts(session, [c.comment_id for c in comments])
-
-            await upsert_comments_bulk(session, post.id, [self._normalize_comment(c) for c in comments])
-            await session.commit()
-            total += len(comments)
-
-            for comment in comments:
-                if (
-                    comment.child_comment_count > 0
-                    and comment.child_comment_count != prev_child_counts.get(comment.comment_id)
-                ):
-                    total += await self._sync_replies(session, post, comment)
-
-            if not has_more or not next_after:
-                break
-            after = next_after
-        return total
-
-    async def _sync_replies(self, session: AsyncSession, post: Post, parent: InstagramComment) -> int:
-        after: str | None = None
-        total = 0
-        for _ in range(MAX_REPLY_PAGES):
-            connection = await self.client.get_comment_replies(post.media_pk, parent.comment_id, post.permalink, after)
-            replies, next_after, has_more = InstagramParser.parse_replies(connection, parent.comment_id)
-            if not replies:
-                break
-
-            await upsert_comments_bulk(session, post.id, [self._normalize_comment(c) for c in replies])
-            await session.commit()
-            total += len(replies)
-
-            if not has_more or not next_after:
-                break
-            after = next_after
-        return total
-
-    def _normalize_comment(self, comment: InstagramComment) -> NormalizedComment:
-        return NormalizedComment(
-            comment_id=comment.comment_id,
-            parent_comment_id=comment.parent_comment_id,
-            username=comment.username,
-            full_name=comment.full_name,
-            is_verified=comment.is_verified,
-            is_from_creator=comment.username.lower() == self.message.handle.lower(),
-            author_profile_pic_url=comment.author_profile_pic_url,
-            author_is_private=comment.author_is_private,
-            text=comment.text,
-            like_count=comment.like_count,
-            child_comment_count=comment.child_comment_count,
-            liked_by_creator=comment.liked_by_creator,
-            is_edited=comment.is_edited,
-            reported_as_spam=comment.reported_as_spam,
-            commented_at=(
-                datetime.fromtimestamp(comment.created_at, tz=timezone.utc)
-                if comment.created_at
-                else datetime.now(timezone.utc)
-            ),
-        )
+        """Delegates to the platform-agnostic-signature shared function
+        (app.workers.comment_sync) also used by InstagramEnrichProcessor
+        (PR3) -- see that module for the actual logic, unchanged by this
+        extraction."""
+        return await sync_comments_for_post(session, self.client, post, self.message.handle)

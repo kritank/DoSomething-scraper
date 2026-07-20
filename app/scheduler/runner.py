@@ -84,10 +84,19 @@ async def run_daily_scrapes():
 async def retry_failed_scrapes():
     """Re-dispatch jobs left in retry_pending by JobProcessor, reusing the
     existing ScrapeJob row (and its retry_count) rather than
-    DispatchService.dispatch_scrape_job, which always creates a new one."""
+    DispatchService.dispatch_scrape_job, which always creates a new one.
+
+    Must re-stamp job_type/backend on the re-enqueued message rather than
+    leaving them at ScrapeJobMessage's defaults ("scrape"/"cookies") --
+    otherwise a retried job_type="enrich" row would silently come back as
+    a full re-scrape instead of a retried enrichment. job_type carries
+    forward as-is (a ScrapeJob's type never changes); backend is
+    re-derived the same way DispatchService decides it originally, since
+    the job row itself doesn't persist which backend it used."""
     async with get_session() as session:
         job_repo = ScrapeJobRepo(session)
         influencer_repo = InfluencerRepo(session)
+        dispatch_service = DispatchService(session)
         queue = get_queue()
 
         pending = await job_repo.get_retry_pending()
@@ -100,6 +109,8 @@ async def retry_failed_scrapes():
             if not influencer.is_active:
                 continue
 
+            backend = "cookies" if job.job_type == "enrich" else dispatch_service._backend_for(influencer)
+
             job.status = "queued"
             await session.commit()
             await queue.enqueue(
@@ -108,6 +119,8 @@ async def retry_failed_scrapes():
                     influencer_id=influencer.id,
                     handle=influencer.handle,
                     platform=influencer.platform,
+                    job_type=job.job_type,
+                    backend=backend,
                 )
             )
             count += 1

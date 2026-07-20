@@ -8,6 +8,7 @@ from app.core.database import init_db, close_db
 from app.queue.factory import get_queue
 from app.workers.account_login_processor import process_pending_logins
 from app.workers.account_revalidator import revalidate_checkpoint_accounts
+from app.workers.instagram_enrich_processor import InstagramEnrichProcessor
 from app.workers.instagram_graph_job_processor import InstagramGraphJobProcessor
 from app.workers.job_processor import JobProcessor
 from app.workers.youtube_job_processor import YouTubeJobProcessor
@@ -25,12 +26,9 @@ def handle_sigterm(*args):
 async def _run_one(receipt: str, msg, queue) -> None:
     logger.info("Processing job", job_id=msg.job_id, platform=msg.platform, job_type=msg.job_type, backend=msg.backend)
     try:
-        # job_type=="enrich" has no processor yet (PR3) -- not reachable
-        # today since DispatchService never stamps that job_type, but the
-        # field exists on the wire already (see ScrapeJobMessage) so a
-        # future enrich message decodes on old and new workers alike
-        # during a rolling deploy.
-        if msg.platform == "youtube":
+        if msg.job_type == "enrich":
+            processor = InstagramEnrichProcessor(msg)
+        elif msg.platform == "youtube":
             processor = YouTubeJobProcessor(msg)
         elif msg.backend == "graph":
             processor = InstagramGraphJobProcessor(msg)
