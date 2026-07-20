@@ -291,14 +291,17 @@ class InstagramEnrichProcessor:
                     unmatched_count += 1
                     continue
 
-                if post.media_pk and str(item.pk) != post.media_pk:
-                    # Shortcode agrees (that's the merge key), pk disagrees
-                    # -- log and proceed anyway; shortcode is the source of
-                    # truth per INSTAGRAM_GRAPH_API_PLAN.md §2.
-                    logger.warning(
-                        "Instagram media_pk mismatch between API and cookie sources",
-                        shortcode=item.code, api_pk=post.media_pk, cookie_pk=str(item.pk),
-                    )
+                # NOTE: post.media_pk (set from the Graph API's media `id`,
+                # 17-18 digits) and item.pk (the legacy/cookie API's media
+                # pk, 19 digits) are DIFFERENT ID NAMESPACES from two
+                # separate Instagram API generations -- they never match,
+                # by construction, for the same piece of media. Confirmed
+                # live: 24/24 matched posts "disagreed" on a real test run.
+                # The original PR3 code logged a warning on every single
+                # one of these, which is pure noise (100% expected, zero
+                # diagnostic value) -- removed rather than kept as a
+                # misleading "something's wrong" signal. shortcode remains
+                # the sole, correct merge key (INSTAGRAM_GRAPH_API_PLAN.md §2).
 
                 self._apply_cookie_only_fields(post, item)
                 await self._merge_metrics_snapshot(session, post, item)
