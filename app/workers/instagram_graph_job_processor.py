@@ -46,6 +46,7 @@ from app.models.raw_response import RawResponse
 from app.queue.base import ScrapeJobMessage
 from app.queue.factory import get_queue
 from app.repositories.scrape_job_repo import ScrapeJobRepo
+from app.services.dispatch_service import DispatchService
 from app.scraper.instagram_graph_client import InstagramGraphClient
 from app.scraper.instagram_graph_parser import parse_profile, parse_media_items, extract_media_cursor
 from app.schemas.instagram import InstagramMediaItem
@@ -110,6 +111,7 @@ class InstagramGraphJobProcessor:
                     job.status = "completed"
                     job.error_message = None
                     await self._recompute_outlier_metrics(session)
+                    await self._maybe_dispatch_enrich(session)
                 except JobCancelledError:
                     logger.info("Scrape cancelled", job_id=job.id)
                     outcome = "cancelled"
@@ -199,6 +201,27 @@ class InstagramGraphJobProcessor:
                 backend="cookies",
             )
         )
+
+    async def _maybe_dispatch_enrich(self, session: AsyncSession) -> None:
+        """Gated by INSTAGRAM_ENRICH_EVERY_N_CYCLES (days-since-epoch % N
+        == 0, the "simpler days-modulo" option from
+        docs/INSTAGRAM_HYBRID_IMPLEMENTATION.md PR3 §3.3, over a
+        per-influencer counter in scheduler_metadata) -- every influencer
+        on the API path is gated by the same day, so N=1 means "every
+        day", N=2 means "every other day", etc. Best-effort: a failure to
+        dispatch never fails the parent scrape job, which already
+        succeeded and committed real data."""
+        if settings.INSTAGRAM_ENRICH_EVERY_N_CYCLES <= 0:
+            return
+        days_since_epoch = (datetime.now(timezone.utc).date() - datetime(1970, 1, 1).date()).days
+        if days_since_epoch % settings.INSTAGRAM_ENRICH_EVERY_N_CYCLES != 0:
+            return
+        try:
+            await DispatchService(session).dispatch_enrich_job(self.message.influencer_id)
+        except Exception:
+            logger.warning(
+                "Failed to dispatch enrich follow-on", influencer_id=self.message.influencer_id, exc_info=True
+            )
 
     async def _recompute_outlier_metrics(self, session: AsyncSession) -> None:
         try:
