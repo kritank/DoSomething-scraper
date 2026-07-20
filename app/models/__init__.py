@@ -9,6 +9,7 @@ from app.models.credential_health_snapshot import CredentialHealthSnapshot
 from app.models.feature_store import FeatureStore
 from app.models.influencer import Influencer
 from app.models.instagram_account import InstagramAccount
+from app.models.instagram_api_token import InstagramApiToken
 from app.models.post import Post
 from app.models.post_outlier_metrics import PostOutlierMetrics
 from app.models.queue_depth_snapshot import QueueDepthSnapshot
@@ -31,6 +32,7 @@ __all__ = [
     "FeatureStore",
     "Influencer",
     "InstagramAccount",
+    "InstagramApiToken",
     "Post",
     "PostMetricsSnapshot",
     "PostOutlierMetrics",

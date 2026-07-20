@@ -47,7 +47,12 @@ class InstagramMediaItem(BaseModel):
     pk: int | str
     code: str
     caption: Optional[dict[str, Any]] = None
-    like_count: int = 0
+    # None means "creator hides like counts" (Business Discovery reports
+    # this honestly as null) -- the cookie parser previously always had a
+    # real number to report, so this widened from `int = 0` when the Graph
+    # API path was added; 0 stays a valid (rare but real: zero likes)
+    # value, distinct from "hidden".
+    like_count: Optional[int] = 0
     comment_count: int = 0
     # view_count is populated only for photo/carousel media that happen to
     # embed a video component; for reels/video posts Instagram reports the
@@ -79,6 +84,14 @@ class InstagramMediaItem(BaseModel):
     # of taken_at, so a backfill age cutoff must not stop on (or be
     # confused by) one of these -- skip them in that specific check instead.
     is_pinned: bool = False
+
+    # Graph API (Business Discovery) only -- expiring CDN URLs and the
+    # public permalink; None for cookie-sourced items. children mirrors a
+    # carousel's per-slide {media_type, media_url, thumbnail_url}.
+    media_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    children: Optional[list[dict[str, Any]]] = None
+    permalink: Optional[str] = None
 
 
 class InstagramComment(BaseModel):
