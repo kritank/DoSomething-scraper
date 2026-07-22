@@ -1,8 +1,23 @@
 import React, { useMemo } from 'react';
-import ReactECharts from 'echarts-for-react';
+import {
+  ResponsiveContainer,
+  ComposedChart,
+  Line,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+} from 'recharts';
 import { format, parseISO } from 'date-fns';
 import EmptyState from '../common/EmptyState';
 
+// buckets: [{hour, avg_main_depth, max_main_depth, avg_dlq_depth, max_dlq_depth}]
+// Hour-granularity (not day, like the rest of this dashboard) -- queue
+// depth moves on the order of minutes, and the whole point of watching it
+// is catching a backlog building up within a single day, which day
+// buckets would flatten away entirely.
 export default function QueueDepthChart({ buckets }) {
   const data = useMemo(
     () =>
@@ -10,142 +25,20 @@ export default function QueueDepthChart({ buckets }) {
         .map((b) => ({
           hour: b.hour,
           avg_main_depth: b.avg_main_depth,
-          main_range_max: b.max_main_depth,
+          // [avg, max] range band, same recharts idiom as the duration
+          // range in PerformanceChart -- surfaces spikes an average alone
+          // would hide.
+          main_range: b.avg_main_depth != null && b.max_main_depth != null
+            ? [b.avg_main_depth, b.max_main_depth]
+            : null,
           avg_dlq_depth: b.avg_dlq_depth,
         }))
         .sort((a, b) => a.hour.localeCompare(b.hour)),
-    [buckets]
+    [buckets],
   );
-  
   const hasDlq = useMemo(() => (buckets ?? []).some((b) => b.avg_dlq_depth != null), [buckets]);
 
-  // Hooks must run in the same order every render -- the empty-state early
-  // return has to come after every hook, not before, or React throws
-  // "Rendered more hooks than during the previous render" the moment data
-  // goes from empty to non-empty (e.g. switching date range) and crashes
-  // the whole tree. So `option` guards for the empty case internally
-  // instead of skipping its own useMemo.
-  const option = useMemo(() => {
-    if (data.length === 0) return null;
-    const xAxisData = data.map(d => d.hour);
-    const series = [];
-
-    // Range area
-    series.push({
-      name: 'Range Max',
-      type: 'line',
-      data: data.map(d => d.main_range_max),
-      lineStyle: { opacity: 0 },
-      stack: 'depth',
-      symbol: 'none'
-    });
-    series.push({
-      name: 'Range Min',
-      type: 'line',
-      data: data.map(d => d.main_range_max - d.avg_main_depth),
-      lineStyle: { opacity: 0 },
-      areaStyle: { color: 'var(--color-chart-1)', opacity: 0.15 },
-      stack: 'depth',
-      symbol: 'none'
-    });
-
-    // Average depth
-    series.push({
-      name: 'Queue depth (avg)',
-      type: 'line',
-      data: data.map(d => d.avg_main_depth),
-      itemStyle: { color: 'var(--color-chart-1)' },
-      lineStyle: { width: 2 },
-      symbol: 'circle',
-      symbolSize: 4
-    });
-
-    // Live Pulse for the last point
-    if (data.length > 0) {
-      const lastPoint = data[data.length - 1];
-      series.push({
-        name: 'Live Pulse',
-        type: 'effectScatter',
-        coordinateSystem: 'cartesian2d',
-        data: [[lastPoint.hour, lastPoint.avg_main_depth]],
-        symbolSize: 8,
-        showEffectOn: 'render',
-        rippleEffect: { brushType: 'stroke', scale: 4 },
-        itemStyle: { color: 'var(--color-chart-1)' },
-        zlevel: 1
-      });
-    }
-
-    if (hasDlq) {
-      series.push({
-        name: 'DLQ depth (avg)',
-        type: 'line',
-        data: data.map(d => d.avg_dlq_depth),
-        itemStyle: { color: 'var(--color-danger)' },
-        lineStyle: { width: 2 },
-        symbol: 'circle',
-        symbolSize: 4
-      });
-    }
-
-    return {
-      grid: { top: 20, right: 20, bottom: 40, left: 40 },
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: { type: 'line', lineStyle: { color: 'rgba(255,255,255,0.1)' } },
-        backgroundColor: 'rgba(26, 26, 37, 0.85)',
-        borderColor: 'rgba(255, 255, 255, 0.1)',
-        textStyle: { color: '#f0f0f5', fontSize: 12 },
-        padding: [10, 14],
-        formatter: (params) => {
-          let hour = params[0].axisValue;
-          let html = `<div style="font-weight: 600; margin-bottom: 6px;">${format(parseISO(hour), 'MMM d, yyyy h:mma')}</div>`;
-          
-          let avg = data.find(d => d.hour === hour)?.avg_main_depth;
-          let max = data.find(d => d.hour === hour)?.main_range_max;
-          if (avg != null && max != null) {
-            html += `<div style="color: #8888a0">Queue depth range: ${avg.toFixed(1)} – ${max.toFixed(1)}</div>`;
-            html += `<div style="color: #8888a0">Queue depth (avg): ${avg.toFixed(1)}</div>`;
-          }
-          
-          let dlq = data.find(d => d.hour === hour)?.avg_dlq_depth;
-          if (dlq != null) {
-            html += `<div style="color: #ef4444; margin-top: 4px;">DLQ depth: ${dlq.toFixed(1)}</div>`;
-          }
-          return html;
-        }
-      },
-      legend: {
-        bottom: 0,
-        textStyle: { color: '#8888a0', fontSize: 11 },
-        icon: 'roundRect',
-        itemGap: 15,
-        data: [
-          'Queue depth (avg)',
-          ...(hasDlq ? ['DLQ depth (avg)'] : [])
-        ]
-      },
-      xAxis: {
-        type: 'category',
-        data: xAxisData,
-        axisLine: { show: false },
-        axisTick: { show: false },
-        axisLabel: {
-          formatter: (val) => format(parseISO(val), 'MMM d, ha'),
-          color: '#8888a0',
-          fontSize: 12
-        }
-      },
-      yAxis: {
-        type: 'value',
-        splitLine: { lineStyle: { type: 'dashed', color: 'rgba(255,255,255,0.05)' } },
-        axisLabel: { color: '#8888a0', fontSize: 11 }
-      },
-      series: series
-    };
-  }, [data, hasDlq]);
-
-  if (!option) {
+  if (data.length === 0) {
     return (
       <EmptyState
         title="No queue depth samples yet"
@@ -156,7 +49,53 @@ export default function QueueDepthChart({ buckets }) {
 
   return (
     <div className="w-full h-56">
-      <ReactECharts option={option} style={{ height: '100%', width: '100%' }} notMerge={true} />
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={data} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-border-subtle)" />
+          <XAxis
+            dataKey="hour"
+            tickFormatter={(val) => format(parseISO(val), 'MMM d, ha')}
+            axisLine={false}
+            tickLine={false}
+            tick={{ fontSize: 12, fill: 'var(--color-text-muted)' }}
+            dy={10}
+            minTickGap={30}
+          />
+          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: 'var(--color-text-muted)' }} allowDecimals={false} />
+          <Tooltip
+            labelFormatter={(val) => format(parseISO(val), 'MMM d, yyyy h:mma')}
+            formatter={(value, name) => {
+              if (name === 'main_range') return [`${value[0].toFixed(1)} – ${value[1].toFixed(1)}`, 'Queue depth range'];
+              if (name === 'avg_dlq_depth') return [value.toFixed(1), 'DLQ depth'];
+              return [value.toFixed(1), 'Queue depth'];
+            }}
+            contentStyle={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-default)', borderRadius: 10 }}
+            labelStyle={{ color: 'var(--color-text-primary)', fontWeight: 600, marginBottom: 4 }}
+            itemStyle={{ color: 'var(--color-text-secondary)' }}
+          />
+          <Legend
+            wrapperStyle={{ fontSize: 12 }}
+            payload={[
+              { value: 'Queue depth (avg)', type: 'line', color: 'var(--color-chart-1)' },
+              { value: 'Range', type: 'rect', color: 'var(--color-chart-1)' },
+              ...(hasDlq ? [{ value: 'DLQ depth (avg)', type: 'line', color: 'var(--color-danger)' }] : []),
+            ]}
+          />
+          <Area
+            type="monotone"
+            dataKey="main_range"
+            stroke="none"
+            fill="var(--color-chart-1)"
+            fillOpacity={0.15}
+            connectNulls
+            isAnimationActive={false}
+          />
+          <Line type="monotone" dataKey="avg_main_depth" stroke="var(--color-chart-1)" strokeWidth={2} dot={false} connectNulls />
+          {hasDlq && (
+            <Line type="monotone" dataKey="avg_dlq_depth" stroke="var(--color-danger)" strokeWidth={2} dot={false} connectNulls />
+          )}
+        </ComposedChart>
+      </ResponsiveContainer>
     </div>
   );
 }

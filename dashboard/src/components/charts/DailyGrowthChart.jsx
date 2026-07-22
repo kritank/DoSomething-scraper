@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import ReactECharts from 'echarts-for-react';
+import React from 'react';
+import { ResponsiveContainer, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine } from 'recharts';
 import { format, parseISO } from 'date-fns';
 import EmptyState from '../common/EmptyState';
 import { formatSignedCompact } from '../../utils/format';
@@ -11,88 +11,7 @@ import { formatSignedCompact } from '../../utils/format';
 // than drawn as a 0-height bar, which would misleadingly read as "no
 // change" instead of "no data."
 export default function DailyGrowthChart({ points, label = 'Followers' }) {
-  const data = useMemo(
-    () => (points ?? []).filter((p) => p.daily_delta !== null && p.daily_delta !== undefined),
-    [points]
-  );
-
-  const option = useMemo(() => {
-    return {
-      grid: { top: 20, right: 16, bottom: 36, left: 52 },
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: { type: 'shadow' },
-        backgroundColor: 'rgba(26, 26, 37, 0.85)',
-        borderColor: 'rgba(255, 255, 255, 0.1)',
-        textStyle: { color: '#f0f0f5', fontSize: 12 },
-        padding: [10, 14],
-        formatter: (params) => {
-          const p = params[0];
-          if (!p) return '';
-          const val = p.value;
-          const color = val >= 0 ? '#22c55e' : '#ef4444';
-          const sign = val >= 0 ? '+' : '';
-          const date = format(parseISO(p.axisValue), 'MMM d, yyyy');
-          return `
-            <div style="font-weight:600;margin-bottom:6px;">${date}</div>
-            <div style="color:${color};font-weight:500;">
-              ${sign}${formatSignedCompact(val)} daily ${label.toLowerCase()} change
-            </div>`;
-        }
-      },
-      xAxis: {
-        type: 'category',
-        data: data.map(p => p.date),
-        axisLine: { show: false },
-        axisTick: { show: false },
-        axisLabel: {
-          formatter: (val) => format(parseISO(val), 'MMM d'),
-          color: '#8888a0',
-          fontSize: 12,
-        }
-      },
-      yAxis: {
-        type: 'value',
-        splitLine: { lineStyle: { type: 'dashed', color: 'rgba(255,255,255,0.05)' } },
-        axisLabel: {
-          formatter: (val) => formatSignedCompact(val),
-          color: '#8888a0',
-          fontSize: 11,
-        },
-        // Always show a zero reference line by ensuring the axis crosses 0
-        min: (value) => Math.min(value.min, 0),
-        max: (value) => Math.max(value.max, 0),
-      },
-      series: [
-        {
-          type: 'bar',
-          data: data.map(p => ({
-            value: p.daily_delta,
-            itemStyle: {
-              color: p.daily_delta >= 0 ? 'rgba(34, 197, 94, 0.85)' : 'rgba(239, 68, 68, 0.85)',
-              borderRadius: p.daily_delta >= 0 ? [3, 3, 0, 0] : [0, 0, 3, 3],
-            }
-          })),
-          barMaxWidth: 28,
-          emphasis: {
-            itemStyle: {
-              color: (params) =>
-                data[params.dataIndex]?.daily_delta >= 0
-                  ? 'rgba(34, 197, 94, 1)'
-                  : 'rgba(239, 68, 68, 1)',
-            }
-          },
-          markLine: {
-            silent: true,
-            symbol: 'none',
-            lineStyle: { color: 'rgba(255,255,255,0.15)', type: 'solid', width: 1 },
-            data: [{ yAxis: 0 }],
-            label: { show: false }
-          }
-        }
-      ]
-    };
-  }, [data, label]);
+  const data = (points ?? []).filter((p) => p.daily_delta !== null && p.daily_delta !== undefined);
 
   if (data.length === 0) {
     return (
@@ -105,7 +24,40 @@ export default function DailyGrowthChart({ points, label = 'Followers' }) {
 
   return (
     <div className="w-full h-48">
-      <ReactECharts option={option} style={{ height: '100%', width: '100%' }} notMerge={true} />
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-border-subtle)" />
+          <XAxis
+            dataKey="date"
+            tickFormatter={(val) => format(parseISO(val), 'MMM d')}
+            axisLine={false}
+            tickLine={false}
+            tick={{ fontSize: 12, fill: 'var(--color-text-muted)' }}
+            dy={10}
+            minTickGap={24}
+          />
+          <YAxis
+            axisLine={false}
+            tickLine={false}
+            tick={{ fontSize: 12, fill: 'var(--color-text-muted)' }}
+            tickFormatter={formatSignedCompact}
+            width={52}
+          />
+          <ReferenceLine y={0} stroke="var(--color-border-default)" />
+          <Tooltip
+            labelFormatter={(val) => format(parseISO(val), 'MMM d, yyyy')}
+            formatter={(value) => [formatSignedCompact(value), `Daily ${label.toLowerCase()} change`]}
+            contentStyle={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-default)', borderRadius: 10 }}
+            labelStyle={{ color: 'var(--color-text-primary)', fontWeight: 600, marginBottom: 4 }}
+            itemStyle={{ color: 'var(--color-text-secondary)' }}
+          />
+          <Bar dataKey="daily_delta" radius={[3, 3, 3, 3]}>
+            {data.map((p) => (
+              <Cell key={p.date} fill={p.daily_delta >= 0 ? 'var(--color-success)' : 'var(--color-danger)'} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
     </div>
   );
 }

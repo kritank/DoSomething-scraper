@@ -175,6 +175,14 @@ class InstagramGraphClient:
                     await self._token_exhauster(
                         token_id, datetime.now(timezone.utc) + timedelta(seconds=_USAGE_PROACTIVE_COOLDOWN_S)
                     )
+                    # Without this, self._current stays set to this
+                    # now-cooling-down token, and _ensure_token() only ever
+                    # refetches when it's None -- every remaining request
+                    # this client instance makes for the rest of THIS job's
+                    # pagination would keep reusing the token proactive
+                    # cooldown was specifically meant to stop hammering,
+                    # defeating the whole point of checking usage_pct here.
+                    self._current = None
                 return payload.get("business_discovery", {})
 
             try:

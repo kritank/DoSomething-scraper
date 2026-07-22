@@ -213,6 +213,11 @@ async def get_creator_key_events(
     days: int = Query(90, ge=1, le=3650),
     db: AsyncSession = Depends(get_db),
 ):
+    """type="milestone" events are detected from daily growth snapshots
+    (see app.analytics.creator_stats._detect_milestones), not in real
+    time -- a threshold crossed mid-day shows up once the next scrape
+    lands (up to ~24h later by default), not the instant it happened on
+    the platform."""
     service = CreatorStatsService(db)
     summary = await service.get_summary(influencer_id)
     if summary is None:

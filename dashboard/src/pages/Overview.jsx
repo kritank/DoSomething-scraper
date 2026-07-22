@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Users, CheckCircle2, Clock, FileText, MessageSquare, Layers, ListOrdered, RefreshCw } from 'lucide-react';
-import { format } from 'date-fns';
 import {
   getDashboardStatus, getDashboardMetrics, getAlerts, getQueueStatus, getDlqContents,
   getCredentialHealth, getQueueHistory,
@@ -22,8 +21,13 @@ import AlertsBanner from '../components/dashboard/AlertsBanner';
 import { useAppStore } from '../store/useAppStore';
 import { platformLabel } from '../utils/platform';
 
-function toIso(d) {
-  return format(d, 'yyyy-MM-dd');
+// The backend buckets date ranges as UTC calendar days (see
+// DateRangeSelector.jsx's toUtcIso for the full explanation) -- the
+// initial default range must use the same UTC "today", or a non-UTC
+// user's very first page load requests a day boundary that doesn't match
+// what the backend just plotted.
+function toUtcIso(d) {
+  return d.toISOString().slice(0, 10);
 }
 
 function platformBreakdownFor(status, metricsBuckets, platform) {
@@ -70,8 +74,8 @@ export default function Overview() {
   // history for something whose main job is "is everything healthy right
   // now"; 1d matches that better, and the preset buttons make widening the
   // window a single click away when history is actually what's needed.
-  const [startDate, setStartDate] = useState(() => toIso(new Date()));
-  const [endDate, setEndDate] = useState(() => toIso(new Date()));
+  const [startDate, setStartDate] = useState(() => toUtcIso(new Date()));
+  const [endDate, setEndDate] = useState(() => toUtcIso(new Date()));
 
   // Local, further-narrowing scope within the Header's global filter --
   // drives the main KPI row / status table below. The per-platform

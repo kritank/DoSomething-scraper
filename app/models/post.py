@@ -72,6 +72,18 @@ class Post(Base):
     # see docs/YOUTUBE_SCRAPER_DESIGN.md §3.2. Null for Instagram rows.
     platform_metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
+    # Resume cursor for top-level comment pagination (see comment_sync.py's
+    # sync_comments_for_post) -- null means "no truncated walk in
+    # progress, start from page 1 on the next sync" (the normal case: a
+    # post with fewer comments than MAX_COMMENT_PAGES gets fully re-walked
+    # from the top every sync, which is what re-diffs already-seen
+    # comments for edits/handle renames/deletions). Set only when a walk
+    # hits MAX_COMMENT_PAGES before Instagram reports has_more=False --
+    # without this, a post with more top-level comments than one walk can
+    # cover restarts from page 1 every single sync, forever, and never
+    # makes forward progress past that cap.
+    comment_sync_cursor: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

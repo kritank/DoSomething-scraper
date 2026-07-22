@@ -50,13 +50,24 @@ class InstagramParser:
                 pk=item.get("pk", ""),
                 code=item.get("code", ""),
                 caption=item.get("caption"),
+                # None (not 0) preserved when the creator has hidden like
+                # counts -- Instagram omits/nulls this key in that case, and
+                # InstagramMediaItem.like_count is Optional[int] specifically
+                # so downstream (see CreatorStatsService's engagement-rate
+                # calc) can exclude these posts rather than counting them as
+                # a real zero, which would understate engagement rate. This
+                # must match instagram_graph_parser.py's identical
+                # `item.get("like_count")` -- the two parsers feed the same
+                # InstagramMediaItem shape and this field's None-vs-0
+                # distinction has to survive both sources equally.
+                like_count=item.get("like_count"),
                 # Instagram sometimes sends these keys with an explicit JSON
                 # null rather than omitting them (seen on older posts) --
                 # `.get(key, default)` only falls back to default when the
                 # key is *missing*, so an explicit null sails through as
-                # None and fails Pydantic's int validation. `or default`
-                # catches both cases.
-                like_count=item.get("like_count") or 0,
+                # None and fails Pydantic's int validation (these fields,
+                # unlike like_count, are non-optional). `or default` catches
+                # both cases.
                 comment_count=item.get("comment_count") or 0,
                 view_count=item.get("view_count") or 0,
                 # play_count is frequently sent as an explicit null on

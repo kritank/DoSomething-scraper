@@ -5,6 +5,7 @@ export default function Skeleton({ className }) {
   return (
     <div
       className={cn('rounded-lg animate-shimmer', className)}
+      style={{ background: 'var(--color-bg-card-hover)' }}
     />
   );
 }

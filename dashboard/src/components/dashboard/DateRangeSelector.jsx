@@ -1,12 +1,27 @@
 import React, { useState } from 'react';
-import { format, subDays } from 'date-fns';
 import Input from '../common/Input';
 import { cn } from '../../utils/cn';
 
 const PRESETS = [1, 7, 14, 30, 60, 90];
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-function toIso(d) {
-  return format(d, 'yyyy-MM-dd');
+// The backend buckets every date range as a UTC calendar day (see
+// scrape_job_repo.get_daily_metrics / queue_depth_repo -- both do
+// `datetime.combine(date, ...).replace(tzinfo=timezone.utc)`). date-fns'
+// plain format()/subDays()/`new Date()` all operate in the BROWSER's local
+// timezone, so a non-UTC user picking "Today" or "7d" got a range that
+// didn't line up with the backend's UTC day boundaries -- most visibly for
+// a user ahead of UTC (e.g. IST) in the first few hours of their local day,
+// where "today" locally is still "yesterday" in UTC, silently requesting
+// a UTC day that hadn't started yet and showing a truncated/empty chart.
+// toISOString() is always UTC, so building the range from that instead of
+// date-fns keeps the picker's dates in the same calendar the backend uses.
+function toUtcIso(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+function subUtcDays(d, days) {
+  return new Date(d.getTime() - days * DAY_MS);
 }
 
 export default function DateRangeSelector({ startDate, endDate, onChange }) {
@@ -15,15 +30,15 @@ export default function DateRangeSelector({ startDate, endDate, onChange }) {
   // Detect whether the current range matches one of the fixed presets, so
   // the right button stays highlighted even after a page reload/refetch.
   const activePreset = PRESETS.find((days) => {
-    const expectedStart = toIso(subDays(new Date(endDate), days - 1));
-    return expectedStart === startDate && endDate === toIso(new Date());
+    const expectedStart = toUtcIso(subUtcDays(new Date(`${endDate}T00:00:00Z`), days - 1));
+    return expectedStart === startDate && endDate === toUtcIso(new Date());
   });
 
   const applyPreset = (days) => {
     setCustomOpen(false);
     const end = new Date();
-    const start = subDays(end, days - 1);
-    onChange(toIso(start), toIso(end));
+    const start = subUtcDays(end, days - 1);
+    onChange(toUtcIso(start), toUtcIso(end));
   };
 
   return (
@@ -76,7 +91,7 @@ export default function DateRangeSelector({ startDate, endDate, onChange }) {
             type="date"
             value={endDate}
             min={startDate}
-            max={toIso(new Date())}
+            max={toUtcIso(new Date())}
             onChange={(e) => {
               if (e.target.value) onChange(startDate, e.target.value);
             }}

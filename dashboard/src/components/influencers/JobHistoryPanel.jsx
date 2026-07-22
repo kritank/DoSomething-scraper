@@ -86,7 +86,7 @@ export default function JobHistoryPanel({ influencerId }) {
       <table className="w-full text-xs">
         <thead>
           <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-            {['Status', 'Started', 'Duration', 'Posts', 'Comments', 'Account', 'Retries', 'Error', ''].map((h) => (
+            {['Status', 'Type', 'Started', 'Duration', 'Posts', 'Comments', 'Account', 'Retries', 'Error', ''].map((h) => (
               <th key={h} className="text-left py-2 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
                 {h}
               </th>
@@ -97,6 +97,10 @@ export default function JobHistoryPanel({ influencerId }) {
           {jobs.map((job) => (
             <tr key={job.id} style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
               <td className="py-2 px-3"><StatusBadge status={job.status} /></td>
+              <td className="py-2 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}
+                  title={job.job_type === 'enrich' ? 'Cookie follow-on: syncs comment text/replies and view counts' : 'Graph API (or cookie) scrape: profile + posts'}>
+                {job.job_type === 'enrich' ? 'Enrich' : 'Scrape'}
+              </td>
               <td className="py-2 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
                 {job.started_at ? format(new Date(job.started_at), 'MMM d, HH:mm') : '—'}
               </td>

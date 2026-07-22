@@ -217,3 +217,20 @@ async def test_get_videos_batches_ids_into_one_request(monkeypatch):
     called_params = mock_get.call_args.kwargs["params"]
     assert called_params["id"].count(",") == 49
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_videos_requests_recording_details(monkeypatch):
+    """Regression test: youtube_parser.py's `location` field reads
+    item["recordingDetails"]["location"] -- without this part requested,
+    that key never comes back and Post.locations is silently None for
+    every YouTube video regardless of whether the creator tagged one."""
+    client, _ = _make_client()
+    mock_get = AsyncMock(return_value=httpx.Response(200, json={"items": []}))
+    monkeypatch.setattr(client._http, "get", mock_get)
+
+    await client.get_videos(["v1"])
+
+    called_params = mock_get.call_args.kwargs["params"]
+    assert "recordingDetails" in called_params["part"].split(",")
+    await client.close()

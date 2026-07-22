@@ -17,6 +17,7 @@ from app.analytics.creator_stats import (
     _detect_milestones,
     _FormatRow,
     _InstagramMetricSnapshotRow,
+    _interpolate_daily_gaps,
     _PostMetricPoint,
     _reconstruct_daily_views_series,
     _select_metric_pair,
@@ -309,10 +310,22 @@ def test_strip_phantom_zero_lead_fixes_the_flood():
     assert events == []  # first (only) point after stripping -- nothing to compare against
 
 
-def test_strip_phantom_zero_lead_leaves_real_zero_start_alone():
-    """A small jump after a 0 isn't a seed-snapshot artifact -- only a
-    >=1000x jump is treated as "this 0 wasn't real"."""
-    series = [_gp("2026-01-01", 0), _gp("2026-01-02", 500)]
+def test_strip_phantom_zero_lead_strips_small_jump_too():
+    """Regression test: no tracked account genuinely has 0 followers
+    (this function's own docstring), regardless of how small the account
+    is -- a hardcoded >=1000 threshold previously left the phantom zero
+    in place for a small/new account's very first real (non-zero)
+    reading, e.g. a broken 0 snapshot followed by a genuine 450."""
+    series = [_gp("2026-01-01", 0), _gp("2026-01-02", 450)]
+    stripped = _strip_phantom_zero_lead(series)
+    assert [p.date.isoformat() for p in stripped] == ["2026-01-02"]
+    assert stripped[0].daily_delta is None
+
+
+def test_strip_phantom_zero_lead_leaves_all_zero_series_alone():
+    """No positive value anywhere yet to confirm the leading zero was
+    phantom rather than real -- nothing to strip."""
+    series = [_gp("2026-01-01", 0), _gp("2026-01-02", 0)]
     assert _strip_phantom_zero_lead(series) == series
 
 
@@ -571,3 +584,74 @@ def test_reconstruct_daily_views_falls_back_to_likes_when_views_unavailable():
 def test_reconstruct_daily_views_empty_input():
     assert _reconstruct_daily_views_series({}, []) == []
     assert _strip_phantom_zero_lead([_gp("2026-01-01", 0)]) == [_gp("2026-01-01", 0)]
+
+
+def test_reconstruct_daily_views_spreads_delta_across_gap_days():
+    """Regression test: Instagram scraping is opportunistic, not
+    guaranteed-daily -- a 4-day gap in snapshots previously vanished
+    entirely (no points emitted for days 2-4) and dumped the whole 4-day
+    delta onto day 5's single point, which _get_earnings_series then
+    reported as a single day's earnings spike with $0 on the skipped
+    days. Points must now be emitted for every calendar day in the
+    window, with the total delta spread evenly across the gap."""
+    post_a = uuid4()
+    rows = [
+        _isr(post_a, "2026-01-01", views=100_000),
+        # gap: 2026-01-02, 03, 04 have no snapshot at all
+        _isr(post_a, "2026-01-05", views=140_000),
+    ]
+    points = _reconstruct_daily_views_series({}, rows)
+    by_date = {p.date.isoformat(): p for p in points}
+
+    # One point per calendar day, not just the two days with real data.
+    assert sorted(by_date) == ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05"]
+
+    # 40,000 views over 4 days = 10,000/day, spread evenly rather than a
+    # single 40,000 spike on 01-05 with 0 on the days in between.
+    assert by_date["2026-01-01"].daily_delta is None
+    assert by_date["2026-01-02"].daily_delta == 10_000
+    assert by_date["2026-01-03"].daily_delta == 10_000
+    assert by_date["2026-01-04"].daily_delta == 10_000
+    assert by_date["2026-01-05"].daily_delta == 10_000
+
+    # Interpolated cumulative totals in between, exact endpoints preserved.
+    assert by_date["2026-01-01"].value == 100_000
+    assert by_date["2026-01-02"].value == 110_000
+    assert by_date["2026-01-03"].value == 120_000
+    assert by_date["2026-01-04"].value == 130_000
+    assert by_date["2026-01-05"].value == 140_000
+
+    # Deltas sum exactly to the real total delta across the gap -- no
+    # rounding drift lost or double-counted.
+    assert sum(p.daily_delta for p in points if p.daily_delta is not None) == 40_000
+
+
+def test_interpolate_daily_gaps_single_point_has_no_delta():
+    points = _interpolate_daily_gaps([date(2026, 1, 1)], [500])
+    assert len(points) == 1
+    assert points[0].value == 500
+    assert points[0].daily_delta is None
+
+
+def test_interpolate_daily_gaps_empty_input():
+    assert _interpolate_daily_gaps([], []) == []
+
+
+def test_interpolate_daily_gaps_dense_series_is_unchanged():
+    dates = [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)]
+    values = [100, 150, 260]
+    points = _interpolate_daily_gaps(dates, values)
+    assert [p.value for p in points] == [100, 150, 260]
+    assert [p.daily_delta for p in points] == [None, 50, 110]
+
+
+def test_interpolate_daily_gaps_uneven_gap_rounds_without_losing_total():
+    # 3-day gap, delta not evenly divisible by 3 -- rounding must not
+    # cause the reconstructed deltas to over/undercount the real total.
+    dates = [date(2026, 1, 1), date(2026, 1, 4)]
+    values = [1000, 1010]  # +10 over 3 days = 3.33/day
+    points = _interpolate_daily_gaps(dates, values)
+    assert len(points) == 4
+    deltas = [p.daily_delta for p in points if p.daily_delta is not None]
+    assert sum(deltas) == 10
+    assert points[-1].value == 1010

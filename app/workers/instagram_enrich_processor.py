@@ -176,6 +176,18 @@ class InstagramEnrichProcessor:
         """Fields the Graph API never exposes for third-party media, which
         only ride along on the cookie feed response -- see
         INSTAGRAM_GRAPH_API_PLAN.md §2's source-of-truth matrix."""
+        # Graph-created posts get media_pk=<Graph API media id> at insert
+        # time (instagram_graph_job_processor._upsert_post), but that's a
+        # different ID namespace from the legacy/cookie media pk (see the
+        # NOTE below on the match key) -- and comment_sync.py's
+        # get_media_comments/get_comment_replies both query Instagram's
+        # cookie-authenticated GraphQL endpoint keyed on the *cookie*
+        # media_id. Left unpatched, every comment sync for a Graph-created
+        # post silently queries the wrong media and returns nothing.
+        # Backfilling it here, from the cookie feed item that's guaranteed
+        # to carry the right-namespace pk, is what makes comment sync work
+        # for hybrid-scraped posts at all.
+        post.media_pk = str(item.pk)
         post.is_paid_partnership = item.is_paid_partnership
         post.music_metadata = item.music_metadata
         post.locations = item.locations or None
@@ -212,7 +224,16 @@ class InstagramEnrichProcessor:
         ).scalar_one_or_none()
 
         if existing_snapshot is not None:
-            existing_snapshot.views = views
+            # Instagram frequently sends play_count as an explicit null on
+            # a given response even for a post it reported a real number
+            # for moments earlier (see InstagramParser.parse_feed's
+            # play_count fallback chain) -- if this enrich run lands on one
+            # of those responses, `views` here is a transient None, not a
+            # real "views went away". Only overwrite when we actually have
+            # a fresh number; otherwise keep whatever was already recorded
+            # today rather than blanking it out.
+            if views is not None:
+                existing_snapshot.views = views
             existing_snapshot.reposts = item.reshare_count
             return
 

@@ -7,8 +7,10 @@ from uuid import uuid4
 import pytest
 
 from app.core.exceptions import InfluencerHandleNotFoundError, NoUsableYouTubeKeyError
+from app.models.post import Post
 from app.models.scrape_job import ScrapeJob
 from app.queue.base import ScrapeJobMessage
+from app.schemas.youtube import YouTubeComment
 from app.workers.youtube_job_processor import YouTubeJobProcessor
 
 
@@ -204,3 +206,53 @@ async def test_process_deactivates_influencer_on_handle_not_found():
     assert job.retry_count == 0
     assert influencer.is_active is False
     assert influencer.deactivation_reason == "handle_not_found"
+
+
+def _yt_comment(**overrides) -> YouTubeComment:
+    defaults = dict(comment_id="c1", author_display_name="fan", total_reply_count=0)
+    defaults.update(overrides)
+    return YouTubeComment(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_sync_comments_does_not_double_count_inline_replies(monkeypatch):
+    """Regression test: commentThreads.list returns up to 5 replies
+    inline per thread, already counted into `total`. A thread with MORE
+    replies than that triggers _sync_replies, which re-fetches the FULL
+    reply set (not just the ones beyond the inline 5) -- adding its whole
+    count on top double-counted the inline ones. A 20-reply thread with
+    one new reply since last sync should report ~20 processed, not ~25."""
+    message = ScrapeJobMessage(job_id=uuid4(), influencer_id=uuid4(), handle="@creator", platform="youtube")
+    processor = YouTubeJobProcessor(message)
+    processor.client = MagicMock()
+    processor.client.get_comment_threads = AsyncMock(return_value={})
+    processor.client.get_comment_replies = AsyncMock(return_value={})
+
+    post = Post(id=uuid4(), media_pk="video1", shortcode="video1")
+    parent = _yt_comment(comment_id="parent1", total_reply_count=20)
+    inline_replies = [_yt_comment(comment_id=f"inline{i}", parent_comment_id="parent1") for i in range(5)]
+
+    monkeypatch.setattr(
+        "app.workers.youtube_job_processor.YouTubeParser.parse_comment_threads",
+        MagicMock(return_value=([parent], inline_replies, None)),
+    )
+    # _sync_replies re-fetches the FULL 20, not just the 15 beyond inline.
+    full_replies = [_yt_comment(comment_id=f"reply{i}", parent_comment_id="parent1") for i in range(20)]
+    monkeypatch.setattr(
+        "app.workers.youtube_job_processor.YouTubeParser.parse_comment_replies",
+        MagicMock(return_value=(full_replies, None)),
+    )
+    monkeypatch.setattr(
+        "app.workers.youtube_job_processor.previous_child_counts",
+        AsyncMock(return_value={"parent1": 19}),  # was 19, now 20 -- changed, triggers a re-walk
+    )
+    monkeypatch.setattr("app.workers.youtube_job_processor.upsert_comments_bulk", AsyncMock())
+
+    session = MagicMock()
+    session.commit = AsyncMock()
+
+    total = await processor._sync_comments_for_post(session, post, creator_channel_id="creatorChannelId")
+
+    # 1 top-level + 5 inline (counted once) + 15 NEW replies beyond what
+    # was already counted inline (20 full - 5 already-counted) = 21.
+    assert total == 21

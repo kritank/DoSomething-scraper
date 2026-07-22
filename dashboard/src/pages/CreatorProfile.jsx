@@ -152,18 +152,34 @@ export default function CreatorProfile() {
   const growthRef = useRef(null);
   const aboutRef = useRef(null);
 
+  // React Router doesn't remount this component when only :influencerId
+  // changes -- navigating from creator A to creator B to creator C keeps
+  // the same component instance, so a slow response for A or B that
+  // resolves after C's request would otherwise silently overwrite C's
+  // stats/avatar/handle with a stale creator's data. influencerIdRef holds
+  // the "currently relevant" id so a resolved fetch can check it's still
+  // wanted before touching state -- a ref rather than an effect-cleanup
+  // flag because loadStats is also invoked imperatively by the manual
+  // Refresh button below, not just the mount/id-change effect.
+  const influencerIdRef = useRef(influencerId);
+  useEffect(() => { influencerIdRef.current = influencerId; }, [influencerId]);
+
   const loadStats = useCallback(async () => {
+    const requestedId = influencerId;
     setLoading(true);
     setNotFound(false);
     try {
-      const data = await getCreatorStats(influencerId);
+      const data = await getCreatorStats(requestedId);
+      if (influencerIdRef.current !== requestedId) return;
       setStats(data);
       try {
-        const jobs = await getInfluencerJobs(influencerId, 1);
+        const jobs = await getInfluencerJobs(requestedId, 1);
+        if (influencerIdRef.current !== requestedId) return;
         setLatestJob(jobs[0] ?? null);
       } catch {
         // Non-fatal -- the scrape-status dot just stays "never scraped"
         // rather than taking down the whole profile page over it.
+        if (influencerIdRef.current !== requestedId) return;
         setLatestJob(null);
       }
     } catch {
@@ -171,9 +187,10 @@ export default function CreatorProfile() {
       // apiClient.js), so -- same convention as Insights.jsx's
       // loadBenchmark -- any failure on this suppressErrorToast call is
       // treated as "not found / no data yet" rather than a hard error.
+      if (influencerIdRef.current !== requestedId) return;
       setNotFound(true);
     } finally {
-      setLoading(false);
+      if (influencerIdRef.current === requestedId) setLoading(false);
     }
   }, [influencerId]);
 

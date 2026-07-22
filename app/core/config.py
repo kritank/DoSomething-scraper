@@ -155,6 +155,25 @@ class Settings(BaseSettings):
     INSTAGRAM_ENRICH_EVERY_N_CYCLES: int = 1
     INSTAGRAM_ENRICH_FEED_PAGES: int = 2
 
+    # ── Alerting ──────────────────────────────────────────────────────────────
+    # Critical alerts (alerts_service.get_alerts) were previously pull-only --
+    # visible on the dashboard, but nothing paged anyone if no one had the
+    # tab open. Empty = disabled (no-op), same "absent means off" convention
+    # as every other optional credential in this file.
+    SLACK_ALERT_WEBHOOK_URL: str = ""
+    # A still-unresolved critical incident re-notifies at this cadence
+    # instead of paging once and then going silent for however long the
+    # incident lasts -- see alert_notifier.py.
+    ALERT_RENOTIFY_MINUTES: int = 60
+    # Fleet-wide failure-rate alert (alerts_service.get_alerts) -- catches
+    # a systemic issue (e.g. IG-wide rate limiting) where jobs fail-then-
+    # eventually-succeed on retry, so each influencer's *latest* job looks
+    # fine even though most runs in the window are failing. MIN_JOBS guards
+    # against firing off a tiny sample (e.g. 1 failure out of 1 job).
+    ALERT_FAILURE_RATE_WINDOW_HOURS: int = 6
+    ALERT_FAILURE_RATE_MIN_JOBS: int = 5
+    ALERT_FAILURE_RATE_THRESHOLD: float = 0.5
+
     # ── Scheduler ─────────────────────────────────────────────────────────────
     SCHEDULER_TIMEZONE: str = "UTC"
     CRON_PROFILE_UPDATE: str = "0 2 * * *"

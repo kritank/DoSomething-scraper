@@ -138,6 +138,16 @@ class DuplicateCreatorError(ValidationError):
         super().__init__(f"Creator already exists: {name}")
 
 
+class InstagramApiTokenValidationError(ValidationError):
+    """Raised when a token being registered fails the live Business
+    Discovery validation call (bad scopes, no linked Page, revoked token,
+    etc.) -- surfaced as a 400 with the Graph API's own error detail so an
+    operator can fix the actual problem instead of a bad token silently
+    landing in the pool and failing on its first real scrape."""
+
+    code = "INSTAGRAM_API_TOKEN_VALIDATION_FAILED"
+
+
 class QueryNotAllowedError(ValidationError):
     code = "QUERY_NOT_ALLOWED"
 

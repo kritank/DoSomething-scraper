@@ -15,6 +15,7 @@ from app.repositories.queue_depth_repo import QueueDepthRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
 from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.repositories.instagram_api_token_repo import InstagramApiTokenRepo
+from app.services.alert_notifier import push_critical_alerts
 from app.queue.base import ScrapeJobMessage
 from app.queue.factory import get_queue
 import httpx
@@ -251,6 +252,13 @@ async def snapshot_queue_depth():
         )
 
 
+async def notify_critical_alerts():
+    """Scheduler-tick wrapper around alert_notifier.push_critical_alerts --
+    see that module for the actual Slack-push/dedup/renotify logic."""
+    async with get_session() as session:
+        await push_critical_alerts(session)
+
+
 async def main():
     await init_db()
 
@@ -285,6 +293,10 @@ async def main():
     )
     scheduler.add_job(
         snapshot_queue_depth,
+        CronTrigger.from_crontab(settings.CRON_RETRY_FAILED, timezone=settings.SCHEDULER_TIMEZONE),
+    )
+    scheduler.add_job(
+        notify_critical_alerts,
         CronTrigger.from_crontab(settings.CRON_RETRY_FAILED, timezone=settings.SCHEDULER_TIMEZONE),
     )
     scheduler.start()

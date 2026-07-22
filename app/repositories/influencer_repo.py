@@ -1,13 +1,14 @@
 from typing import Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import Row, func, select
+from sqlalchemy import Row, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import DuplicateInfluencerError, InfluencerNotFoundError
 from app.models.category import Category
+from app.models.comment import Comment
 from app.models.influencer import Influencer
 from app.models.post import Post
 from app.models.snapshot import PostMetricsSnapshot, ProfileSnapshot
@@ -143,6 +144,7 @@ class InfluencerRepo:
         SQL fix for a mistyped handle earlier."""
         influencer = await self.get_by_id(influencer_id)
         if data.handle is not None:
+            old_handle = influencer.handle
             influencer.handle = self.normalize_handle(influencer.platform, data.handle)
             # A handle correction is exactly the fix a "handle not found,
             # please recheck" deactivation was asking for -- clear the flag
@@ -151,6 +153,21 @@ class InfluencerRepo:
             # touch is_active itself: the corrected handle still needs the
             # normal reactivate action (or the edit form can do both at once).
             influencer.deactivation_reason = None
+            if old_handle.lower() != influencer.handle.lower():
+                # comment_sync.py's is_from_creator is computed at sync
+                # time from whatever the influencer's handle was THEN
+                # (comment_sync.normalize_comment: username == creator
+                # handle) -- a rename otherwise leaves every comment
+                # outside the rolling comment-sync window permanently
+                # mislabeled, with no re-scrape ever touching it again to
+                # fix it. One bulk UPDATE recomputes it for every existing
+                # comment against the new handle instead of waiting on
+                # scrape coverage that may never come.
+                await self.session.execute(
+                    update(Comment)
+                    .where(Comment.post_id.in_(select(Post.id).where(Post.influencer_id == influencer_id)))
+                    .values(is_from_creator=func.lower(Comment.username) == influencer.handle.lower())
+                )
         if data.category_id is not None:
             influencer.category_id = data.category_id
         if data.creator_name is not None:

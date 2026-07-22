@@ -27,6 +27,17 @@ class Comment(Base):
     )
     # String(128) not (64) -- YouTube reply IDs are "parentId.childId" and
     # can exceed 64 characters combined.
+    #
+    # unique=True is table-wide, not scoped to (post_id, comment_id) --
+    # relies on comment_id always being a genuinely global, platform-
+    # assigned identifier (Instagram's own internal comment pk via the
+    # cookie GraphQL endpoint, or YouTube's commentId/parentId.childId).
+    # Believed safe in practice (no realistic collision path identified),
+    # but comment_sync.py's upsert (_UPDATE_COLUMNS) does not include
+    # post_id, so IF a collision or a post-record re-creation ever reused
+    # an existing comment_id, that comment would stay silently pinned to
+    # whichever post_id it was first inserted under -- new data would
+    # update against the wrong post with no error raised.
     comment_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     # Null for top-level comments; set to the parent's comment_id for a reply.
     parent_comment_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)

@@ -261,9 +261,16 @@ class YouTubeClient:
         return await self._get("playlistItems", params, quota_units=1, handle=uploads_playlist_id)
 
     async def get_videos(self, video_ids: list[str]) -> dict[str, Any]:
-        """videos.list -- 1 unit for the WHOLE batch (up to 50 ids), not per video."""
+        """videos.list -- 1 unit for the WHOLE batch (up to 50 ids), not per video.
+        `part` values are free to add here regardless of count -- videos.list's
+        quota cost is the flat 1 unit above, not per-part."""
         params = {
-            "part": "snippet,statistics,contentDetails,status,topicDetails,liveStreamingDetails,paidProductPlacementDetails",
+            # recordingDetails was missing entirely -- youtube_parser.py's
+            # `location` field (item.get("recordingDetails", {}).get("location"))
+            # has always read a key this request never populated, so
+            # Post.locations for every YouTube video was silently None
+            # regardless of whether the creator actually tagged one.
+            "part": "snippet,statistics,contentDetails,status,topicDetails,liveStreamingDetails,paidProductPlacementDetails,recordingDetails",
             "id": ",".join(video_ids[:50]),
         }
         return await self._get("videos", params, quota_units=1, handle=",".join(video_ids[:3]))

@@ -569,6 +569,32 @@ class JobProcessor:
         # real view/play count.
         has_view_metric = item.media_type == 2 or item.product_type == "clips"
         views = (item.view_count or item.play_count) if has_view_metric else None
+
+        # Check-then-update on today's row rather than a blind insert --
+        # this processor can run more than once for the same influencer on
+        # the same UTC day (an operator retry, a scheduler double-dispatch),
+        # and a blind insert previously left a duplicate PostMetricsSnapshot
+        # row for that day, double-counting likes/views in any aggregation
+        # query that doesn't explicitly dedupe by (post_id, scraped_at).
+        # Same convention as InstagramGraphJobProcessor._record_metrics_snapshot
+        # and InstagramEnrichProcessor._merge_metrics_snapshot.
+        today = datetime.now(timezone.utc).date()
+        existing_snapshot = (
+            await session.execute(
+                select(PostMetricsSnapshot).where(
+                    PostMetricsSnapshot.post_id == post.id,
+                    PostMetricsSnapshot.scraped_at == today,
+                )
+            )
+        ).scalar_one_or_none()
+
+        if existing_snapshot is not None:
+            existing_snapshot.likes = item.like_count
+            existing_snapshot.comments = item.comment_count
+            existing_snapshot.views = views
+            existing_snapshot.reposts = item.reshare_count
+            return
+
         session.add(
             PostMetricsSnapshot(
                 post_id=post.id,

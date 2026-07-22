@@ -330,6 +330,19 @@ class InstagramGraphJobProcessor:
         if user.profile_pic_url:
             influencer.profile_pic_url = user.profile_pic_url
 
+        # Business Discovery doesn't expose these (see parse_profile's
+        # docstring) -- carry forward the influencer's last cookie-sourced
+        # values instead of letting ProfileSnapshot's column defaults
+        # (False/0/None) silently overwrite them on every Graph API scrape.
+        prev_snapshot = (
+            await session.execute(
+                select(ProfileSnapshot)
+                .where(ProfileSnapshot.influencer_id == self.message.influencer_id)
+                .order_by(ProfileSnapshot.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
         session.add(
             ProfileSnapshot(
                 influencer_id=self.message.influencer_id,
@@ -340,6 +353,25 @@ class InstagramGraphJobProcessor:
                 external_url=user.external_url,
                 is_business_account=user.is_business_account,
                 is_professional_account=user.is_professional_account,
+                is_verified=prev_snapshot.is_verified if prev_snapshot else user.is_verified,
+                is_meta_verified=prev_snapshot.is_meta_verified if prev_snapshot else False,
+                biography_with_entities=prev_snapshot.biography_with_entities if prev_snapshot else None,
+                bio_links=prev_snapshot.bio_links if prev_snapshot else [],
+                pronouns=prev_snapshot.pronouns if prev_snapshot else [],
+                category_name=prev_snapshot.category_name if prev_snapshot else None,
+                category_enum=prev_snapshot.category_enum if prev_snapshot else None,
+                overall_category_name=prev_snapshot.overall_category_name if prev_snapshot else None,
+                business_contact_method=prev_snapshot.business_contact_method if prev_snapshot else None,
+                business_email=prev_snapshot.business_email if prev_snapshot else None,
+                business_phone_number=prev_snapshot.business_phone_number if prev_snapshot else None,
+                highlight_reel_count=prev_snapshot.highlight_reel_count if prev_snapshot else 0,
+                has_clips=prev_snapshot.has_clips if prev_snapshot else False,
+                has_guides=prev_snapshot.has_guides if prev_snapshot else False,
+                has_channel=prev_snapshot.has_channel if prev_snapshot else False,
+                mutual_followers_count=prev_snapshot.mutual_followers_count if prev_snapshot else 0,
+                hides_like_view_counts=prev_snapshot.hides_like_view_counts if prev_snapshot else False,
+                has_ar_effects=prev_snapshot.has_ar_effects if prev_snapshot else False,
+                business_category_name=prev_snapshot.business_category_name if prev_snapshot else None,
             )
         )
         await session.commit()

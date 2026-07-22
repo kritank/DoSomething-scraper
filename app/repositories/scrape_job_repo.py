@@ -126,6 +126,23 @@ class ScrapeJobRepo:
         await self.session.commit()
         return result.rowcount or 0
 
+    async def count_stale_running(self, timeout_s: int) -> int:
+        """Read-only sibling of reap_stale_running -- same staleness
+        criteria (heartbeat, falling back to started_at), but a plain
+        COUNT rather than a mutating UPDATE, so alerts_service can surface
+        "jobs about to be reaped" as a live signal without racing or
+        double-handling the actual reap (which stays reap_stale_running's
+        job, run separately by the scheduler)."""
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=timeout_s)
+        stmt = (
+            select(func.count())
+            .select_from(ScrapeJob)
+            .where(ScrapeJob.status == "running")
+            .where(func.coalesce(ScrapeJob.last_heartbeat_at, ScrapeJob.started_at) < cutoff)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one() or 0
+
     async def request_cancel(self, job_id: UUID) -> ScrapeJob:
         """queued/retry_pending jobs aren't being worked on by anything --
         cancel them outright, no worker involvement needed. A "running" job

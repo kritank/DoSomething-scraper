@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate, useLocation, Link } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Pencil, Trash2, Check, X, BadgeCheck, Video, Calendar, Clock, RefreshCw, Layers } from 'lucide-react';
 import { toast } from 'sonner';
@@ -224,15 +224,28 @@ export default function CombinedCreatorProfile() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyPlatform, setHistoryPlatform] = useState('all');
 
+  // Same stale-fetch guard as CreatorProfile.jsx's loadStats -- React
+  // Router doesn't remount this component when only :creatorId changes,
+  // so navigating between two combined-creator profiles in quick
+  // succession can otherwise let a slow response for the PREVIOUS
+  // creatorId land after the new one's, silently overwriting its stats
+  // under the new URL. Ref-based (not effect-cleanup) because `load` is
+  // also invoked imperatively by the manual Refresh button.
+  const creatorIdRef = useRef(creatorId);
+  useEffect(() => { creatorIdRef.current = creatorId; }, [creatorId]);
+
   const load = useCallback(async () => {
+    const requestedId = creatorId;
     setLoading(true);
     setNotFound(false);
     try {
-      const data = await getCreator(creatorId);
+      const data = await getCreator(requestedId);
+      if (creatorIdRef.current !== requestedId) return;
       setCreator(data);
       const entries = await Promise.all(
         data.influencers.map(async (ref) => [ref.influencer_id, await getCreatorStats(ref.influencer_id)]),
       );
+      if (creatorIdRef.current !== requestedId) return;
       setStatsByInfluencer(Object.fromEntries(entries));
       try {
         const jobEntries = await Promise.all(
@@ -241,16 +254,19 @@ export default function CombinedCreatorProfile() {
             return [ref.influencer_id, jobs[0] ?? null];
           }),
         );
+        if (creatorIdRef.current !== requestedId) return;
         setLatestJobByInfluencer(Object.fromEntries(jobEntries));
       } catch {
         // Non-fatal -- the scrape-status dots just stay "never scraped"
         // rather than taking down the whole profile page over it.
+        if (creatorIdRef.current !== requestedId) return;
         setLatestJobByInfluencer({});
       }
     } catch {
+      if (creatorIdRef.current !== requestedId) return;
       setNotFound(true);
     } finally {
-      setLoading(false);
+      if (creatorIdRef.current === requestedId) setLoading(false);
     }
   }, [creatorId]);
 

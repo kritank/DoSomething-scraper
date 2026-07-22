@@ -17,6 +17,7 @@ from app.repositories.category_repo import CategoryRepo
 from app.repositories.creator_repo import CreatorRepo
 from app.repositories.influencer_repo import InfluencerRepo
 from app.repositories.instagram_account_repo import InstagramAccountRepo
+from app.repositories.instagram_api_token_repo import InstagramApiTokenRepo
 from app.repositories.post_repo import PostRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
 from app.repositories.youtube_api_key_repo import YouTubeApiKeyRepo
@@ -52,6 +53,12 @@ from app.repositories.app_setting_repo import INSTAGRAM_BACKEND_KEY, AppSettingR
 from app.schemas.alert import AlertOut
 from app.schemas.app_setting import InstagramBackendOut, InstagramBackendUpdate
 from app.schemas.instagram_account import AccountStatusUpdate, InstagramAccountOut
+from app.schemas.instagram_api_token import (
+    InstagramApiTokenOut,
+    InstagramApiTokenStatusUpdate,
+    RegisterInstagramTokenFacebookLoginRequest,
+    RegisterInstagramTokenInstagramLoginRequest,
+)
 from app.schemas.post import PostListOut, PostOut
 from app.schemas.query_console import QueryRequest, QueryResult
 from app.schemas.scrape_job import ScrapeJobOut
@@ -65,6 +72,7 @@ from app.services.influencer_bulk_import import (
     run_bulk_import,
 )
 from app.services.query_console_service import list_schema_tables, run_readonly_query
+from app.services.instagram_token_service import register_facebook_login, register_instagram_login
 
 
 router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(require_api_key)])
@@ -438,6 +446,45 @@ async def delete_youtube_key(key_id: UUID, db: AsyncSession = Depends(get_db)):
     # Hard delete -- irreversible; disabling (PATCH status) is the
     # default/reversible action, same convention as Instagram accounts.
     await YouTubeApiKeyRepo(db).delete(key_id)
+
+
+@router.get("/instagram-tokens", response_model=list[InstagramApiTokenOut])
+async def list_instagram_tokens(db: AsyncSession = Depends(get_db)):
+    return await InstagramApiTokenRepo(db).get_all()
+
+
+@router.post("/instagram-tokens/facebook-login", response_model=InstagramApiTokenOut)
+async def register_instagram_token_facebook_login(
+    data: RegisterInstagramTokenFacebookLoginRequest, db: AsyncSession = Depends(get_db)
+):
+    # Unlike YouTube keys, this does live validation before persisting
+    # (see instagram_token_service) -- the exchange dance itself requires
+    # several live Graph API calls anyway, so a bad token/missing scope
+    # surfaces here rather than on the first real scrape.
+    return await register_facebook_login(db, data.label, data.app_id, data.app_secret, data.short_token)
+
+
+@router.post("/instagram-tokens/instagram-login", response_model=InstagramApiTokenOut)
+async def register_instagram_token_instagram_login(
+    data: RegisterInstagramTokenInstagramLoginRequest, db: AsyncSession = Depends(get_db)
+):
+    return await register_instagram_login(
+        db, data.label, data.app_id, data.app_secret, data.token, data.ig_user_id
+    )
+
+
+@router.patch("/instagram-tokens/{token_id}", response_model=InstagramApiTokenOut)
+async def update_instagram_token_status(
+    token_id: UUID, data: InstagramApiTokenStatusUpdate, db: AsyncSession = Depends(get_db)
+):
+    return await InstagramApiTokenRepo(db).update_status(token_id, data.status)
+
+
+@router.delete("/instagram-tokens/{token_id}", status_code=204)
+async def delete_instagram_token(token_id: UUID, db: AsyncSession = Depends(get_db)):
+    # Hard delete -- irreversible; disabling (PATCH status="invalid") is
+    # the default/reversible action, same convention as accounts/keys.
+    await InstagramApiTokenRepo(db).delete(token_id)
 
 
 @router.get("/alerts", response_model=list[AlertOut])

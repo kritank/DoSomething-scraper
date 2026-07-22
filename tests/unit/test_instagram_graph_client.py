@@ -244,6 +244,43 @@ async def test_high_usage_pct_proactively_cools_down_token(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_proactive_cooldown_stops_reusing_the_token_for_later_calls(monkeypatch):
+    """Regression test: marking a token exhausted in the DB is pointless
+    if this client instance keeps handing it right back out for the rest
+    of the job's own pagination -- self._current must be cleared too, so
+    the NEXT call actually asks the provider for a fresh token."""
+    provided_ids = [uuid4(), uuid4()]
+    calls = []
+
+    async def token_provider():
+        calls.append(1)
+        return provided_ids[len(calls) - 1], "test-access-token", "17841400000000000"
+
+    client, _ = _make_client(token_provider=token_provider)
+    mock_get = AsyncMock(
+        return_value=httpx.Response(
+            200,
+            json={"business_discovery": {"username": "x"}},
+            headers=_usage_header(97),  # above the proactive cooldown threshold every time
+        )
+    )
+    monkeypatch.setattr(client._http, "get", mock_get)
+
+    await client.get_business_profile("x")
+    assert len(calls) == 1
+    # Cleared as part of the cooldown itself -- the whole point of the fix.
+    assert client.last_token_id is None
+
+    await client.get_business_profile("x")
+    # A second call must re-ask the provider (2 calls total) rather than
+    # silently reusing the token that was just flagged for cooldown --
+    # without the fix, self._current would still hold provided_ids[0] and
+    # _ensure_token() would never call the provider again.
+    assert len(calls) == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_rotation_cap_respected(monkeypatch):
     monkeypatch.setattr("app.scraper.instagram_graph_client.asyncio.sleep", _noop_sleep)
 

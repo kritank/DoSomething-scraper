@@ -17,6 +17,7 @@ def _repo_with_influencer(influencer: Influencer) -> tuple[InfluencerRepo, Magic
     session.get = AsyncMock(return_value=influencer)
     session.commit = AsyncMock()
     session.rollback = AsyncMock()
+    session.execute = AsyncMock()
     return InfluencerRepo(session), session
 
 
@@ -34,6 +35,44 @@ async def test_update_details_applies_both_provided_fields():
     assert result.handle == "new_handle"
     assert result.category_id == new_category_id
     session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_details_handle_change_backfills_is_from_creator():
+    """Regression test: a handle rename must recompute is_from_creator for
+    every existing comment against the NEW handle -- otherwise the
+    creator's own past replies stay permanently mislabeled for any post
+    outside the rolling comment-sync window, which a rename does nothing
+    to re-trigger."""
+    influencer = Influencer(id=uuid4(), handle="old_handle", category_id=uuid4())
+    repo, session = _repo_with_influencer(influencer)
+
+    await repo.update_details(influencer.id, InfluencerDetailsUpdate(handle="new_handle"))
+
+    session.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_details_same_handle_case_change_only_skips_backfill():
+    """The old/new comparison is case-insensitive -- correcting only
+    casing (or resubmitting the same handle) isn't a real rename and
+    shouldn't pay for a bulk UPDATE across every comment."""
+    influencer = Influencer(id=uuid4(), handle="myntraofficial", category_id=uuid4())
+    repo, session = _repo_with_influencer(influencer)
+
+    await repo.update_details(influencer.id, InfluencerDetailsUpdate(handle="MyntraOfficial"))
+
+    session.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_details_no_handle_change_skips_backfill():
+    influencer = Influencer(id=uuid4(), handle="stays_the_same", category_id=uuid4())
+    repo, session = _repo_with_influencer(influencer)
+
+    await repo.update_details(influencer.id, InfluencerDetailsUpdate(category_id=uuid4()))
+
+    session.execute.assert_not_called()
 
 
 @pytest.mark.asyncio

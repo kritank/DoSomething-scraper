@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,6 +64,12 @@ _UPDATE_COLUMNS = (
     "author_external_id",
     "author_profile_pic_url",
     "author_is_private",
+    # A commenter's verified badge or display name can change between
+    # syncs -- these were only ever written on first INSERT and silently
+    # went stale on every re-sync after that, unlike every other
+    # commenter-identity field here.
+    "is_verified",
+    "full_name",
 )
 
 
@@ -121,6 +127,42 @@ async def previous_child_counts(session: AsyncSession, comment_ids: list[str]) -
     return dict(result.all())
 
 
+async def _delete_missing_comments(
+    session: AsyncSession, post_id: UUID, parent_comment_id: str | None, seen_comment_ids: set[str]
+) -> None:
+    """Tombstones comments that no longer exist on Instagram -- deleted by
+    their author or removed by moderation. Comment.upsert_comments_bulk is
+    insert/update-only, so without this a removed comment stayed visible
+    in this platform's analytics (counts, sentiment, engagement-timing)
+    forever, even after Instagram itself no longer shows it.
+
+    Only safe to call after a walk that saw the COMPLETE current set for
+    this parent (top-level comments when parent_comment_id is None, or one
+    parent's full reply thread) -- a partial/truncated walk hasn't seen
+    enough to know what's actually missing, so callers must not invoke
+    this after a truncated one.
+
+    When tombstoning top-level comments (parent_comment_id=None), also
+    removes any reply whose parent was just removed -- parent_comment_id
+    is a plain string column, not a real FK with ON DELETE CASCADE (it
+    has to reference either a genuine comment_id or a YouTube-style
+    "parentId.childId" string), so a deleted top-level comment's replies
+    would otherwise linger, orphaned, referencing a parent that no longer
+    exists as a row."""
+    stmt = delete(Comment).where(Comment.post_id == post_id)
+    if parent_comment_id is None:
+        stmt = stmt.where(Comment.parent_comment_id.is_(None))
+    else:
+        stmt = stmt.where(Comment.parent_comment_id == parent_comment_id)
+    if seen_comment_ids:
+        stmt = stmt.where(Comment.comment_id.notin_(seen_comment_ids))
+    result = await session.execute(stmt.returning(Comment.comment_id))
+    removed_ids = [row[0] for row in result.all()]
+
+    if parent_comment_id is None and removed_ids:
+        await session.execute(delete(Comment).where(Comment.parent_comment_id.in_(removed_ids)))
+
+
 async def last_comment_count(session: AsyncSession, post_id: UUID) -> int | None:
     stmt = (
         select(PostMetricsSnapshot.comments)
@@ -138,9 +180,15 @@ async def update_engagement_timing_features(session: AsyncSession, post: Post) -
     Identical across platforms since it only reads the Comment table."""
     stmt = select(
         func.count().label("total"),
-        func.min(Comment.commented_at).filter(Comment.parent_comment_id.is_(None)).label(
-            "first_comment_at"
-        ),
+        # Excludes the creator's own top-level comments -- a creator
+        # posting a caption follow-up/CTA/brand tag on their own post
+        # (common practice) isn't "engagement", and previously made
+        # time_to_first_comment_s measure time-to-self-comment instead of
+        # time-to-first-real-fan-comment whenever that happened before any
+        # fan did.
+        func.min(Comment.commented_at)
+        .filter(Comment.parent_comment_id.is_(None), Comment.is_from_creator.is_(False))
+        .label("first_comment_at"),
         func.min(Comment.commented_at).filter(Comment.is_from_creator.is_(True)).label(
             "first_creator_reply_at"
         ),
@@ -205,22 +253,38 @@ async def sync_replies(
     """Extracted from JobProcessor._sync_replies -- identical behavior,
     just parameterized on (session, client, post) instead of reading
     self.client/self.message from a JobProcessor instance, so
-    InstagramEnrichProcessor (PR3) can call it too."""
+    InstagramEnrichProcessor (PR3) can call it too.
+
+    Always walks a thread from page 1 (no cross-call resume, unlike
+    sync_comments_for_post's top-level cursor) -- so a walk that completes
+    naturally (has_more=False) has always seen this parent's COMPLETE
+    current reply set, and tombstones any stored reply not in it (deleted
+    by its author or by moderation since the last sync). A walk truncated
+    by MAX_REPLY_PAGES has only seen a partial set and must not tombstone."""
     after: str | None = None
     total = 0
+    seen_ids: set[str] = set()
+    truncated = True
     for _ in range(MAX_REPLY_PAGES):
         connection = await client.get_comment_replies(post.media_pk, parent.comment_id, post.permalink, after)
         replies, next_after, has_more = InstagramParser.parse_replies(connection, parent.comment_id)
         if not replies:
+            truncated = False
             break
 
         await upsert_comments_bulk(session, post.id, [normalize_comment(c, creator_handle) for c in replies])
         await session.commit()
         total += len(replies)
+        seen_ids.update(r.comment_id for r in replies)
 
         if not has_more or not next_after:
+            truncated = False
             break
         after = next_after
+
+    if not truncated:
+        await _delete_missing_comments(session, post.id, parent.comment_id, seen_ids)
+        await session.commit()
     return total
 
 
@@ -229,13 +293,34 @@ async def sync_comments_for_post(
 ) -> int:
     """Extracted from JobProcessor._sync_comments_for_post -- same
     diffing logic (only re-walk a thread whose reply count actually
-    changed since last sync), now shared with InstagramEnrichProcessor."""
-    after: str | None = None
+    changed since last sync), now shared with InstagramEnrichProcessor.
+
+    Resumes from post.comment_sync_cursor when a previous walk was
+    truncated by MAX_COMMENT_PAGES before reaching Instagram's real end
+    (has_more=False) -- without this, a post with more top-level comments
+    than one walk can cover restarted from page 1 every single sync,
+    forever, and never made forward progress past that cap. A walk that
+    completes naturally clears the cursor, so a normal-sized post keeps
+    re-walking from page 1 every sync (needed to re-diff already-seen
+    comments for edits/handle renames/deletions) -- only a genuinely
+    truncated walk resumes instead of restarting.
+
+    Also tombstones top-level comments no longer present on Instagram
+    (deleted by their author or by moderation) -- but only when this call
+    started fresh from page 1 (no stored cursor) AND completed naturally,
+    since either a resumed or a truncated walk has only seen a PARTIAL
+    slice of the real top-level set and diffing against that would
+    incorrectly delete comments this call simply never reached."""
+    started_fresh = post.comment_sync_cursor is None
+    after: str | None = post.comment_sync_cursor
     total = 0
+    truncated = True
+    seen_ids: set[str] = set()
     for _ in range(MAX_COMMENT_PAGES):
         connection = await client.get_media_comments(post.media_pk, post.permalink, after)
         comments, next_after, has_more = InstagramParser.parse_comments(connection)
         if not comments:
+            truncated = False
             break
 
         prev_child_counts = await previous_child_counts(session, [c.comment_id for c in comments])
@@ -243,6 +328,7 @@ async def sync_comments_for_post(
         await upsert_comments_bulk(session, post.id, [normalize_comment(c, creator_handle) for c in comments])
         await session.commit()
         total += len(comments)
+        seen_ids.update(c.comment_id for c in comments)
 
         for comment in comments:
             if (
@@ -252,6 +338,16 @@ async def sync_comments_for_post(
                 total += await sync_replies(session, client, post, comment, creator_handle)
 
         if not has_more or not next_after:
+            truncated = False
             break
         after = next_after
+    # If the loop above never hit a break, MAX_COMMENT_PAGES was exhausted
+    # without has_more ever going False -- `truncated` is still True and
+    # `after` holds the cursor for the next unfetched page, exactly where
+    # the next sync should resume.
+
+    post.comment_sync_cursor = after if truncated else None
+    if started_fresh and not truncated:
+        await _delete_missing_comments(session, post.id, None, seen_ids)
+    await session.commit()
     return total

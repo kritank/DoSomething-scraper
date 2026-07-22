@@ -400,7 +400,17 @@ class YouTubeJobProcessor:
                     prev_count = await last_comment_count(session, post.id)
                     await self._record_metrics_snapshot(session, post, video)
                     new_comment_count = video.comment_count or 0
-                    if prev_count is None or prev_count != new_comment_count:
+                    # video.comments_disabled (statistics response has no
+                    # commentCount key at all) is a permanent state, not a
+                    # transient 0 -- without this check, prev_count stays
+                    # None forever for a comments-disabled video (there's
+                    # never a real count to diff against) and the
+                    # `prev_count is None` branch below re-adds it to
+                    # sync_candidates on literally every single scrape,
+                    # spending a commentThreads.list call (and quota) that
+                    # YouTubeResourceGoneError("commentsDisabled") always
+                    # rejects, forever, for as long as the video exists.
+                    if not video.comments_disabled and (prev_count is None or prev_count != new_comment_count):
                         sync_candidates[post.id] = post
                     continue
 
@@ -443,7 +453,7 @@ class YouTubeJobProcessor:
                 session.add(features)
 
                 posts_processed += 1
-                if within_comment_window:
+                if within_comment_window and not video.comments_disabled:
                     sync_candidates[post.id] = post
 
             await session.commit()
@@ -556,7 +566,17 @@ class YouTubeJobProcessor:
                     and comment.total_reply_count != prev_child_counts.get(comment.comment_id)
                     and comment.total_reply_count > stored_inline
                 ):
-                    total += await self._sync_replies(session, post, comment.comment_id, creator_channel_id)
+                    # _sync_replies re-fetches the FULL reply set for this
+                    # parent via comments.list, not just the ones beyond
+                    # what commentThreads.list already returned inline --
+                    # those `stored_inline` replies were already counted
+                    # into `total` above, so counting the full set again
+                    # here double-counts them (a 20-reply thread with one
+                    # new reply since last sync reported ~20 extra
+                    # "comments processed" instead of ~15-16 actual
+                    # new/updated rows).
+                    full_reply_total = await self._sync_replies(session, post, comment.comment_id, creator_channel_id)
+                    total += max(0, full_reply_total - stored_inline)
 
             if not next_page_token:
                 break

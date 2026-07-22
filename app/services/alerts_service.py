@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.core.config import settings
 from app.queue.factory import get_queue
@@ -10,6 +10,7 @@ from app.repositories.app_setting_repo import INSTAGRAM_BACKEND_KEY, AppSettingR
 from app.repositories.instagram_account_repo import InstagramAccountRepo
 from app.repositories.instagram_api_token_repo import InstagramApiTokenRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
+from app.repositories.youtube_api_key_repo import YouTubeApiKeyRepo
 from app.schemas.alert import AlertOut
 
 _TOKEN_EXPIRY_ALERT_DAYS = 3
@@ -71,12 +72,58 @@ async def get_alerts(session: AsyncSession) -> list[AlertOut]:
                     message=f"Instagram Graph API token '{token.label}' expires {token.token_expires_at.date().isoformat()}",
                 ))
 
-    latest_jobs = await ScrapeJobRepo(session).get_latest_per_influencer()
+    youtube_keys = await YouTubeApiKeyRepo(session).get_all()
+    if youtube_keys and not any(k.status == "active" for k in youtube_keys):
+        alerts.append(AlertOut(
+            severity="critical",
+            message="No healthy YouTube API keys -- all YouTube scraping is blocked",
+        ))
+    for key in youtube_keys:
+        if key.status == "invalid":
+            alerts.append(AlertOut(
+                severity="warning",
+                message=f"YouTube API key '{key.label}' is invalid and needs rotation",
+            ))
+
+    job_repo = ScrapeJobRepo(session)
+    latest_jobs = await job_repo.get_latest_per_influencer()
     failed_count = sum(1 for job in latest_jobs if job.status == "failed")
     if failed_count > 0:
         alerts.append(AlertOut(
             severity="warning",
             message=f"{failed_count} influencer(s) failed their last scrape",
+        ))
+
+    # Fleet-wide failure RATE over a recent window -- distinct from the
+    # per-influencer "latest job failed" check above, which is blind to a
+    # systemic issue where jobs fail-then-eventually-succeed on retry (each
+    # influencer's *latest* job looks fine, but most runs in the window
+    # aren't).
+    since = datetime.now(timezone.utc) - timedelta(hours=settings.ALERT_FAILURE_RATE_WINDOW_HOURS)
+    recent_stats = await job_repo.get_job_stats_by_influencer(since=since)
+    total_terminal = sum(s.completed_job_runs + s.failed_job_runs for s in recent_stats.values())
+    total_failed = sum(s.failed_job_runs for s in recent_stats.values())
+    if total_terminal >= settings.ALERT_FAILURE_RATE_MIN_JOBS:
+        failure_rate = total_failed / total_terminal
+        if failure_rate >= settings.ALERT_FAILURE_RATE_THRESHOLD:
+            alerts.append(AlertOut(
+                severity="critical",
+                message=(
+                    f"{total_failed}/{total_terminal} jobs failed in the last "
+                    f"{settings.ALERT_FAILURE_RATE_WINDOW_HOURS}h ({failure_rate:.0%}) -- "
+                    "possible systemic issue"
+                ),
+            ))
+
+    # Jobs that would be reaped as stale on the scheduler's next tick --
+    # surfaces a crashed/hung worker in real time instead of only after
+    # reap_stale_running's silent info-log cleanup, and distinctly from an
+    # ordinary scrape failure (this fires while the job is still "running").
+    stale_running = await job_repo.count_stale_running(settings.ACCOUNT_LEASE_TIMEOUT_S)
+    if stale_running > 0:
+        alerts.append(AlertOut(
+            severity="warning",
+            message=f"{stale_running} job(s) stuck running with no heartbeat -- likely a crashed worker",
         ))
 
     return alerts

@@ -313,7 +313,13 @@ def _detect_milestones(series: list[GrowthPoint]) -> list[KeyEvent]:
     Compares each point against the highest value seen so far (not just
     the immediately preceding point) so a threshold only ever fires once
     -- a sub-count that dips below a crossed threshold and climbs back
-    later must not re-fire the same milestone."""
+    later must not re-fire the same milestone.
+
+    Detection latency: a milestone is only detectable once a new snapshot
+    in `series` actually crosses it, so it's bounded by scrape cadence
+    (DAILY_SCRAPE_INTERVAL_H, ~24h by default) rather than real time -- a
+    threshold crossed mid-day shows up once the next scrape lands, up to
+    ~24h later, not the instant it was actually crossed on the platform."""
     events: list[KeyEvent] = []
     high_water_mark: Optional[int] = None
     for point in series:
@@ -345,13 +351,18 @@ def _strip_phantom_zero_lead(points: list[GrowthPoint]) -> list[GrowthPoint]:
     updated again": the flood was real events firing early and wrong, not
     the feed being broken afterward.
 
-    Strips any leading zero(s) followed by a >=1000x jump, and clears the
-    new first point's daily_delta since it no longer has a real "previous
-    day" to diff against."""
+    Strips any leading zero(s) followed by ANY positive value -- not just
+    a large jump. A hardcoded >=1000 threshold here previously left the
+    phantom zero in place for small/new accounts (e.g. a broken 0 snapshot
+    followed by a genuine 450-follower reading), which is exactly the
+    account size this docstring's own claim ("no tracked account genuinely
+    has 0 followers") says should never be trusted either. Clears the new
+    first point's daily_delta since it no longer has a real "previous day"
+    to diff against."""
     if len(points) < 2:
         return points
     start = 0
-    while start < len(points) - 1 and (points[start].value or 0) == 0 and (points[start + 1].value or 0) >= 1000:
+    while start < len(points) - 1 and (points[start].value or 0) == 0 and (points[start + 1].value or 0) > 0:
         start += 1
     if start == 0:
         return points
@@ -774,6 +785,55 @@ class _InstagramMetricSnapshotRow:
     likes: Optional[int]
 
 
+def _interpolate_daily_gaps(anchor_dates: list[date], anchor_values: list[int]) -> list[GrowthPoint]:
+    """Fills any gap between two known (date, value) points -- dates more
+    than a day apart -- with linearly-interpolated calendar-day
+    GrowthPoints, rather than leaving those days absent so the next real
+    point's daily_delta silently absorbs the whole gap. A no-op shape for
+    an already-dense series (every gap has span_days=1, interpolation at
+    offset=0 just returns the anchor itself).
+
+    daily_delta is the difference between each point's own ROUNDED value
+    and the previous point's rounded value (a telescoping sum), not two
+    independently-rounded deltas -- rounding each step's delta separately
+    (e.g. three steps of 3.33 each) can round every single one down and
+    lose a unit of the real total (3+3+3=9 when the real total is 10).
+    Diffing consecutive rounded cumulative values instead guarantees the
+    deltas sum exactly to anchor_values[-1] - anchor_values[0], since both
+    endpoints are already exact integers. First point's daily_delta is
+    always None, matching every other series in this module."""
+    if not anchor_dates:
+        return []
+    if len(anchor_dates) == 1:
+        return [GrowthPoint(date=anchor_dates[0], value=anchor_values[0], daily_delta=None)]
+
+    points: list[GrowthPoint] = []
+    previous_rounded: Optional[int] = None
+    for i in range(len(anchor_dates) - 1):
+        start_day, end_day = anchor_dates[i], anchor_dates[i + 1]
+        start_total, end_total = anchor_values[i], anchor_values[i + 1]
+        span_days = (end_day - start_day).days
+        for offset in range(span_days):  # emits start_day .. end_day - 1
+            value = round(start_total + (end_total - start_total) * offset / span_days)
+            points.append(
+                GrowthPoint(
+                    date=start_day + timedelta(days=offset),
+                    value=value,
+                    daily_delta=(value - previous_rounded) if previous_rounded is not None else None,
+                )
+            )
+            previous_rounded = value
+
+    points.append(
+        GrowthPoint(
+            date=anchor_dates[-1],
+            value=anchor_values[-1],
+            daily_delta=(anchor_values[-1] - previous_rounded) if previous_rounded is not None else None,
+        )
+    )
+    return points
+
+
 def _reconstruct_daily_views_series(
     baseline_values: dict[UUID, int], window_rows: list[_InstagramMetricSnapshotRow]
 ) -> list[GrowthPoint]:
@@ -793,7 +853,17 @@ def _reconstruct_daily_views_series(
     views doesn't appear to "start from 0" -- a genuinely new post with no
     baseline starts at 0 and jumps to its full value on its first
     snapshot, which is correct: that value is all real growth within the
-    window."""
+    window.
+
+    Instagram scraping is opportunistic, not guaranteed-daily -- a day with
+    no snapshot for any post is common, not an edge case. Emits one
+    GrowthPoint per CALENDAR day across the full window (not just days that
+    happen to have a row): a gap between two real data-days has its total
+    delta spread evenly across the intervening days instead of dumping the
+    whole multi-day jump onto the single day the next snapshot happened to
+    land on -- which previously made _get_earnings_series report e.g. 4
+    days' worth of view growth as a single day's earnings spike, with $0
+    shown on the days actually in between."""
     if not window_rows:
         return []
     current_value = dict(baseline_values)
@@ -801,23 +871,19 @@ def _reconstruct_daily_views_series(
     for row in window_rows:
         by_date.setdefault(row.scraped_at, []).append(row)
 
-    points: list[GrowthPoint] = []
-    previous_total: Optional[int] = None
-    for day in sorted(by_date):
+    # The reconstructed cumulative total on each day that actually has a
+    # snapshot ("anchor" days) -- _interpolate_daily_gaps then fills every
+    # calendar day in between.
+    anchor_days = sorted(by_date)
+    anchor_totals: list[int] = []
+    for day in anchor_days:
         for row in by_date[day]:
             v = row.views if row.views else row.likes
             if v is not None:
                 current_value[row.post_id] = v
-        total = sum(current_value.values())
-        points.append(
-            GrowthPoint(
-                date=day,
-                value=total,
-                daily_delta=(total - previous_total) if previous_total is not None else None,
-            )
-        )
-        previous_total = total
-    return points
+        anchor_totals.append(sum(current_value.values()))
+
+    return _interpolate_daily_gaps(anchor_days, anchor_totals)
 
 
 class CreatorStatsService:
@@ -1171,6 +1237,19 @@ class CreatorStatsService:
             low_rate, high_rate = instagram_value_per_1k_views_range()
 
         views_series = await self.get_growth_series(influencer_id, days=days, metric="total_views")
+        if influencer.platform == "youtube":
+            # Instagram's series (_reconstruct_daily_views_series) is
+            # already gap-filled/interpolated; YouTube's is a plain read
+            # of ProfileSnapshot rows (get_growth_series), which is
+            # deliberately NOT gap-filled there (that series also feeds
+            # milestone detection, where an interpolated point would
+            # fabricate a threshold crossing that never really happened
+            # on that day) -- interpolate only for this earnings-specific
+            # consumption, so a missed scrape's view growth spreads across
+            # the days it actually happened over instead of landing as a
+            # single-day spike with $0 on the skipped days.
+            dated = [(p.date, p.value) for p in views_series if p.value is not None]
+            views_series = _interpolate_daily_gaps([d for d, _ in dated], [v for _, v in dated])
         points: list[GrowthPoint] = []
         for point in views_series:
             if point.daily_delta is None or point.daily_delta < 0:
@@ -2090,10 +2169,16 @@ class CreatorStatsService:
                 .where(Influencer.platform == "youtube", Influencer.is_active.is_(True))
             )
             rows = (await self.session.execute(stmt)).all()
+            # start_views is None for an influencer with no snapshot at or
+            # before the cutoff (tracking started less than 28 days ago) --
+            # excluded entirely rather than coalesced to 0, same guard as
+            # _instagram_views_in_window's docstring: coalescing would
+            # count the channel's whole lifetime view total as "28-day
+            # growth" and instantly rank it #1 over genuinely fast growers.
             growth = [
-                (row.id, row.latest_views - (row.start_views or 0))
+                (row.id, row.latest_views - row.start_views)
                 for row in rows
-                if row.latest_views is not None
+                if row.latest_views is not None and row.start_views is not None
             ]
             ranked = sorted(growth, key=lambda r: r[1], reverse=True)
             for idx, (inf_id, _) in enumerate(ranked, start=1):

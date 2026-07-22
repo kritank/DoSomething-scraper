@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   RefreshCw, ChevronDown, ChevronUp, Power, Trash2,
-  Users, ShieldCheck, AlertTriangle, Wifi, KeyRound, Gauge,
+  Users, ShieldCheck, AlertTriangle, Wifi, KeyRound, Gauge, Activity,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { toast } from 'sonner';
 import { getAccounts, updateAccountStatus, deleteAccount } from '../services/accountsService';
 import { getYoutubeKeys, updateYoutubeKeyStatus, deleteYoutubeKey } from '../services/youtubeKeysService';
+import {
+  getInstagramTokens, updateInstagramTokenStatus, deleteInstagramToken,
+} from '../services/instagramTokensService';
 import StatusBadge from '../components/common/StatusBadge';
 import PlatformIcon from '../components/common/PlatformIcon';
 import KPICard from '../components/common/KPICard';
@@ -16,6 +19,7 @@ import ErrorState from '../components/common/ErrorState';
 import EmptyState from '../components/common/EmptyState';
 import AddAccountForm from '../components/accounts/AddAccountForm';
 import InstagramBackendToggle from '../components/accounts/InstagramBackendToggle';
+import AddInstagramTokenForm from '../components/accounts/AddInstagramTokenForm';
 import AddYoutubeKeyForm from '../components/youtube/AddYoutubeKeyForm';
 import { cn } from '../utils/cn';
 
@@ -24,6 +28,7 @@ const NEEDS_ROTATION = new Set(['invalid']);
 
 const PLATFORMS = [
   { id: 'instagram', label: 'Instagram', unitLabel: 'accounts' },
+  { id: 'instagram-tokens', label: 'IG Graph Tokens', unitLabel: 'tokens' },
   { id: 'youtube', label: 'YouTube', unitLabel: 'API keys' },
 ];
 
@@ -38,6 +43,7 @@ export default function Accounts() {
   const [platform, setPlatform] = useState('instagram');
   const [accounts, setAccounts] = useState(null);
   const [keys, setKeys] = useState(null);
+  const [tokens, setTokens] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [addPanelOpen, setAddPanelOpen] = useState(false);
@@ -48,9 +54,10 @@ export default function Accounts() {
     setLoading(true);
     setError(null);
     try {
-      const [a, k] = await Promise.all([getAccounts(), getYoutubeKeys()]);
+      const [a, k, t] = await Promise.all([getAccounts(), getYoutubeKeys(), getInstagramTokens()]);
       setAccounts(a);
       setKeys(k);
+      setTokens(t);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -89,6 +96,16 @@ export default function Accounts() {
       quotaUsedToday: keys.reduce((sum, k) => sum + k.quota_used_today, 0),
     };
   }, [keys]);
+
+  const tokenStats = useMemo(() => {
+    if (!tokens) return null;
+    return {
+      total: tokens.length,
+      active: tokens.filter((t) => t.status === 'active').length,
+      needsAttention: tokens.filter((t) => NEEDS_ROTATION.has(t.status)).length,
+      callsToday: tokens.reduce((sum, t) => sum + t.calls_today, 0),
+    };
+  }, [tokens]);
 
   const handleToggleAccountStatus = async (account) => {
     const next = account.status === 'disabled' ? 'active' : 'disabled';
@@ -138,6 +155,30 @@ export default function Accounts() {
     }
   };
 
+  const handleToggleTokenStatus = async (token) => {
+    const next = token.status === 'active' ? 'invalid' : 'active';
+    try {
+      await updateInstagramTokenStatus(token.id, next);
+      toast.success(`"${token.label}" ${next === 'invalid' ? 'disabled' : 're-enabled'}`);
+      load();
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    }
+  };
+
+  const handleDeleteToken = async (token) => {
+    if (!window.confirm(`Permanently delete "${token.label}"? This removes its stored token/secret and cannot be undone.`)) {
+      return;
+    }
+    try {
+      await deleteInstagramToken(token.id);
+      toast.success(`"${token.label}" deleted`);
+      load();
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    }
+  };
+
   if (error) {
     return <ErrorState title="Couldn't load accounts" description={error} onRetry={load} />;
   }
@@ -148,6 +189,17 @@ export default function Accounts() {
   const filteredKeys = keys
     ? keys.filter((k) => k.label.toLowerCase().includes(search.trim().toLowerCase()))
     : keys;
+  const filteredTokens = tokens
+    ? tokens.filter((t) => t.label.toLowerCase().includes(search.trim().toLowerCase()))
+    : tokens;
+
+  const searchPlaceholder = platform === 'instagram'
+    ? 'Search accounts by username...'
+    : platform === 'instagram-tokens'
+      ? 'Search tokens by label...'
+      : 'Search keys by label...';
+  const addButtonLabel = platform === 'instagram' ? 'Add account' : platform === 'instagram-tokens' ? 'Add token' : 'Add key';
+  const currentCount = platform === 'instagram' ? accounts?.length : platform === 'instagram-tokens' ? tokens?.length : keys?.length;
 
   return (
     <div className="flex flex-col gap-6">
@@ -164,10 +216,10 @@ export default function Accounts() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {PLATFORMS.map((p) => {
           const isActive = platform === p.id;
-          const stats = p.id === 'instagram' ? igStats : ytStats;
+          const stats = p.id === 'instagram' ? igStats : p.id === 'instagram-tokens' ? tokenStats : ytStats;
           return (
             <button
               key={p.id}
@@ -183,7 +235,7 @@ export default function Accounts() {
                 boxShadow: isActive ? 'var(--shadow-accent)' : 'var(--shadow-card)',
               }}
             >
-              <PlatformIcon platform={p.id} className="w-10 h-10 rounded-xl shrink-0" />
+              <PlatformIcon platform={p.id === 'instagram-tokens' ? 'instagram' : p.id} className="w-10 h-10 rounded-xl shrink-0" />
               <div className="flex flex-col min-w-0">
                 <span className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>{p.label}</span>
                 <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
@@ -208,7 +260,7 @@ export default function Accounts() {
       {platform === 'instagram' && <InstagramBackendToggle />}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {platform === 'instagram' ? (
+        {platform === 'instagram' && (
           <>
             <KPICard label="Total accounts" value={igStats?.total ?? '—'} icon={<Users className="w-4 h-4" />} loading={!igStats} />
             <KPICard label="Active" value={igStats?.active ?? '—'} icon={<ShieldCheck className="w-4 h-4" />} color="var(--color-success)" loading={!igStats} />
@@ -221,7 +273,22 @@ export default function Accounts() {
             />
             <KPICard label="Proxied" value={igStats ? `${igStats.proxied} / ${igStats.total}` : '—'} icon={<Wifi className="w-4 h-4" />} loading={!igStats} />
           </>
-        ) : (
+        )}
+        {platform === 'instagram-tokens' && (
+          <>
+            <KPICard label="Total tokens" value={tokenStats?.total ?? '—'} icon={<KeyRound className="w-4 h-4" />} loading={!tokenStats} />
+            <KPICard label="Active" value={tokenStats?.active ?? '—'} icon={<ShieldCheck className="w-4 h-4" />} color="var(--color-success)" loading={!tokenStats} />
+            <KPICard
+              label="Needs attention"
+              value={tokenStats?.needsAttention ?? '—'}
+              icon={<AlertTriangle className="w-4 h-4" />}
+              color={tokenStats?.needsAttention > 0 ? 'var(--color-danger)' : undefined}
+              loading={!tokenStats}
+            />
+            <KPICard label="Calls today" value={tokenStats ? tokenStats.callsToday.toLocaleString() : '—'} icon={<Activity className="w-4 h-4" />} loading={!tokenStats} />
+          </>
+        )}
+        {platform === 'youtube' && (
           <>
             <KPICard label="Total keys" value={ytStats?.total ?? '—'} icon={<KeyRound className="w-4 h-4" />} loading={!ytStats} />
             <KPICard label="Active" value={ytStats?.active ?? '—'} icon={<ShieldCheck className="w-4 h-4" />} color="var(--color-success)" loading={!ytStats} />
@@ -238,9 +305,9 @@ export default function Accounts() {
       </div>
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        {!loading && (platform === 'instagram' ? accounts?.length : keys?.length) > 0 && (
+        {!loading && currentCount > 0 && (
           <Input
-            placeholder={platform === 'instagram' ? 'Search accounts by username...' : 'Search keys by label...'}
+            placeholder={searchPlaceholder}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="max-w-xs"
@@ -248,22 +315,26 @@ export default function Accounts() {
         )}
         <Button variant="secondary" size="sm" onClick={() => setAddPanelOpen((o) => !o)} className="ml-auto">
           {addPanelOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          {platform === 'instagram' ? 'Add account' : 'Add key'}
+          {addButtonLabel}
         </Button>
       </div>
 
       {addPanelOpen && (
         <div className="card p-5 animate-fade-in">
-          {platform === 'instagram' ? (
+          {platform === 'instagram' && (
             <AddAccountForm onRegistered={() => { setAddPanelOpen(false); load(); }} />
-          ) : (
+          )}
+          {platform === 'instagram-tokens' && (
+            <AddInstagramTokenForm onRegistered={() => { setAddPanelOpen(false); load(); }} />
+          )}
+          {platform === 'youtube' && (
             <AddYoutubeKeyForm onRegistered={() => { setAddPanelOpen(false); load(); }} />
           )}
         </div>
       )}
 
       <div className="card p-5 animate-fade-in" key={platform}>
-        {platform === 'instagram' ? (
+        {platform === 'instagram' && (
           loading ? (
             <div className="h-48 rounded-lg animate-shimmer" style={{ background: 'var(--color-bg-card-hover)' }} />
           ) : accounts.length === 0 ? (
@@ -357,7 +428,103 @@ export default function Accounts() {
               </table>
             </div>
           )
-        ) : (
+        )}
+
+        {platform === 'instagram-tokens' && (
+          loading ? (
+            <div className="h-48 rounded-lg animate-shimmer" style={{ background: 'var(--color-bg-card-hover)' }} />
+          ) : tokens.length === 0 ? (
+            <EmptyState
+              title="No Instagram Graph API tokens registered"
+              message="Register one above, or via scripts/register_instagram_api_token.py, before the hybrid backend can use the Graph API path for Instagram influencers."
+            />
+          ) : filteredTokens.length === 0 ? (
+            <EmptyState title="No matches" message={`No token labels match "${search}".`} />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
+                    {['Label', 'Status', 'Flavor', 'IG User ID', 'Calls today', 'Cooldown until', 'Expires', 'Last used', 'Last failure', 'Note', 'Actions'].map((h) => (
+                      <th key={h} className="text-left py-2.5 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredTokens.map((t) => {
+                    const rotateOpen = expandedRowId === t.id;
+                    return (
+                      <React.Fragment key={t.id}>
+                        <tr className="hover:bg-[var(--color-bg-card-hover)]" style={{ borderBottom: rotateOpen ? 'none' : '1px solid var(--color-border-subtle)' }}>
+                          <td className="py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-primary)' }}>{t.label}</td>
+                          <td className="py-2.5 px-3"><StatusBadge status={t.status} /></td>
+                          <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{t.auth_flavor}</td>
+                          <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{t.ig_user_id}</td>
+                          <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>
+                            {t.calls_today.toLocaleString()}
+                            {t.buc_usage_pct != null && ` (${t.buc_usage_pct.toFixed(0)}% BUC)`}
+                          </td>
+                          <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{relative(t.cooldown_until)}</td>
+                          <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{t.token_expires_at ? relative(t.token_expires_at) : 'never'}</td>
+                          <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{relative(t.last_used_at)}</td>
+                          <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{relative(t.last_failure_at)}</td>
+                          <td className="py-2.5 px-3 text-xs max-w-[220px]" style={{ color: 'var(--color-text-muted)' }} title={t.error_message ?? undefined}>
+                            <div className="truncate">{t.error_message ?? '—'}</div>
+                            {NEEDS_ROTATION.has(t.status) && (
+                              <div className="mt-0.5" style={{ color: 'var(--color-danger)' }}>
+                                Rotate this token -- Meta rejected it
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <div className="flex items-center gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                title="Rotate token (replace an expired/invalid one)"
+                                onClick={() => setExpandedRowId(rotateOpen ? null : t.id)}
+                              >
+                                <RefreshCw className="w-3.5 h-3.5" style={{ color: rotateOpen ? 'var(--color-accent)' : 'var(--color-text-muted)' }} />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                title={t.status === 'active' ? 'Disable' : 'Re-enable'}
+                                onClick={() => handleToggleTokenStatus(t)}
+                              >
+                                <Power className="w-3.5 h-3.5" style={{ color: t.status === 'active' ? 'var(--color-warning)' : 'var(--color-success)' }} />
+                              </Button>
+                              <Button variant="ghost" size="sm" title="Delete permanently" onClick={() => handleDeleteToken(t)}>
+                                <Trash2 className="w-3.5 h-3.5" style={{ color: 'var(--color-danger)' }} />
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                        {rotateOpen && (
+                          <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
+                            <td colSpan={11} className="px-3 pb-4">
+                              <div className="card p-4" style={{ background: 'var(--color-bg-secondary)' }}>
+                                <AddInstagramTokenForm
+                                  initialLabel={t.label}
+                                  lockLabel
+                                  onRegistered={() => { setExpandedRowId(null); load(); }}
+                                />
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )
+        )}
+
+        {platform === 'youtube' && (
           loading ? (
             <div className="h-48 rounded-lg animate-shimmer" style={{ background: 'var(--color-bg-card-hover)' }} />
           ) : keys.length === 0 ? (
