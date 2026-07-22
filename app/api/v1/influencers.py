@@ -14,6 +14,9 @@ from app.repositories.influencer_repo import InfluencerRepo
 
 class TopInfluencerOut(BaseModel):
     id: UUID
+    # Display name -- the linked Creator's admin-curated name (e.g. "Ajey
+    # Nagar" for @carryminati) when one has been set, else the handle.
+    name: str
     handle: str
     # Representative platform (the merged entry's highest-follower account)
     # -- kept for simple single-icon rendering. `platforms` below is the
@@ -56,6 +59,7 @@ async def get_top_influencers(
     return [
         TopInfluencerOut(
             id=entry.id,
+            name=entry.name,
             handle=entry.handle,
             platform=entry.platform,
             platforms=entry.platforms,

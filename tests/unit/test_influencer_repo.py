@@ -195,6 +195,7 @@ def _fake_leaderboard_row(**overrides):
         handle="handle",
         platform="instagram",
         creator_id=None,
+        creator_name=None,
         category_name="Category",
         followers=100,
         following=10,
@@ -217,7 +218,7 @@ async def test_get_top_ranked_merges_multi_platform_creator_into_one_row():
     creator_id = uuid4()
     ig_id, yt_id = uuid4(), uuid4()
     ig_row = _fake_leaderboard_row(
-        id=ig_id, creator_id=creator_id, platform="instagram", handle="ashishchanchlani",
+        id=ig_id, creator_id=creator_id, creator_name="Ashish Chanchlani", platform="instagram", handle="ashishchanchlani",
         followers=17_800_000, posts=1800, avg_engagement=546_460, is_verified=True,
     )
     yt_row = _fake_leaderboard_row(
@@ -239,9 +240,11 @@ async def test_get_top_ranked_merges_multi_platform_creator_into_one_row():
     assert merged.followers == 17_800_000 + 3_300_000
     assert merged.posts == 1800 + 3400
     assert merged.is_verified is True
+    assert merged.name == "Ashish Chanchlani"  # Creator.name, not the raw handle
     assert merged.engagement_rate == round((3.07 + 0.04) / 2, 2)
 
     solo = next(e for e in entries if e.link_id == solo_row.id)
+    assert solo.name == "solo"  # no Creator link -> falls back to handle
     assert solo.platforms == ["instagram"]
     assert solo.followers == 50
 
