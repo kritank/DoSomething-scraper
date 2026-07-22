@@ -96,6 +96,7 @@ class PostRepo:
                 latest.c.comments,
                 latest.c.views,
                 latest.c.reposts,
+                Post.comments_synced_count.label("comments_synced"),
                 PostOutlierMetrics.outlier_score,
                 PostOutlierMetrics.baseline_multiple,
                 PostOutlierMetrics.vph_current,

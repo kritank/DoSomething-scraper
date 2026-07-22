@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -104,6 +104,17 @@ class Influencer(Base):
     # Creator account), false = confirmed personal account, permanently
     # routed to the legacy cookie scraper. Always null for platform="youtube".
     api_supported: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    # Per-influencer override for settings.COMMENT_SYNC_DEFAULT_MAX_PER_POST
+    # -- null means "use the platform default." A mega-viral post's true
+    # comment count can be mathematically unreachable at the scraper's
+    # per-account rate limit (see comment_sync.py's cap enforcement); this
+    # lets an operator raise the cap for a specific creator worth the
+    # extra budget, or lower it for one whose comment volume would
+    # otherwise starve every other influencer's sync budget. 0 means
+    # unlimited for this influencer specifically, same "0 disables the
+    # cap" convention as COMMENT_SYNC_WINDOW_DAYS.
+    max_comments_per_post: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

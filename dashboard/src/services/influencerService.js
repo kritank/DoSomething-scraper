@@ -60,10 +60,16 @@ export async function updateInfluencerDetails(influencerId, { handle, categoryId
   return data;
 }
 
-export async function updateInfluencerScrapeSettings(influencerId, scrapePostsSince) {
-  const { data } = await apiClient.patch(`/admin/influencers/${influencerId}/scrape-settings`, {
-    scrape_posts_since: scrapePostsSince || null,
-  });
+export async function updateInfluencerScrapeSettings(influencerId, { scrapePostsSince, maxCommentsPerPost } = {}) {
+  // The backend applies only whichever key is actually present in the
+  // request body (partial update) -- omitting a key here leaves that
+  // setting untouched server-side, rather than resetting it to null.
+  const payload = {};
+  if (scrapePostsSince !== undefined) payload.scrape_posts_since = scrapePostsSince || null;
+  if (maxCommentsPerPost !== undefined) {
+    payload.max_comments_per_post = maxCommentsPerPost === '' ? null : Number(maxCommentsPerPost);
+  }
+  const { data } = await apiClient.patch(`/admin/influencers/${influencerId}/scrape-settings`, payload);
   return data;
 }
 

@@ -107,12 +107,25 @@ class YouTubeApiKeyRepo:
     async def add_usage(self, key_id: UUID, units: int) -> None:
         """Atomic increment (not read-modify-write) -- safe under the
         concurrent requests a single job (or several jobs sharing this
-        key) can issue at once."""
+        key) can issue at once.
+
+        Also stamps quota_reset_at for a key that doesn't have one yet --
+        previously that field was ONLY ever set by mark_exhausted(), i.e.
+        after a real 403 quotaExceeded from Google. A key whose
+        quota_used_today crept past get_usable_key()'s soft-stop line
+        through ordinary usage (never actually hitting a hard error, since
+        our local counter is just an estimate of Google's real one) still
+        had status="active" but was silently excluded from every future
+        get_usable_key() candidate pool forever -- nothing was watching
+        quota_reset_at because it was still None. Stamping it on first use
+        of a fresh day guarantees _reset_if_due always has a real deadline
+        to compare against, regardless of how the key stops being usable."""
         await self.session.execute(
             update(YouTubeApiKey)
             .where(YouTubeApiKey.id == key_id)
             .values(
                 quota_used_today=YouTubeApiKey.quota_used_today + units,
+                quota_reset_at=func.coalesce(YouTubeApiKey.quota_reset_at, next_midnight_pacific()),
                 last_used_at=func.now(),
                 last_success_at=func.now(),
             )

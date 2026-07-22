@@ -256,6 +256,15 @@ class InstagramEnrichProcessor:
         if influencer is None:
             return
 
+        # Per-influencer override, else the platform default -- 0 means
+        # unlimited either way (see settings.COMMENT_SYNC_DEFAULT_MAX_PER_POST
+        # and Influencer.max_comments_per_post's docstrings).
+        effective_comment_cap = (
+            influencer.max_comments_per_post
+            if influencer.max_comments_per_post is not None
+            else settings.COMMENT_SYNC_DEFAULT_MAX_PER_POST
+        )
+
         # Same cutoff as InstagramGraphJobProcessor -- confirmed missing
         # here too originally. Lower-severity than the Graph side (this
         # only ever walks INSTAGRAM_ENRICH_FEED_PAGES, small by default),
@@ -271,6 +280,9 @@ class InstagramEnrichProcessor:
         max_id = ""
         matched_shortcodes: set[str] = set()
         sync_candidates: dict[UUID, Post] = {}
+        # See JobProcessor._run_scrape's identical dict -- backing the
+        # backlog-priority sort below.
+        candidate_reported_counts: dict[UUID, int] = {}
         unmatched_count = 0
         raw_feed_captured = False
         stop_pagination = False
@@ -334,8 +346,13 @@ class InstagramEnrichProcessor:
                 # last time -- same diffing optimization JobProcessor
                 # already uses, just never ported here.
                 prev_count = await last_comment_count(session, post.id)
-                if prev_count is None or prev_count != item.comment_count:
+                already_capped = (
+                    effective_comment_cap > 0
+                    and (post.comments_synced_count or 0) >= effective_comment_cap
+                )
+                if not already_capped and (prev_count is None or prev_count != item.comment_count):
                     sync_candidates[post.id] = post
+                    candidate_reported_counts[post.id] = item.comment_count
 
             await session.commit()
 
@@ -362,14 +379,24 @@ class InstagramEnrichProcessor:
                     return 0
                 try:
                     async with get_session() as post_session:
-                        count = await sync_comments_for_post(post_session, self.client, post, handle)
+                        count = await sync_comments_for_post(
+                            post_session, self.client, post, handle, effective_comment_cap
+                        )
                         await update_engagement_timing_features(post_session, post)
                         return count
                 except Exception as e:
                     logger.warning("Enrich comment sync failed", shortcode=post.shortcode, error=str(e))
                     return 0
 
-        posts_to_sync = list(sync_candidates.values())[: settings.MAX_POSTS_PER_SCRAPE]
+        # Same backlog-priority sort as JobProcessor._run_scrape.
+        ranked_candidates = sorted(
+            sync_candidates.values(),
+            key=lambda p: max(
+                0, candidate_reported_counts.get(p.id, 0) - (p.comments_synced_count or 0)
+            ),
+            reverse=True,
+        )
+        posts_to_sync = ranked_candidates[: settings.MAX_POSTS_PER_SCRAPE]
         comment_counts = await asyncio.gather(*(_sync_one(post) for post in posts_to_sync))
         job.comments_processed = sum(comment_counts)
         await session.commit()

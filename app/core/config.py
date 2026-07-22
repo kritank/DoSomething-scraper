@@ -55,7 +55,20 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str = ""
 
     # ── Scraper ───────────────────────────────────────────────────────────────
+    # Baseline/floor -- see worker_runner.py's dynamic concurrency: the
+    # effective cap is max(this, healthy Instagram accounts +
+    # MAX_SCRAPER_WORKERS_YOUTUBE_BUFFER), refreshed periodically, so
+    # registering/removing cookie accounts doesn't also require a config
+    # change and redeploy to actually use the new capacity.
     MAX_SCRAPER_WORKERS: int = 3
+    # Reserved worker slots for YouTube jobs, which don't lease an
+    # Instagram account and would otherwise get starved if the dynamic
+    # cap only ever sized itself to the Instagram account pool.
+    MAX_SCRAPER_WORKERS_YOUTUBE_BUFFER: int = 2
+    # How often (seconds) the dynamic concurrency cap re-queries the
+    # healthy Instagram account count -- cheap enough to poll often, but
+    # this avoids a DB round trip on literally every worker_loop tick.
+    MAX_SCRAPER_WORKERS_REFRESH_S: int = 60
     SCRAPER_TIMEOUT_S: int = 30
     SCRAPER_MAX_RETRIES: int = 3
     MAX_POSTS_PER_SCRAPE: int = 50
@@ -73,6 +86,16 @@ class Settings(BaseSettings):
     # is mostly wasted request budget. 0 disables the window (sync every
     # selected post regardless of age).
     COMMENT_SYNC_WINDOW_DAYS: int = 30
+    # A mega-viral post's true comment count can be mathematically
+    # unreachable at the per-account rate limit (tens of thousands of
+    # comments, ~1 request/3.3s) -- capping how many comments any single
+    # post is worth chasing frees the scraper's limited budget for posts
+    # that CAN actually reach completeness, instead of every post
+    # competing equally and the biggest ones never catching up. 0 =
+    # unlimited (opt out platform-wide). Overridable per-influencer via
+    # Influencer.max_comments_per_post (see comment_sync.py's cap
+    # enforcement and the job processors' candidate-selection skip).
+    COMMENT_SYNC_DEFAULT_MAX_PER_POST: int = 5000
 
     # Per-Instagram-account request pacing, as a token bucket: ACCOUNT_RATE_LIMIT_RPS
     # steady-state requests/sec with a small burst allowance. This is the

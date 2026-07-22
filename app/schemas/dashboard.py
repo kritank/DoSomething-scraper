@@ -26,6 +26,7 @@ class DashboardStatusRow(BaseModel):
     deactivation_reason: Optional[str] = None
     backfill_completed: bool
     scrape_posts_since: Optional[date] = None
+    max_comments_per_post: Optional[int] = None
     last_job_id: Optional[UUID] = None
     last_job_status: Optional[str] = None
     last_job_started_at: Optional[datetime] = None

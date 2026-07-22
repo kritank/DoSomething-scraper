@@ -276,6 +276,15 @@ class JobProcessor:
             # attribute access below.
             raise InfluencerNotFoundError(str(self.message.influencer_id))
 
+        # Per-influencer override, else the platform default -- 0 means
+        # unlimited either way (see settings.COMMENT_SYNC_DEFAULT_MAX_PER_POST
+        # and Influencer.max_comments_per_post's docstrings).
+        effective_comment_cap = (
+            influencer.max_comments_per_post
+            if influencer.max_comments_per_post is not None
+            else settings.COMMENT_SYNC_DEFAULT_MAX_PER_POST
+        )
+
         # 1. Fetch User Info
         raw_user = await self.client.get_user_info(handle)
         parsed_user = InstagramParser.parse_user_info(raw_user)
@@ -363,6 +372,13 @@ class JobProcessor:
         posts_processed = 0
         max_id = (influencer.backfill_cursor or "") if is_backfilling else ""
         sync_candidates: dict[UUID, Post] = {}
+        # Instagram's own reported comment count for each candidate, as of
+        # this run -- what the backlog-priority sort below is computed
+        # from (reported - post.comments_synced_count), so the posts
+        # furthest from complete get first claim on this run's limited
+        # comment-sync budget instead of losing out to whichever post
+        # happened to be inserted into the dict first.
+        candidate_reported_counts: dict[UUID, int] = {}
         raw_feed_captured = False
 
         cancelled = False
@@ -459,8 +475,13 @@ class JobProcessor:
 
                     prev_count = await last_comment_count(session, post.id)
                     await self._record_metrics_snapshot(session, post, item)
-                    if prev_count is None or prev_count != item.comment_count:
+                    already_capped = (
+                        effective_comment_cap > 0
+                        and (post.comments_synced_count or 0) >= effective_comment_cap
+                    )
+                    if not already_capped and (prev_count is None or prev_count != item.comment_count):
                         sync_candidates[post.id] = post
+                        candidate_reported_counts[post.id] = item.comment_count
                     continue
 
                 # New post.
@@ -500,6 +521,7 @@ class JobProcessor:
                 posts_processed += 1
                 if within_comment_window:
                     sync_candidates[post.id] = post
+                    candidate_reported_counts[post.id] = item.comment_count
 
             await session.commit()
 
@@ -524,7 +546,20 @@ class JobProcessor:
         # 4. Sync comments (including nested reply threads) for posts whose
         # comment count changed since we last looked, capped at
         # MAX_POSTS_PER_SCRAPE as a safety net regardless of window size.
-        posts_to_sync = list(sync_candidates.values())[: settings.MAX_POSTS_PER_SCRAPE]
+        # Sorted by backlog (reported - already-stored) descending first --
+        # every candidate otherwise competes equally for the same
+        # rate-limited budget, so a handful of large-backlog posts could
+        # perpetually lose their slot to smaller ones that arrived earlier
+        # in feed order and never catch up. This way the furthest-behind
+        # posts get first claim on this run's limited request budget.
+        ranked_candidates = sorted(
+            sync_candidates.values(),
+            key=lambda p: max(
+                0, candidate_reported_counts.get(p.id, 0) - (p.comments_synced_count or 0)
+            ),
+            reverse=True,
+        )
+        posts_to_sync = ranked_candidates[: settings.MAX_POSTS_PER_SCRAPE]
 
         # Posts are synced concurrently (bounded by COMMENT_SYNC_CONCURRENCY),
         # each in its own DB session -- AsyncSession isn't safe for concurrent
@@ -544,7 +579,9 @@ class JobProcessor:
                     return 0
                 try:
                     async with get_session() as post_session:
-                        count = await self._sync_comments_for_post(post_session, post)
+                        count = await self._sync_comments_for_post(
+                            post_session, post, max_comments=effective_comment_cap
+                        )
                         await update_engagement_timing_features(post_session, post)
                         return count
                 except Exception as e:
@@ -605,9 +642,11 @@ class JobProcessor:
             )
         )
 
-    async def _sync_comments_for_post(self, session: AsyncSession, post: Post) -> int:
+    async def _sync_comments_for_post(
+        self, session: AsyncSession, post: Post, max_comments: int = 0
+    ) -> int:
         """Delegates to the platform-agnostic-signature shared function
         (app.workers.comment_sync) also used by InstagramEnrichProcessor
         (PR3) -- see that module for the actual logic, unchanged by this
         extraction."""
-        return await sync_comments_for_post(session, self.client, post, self.message.handle)
+        return await sync_comments_for_post(session, self.client, post, self.message.handle, max_comments)

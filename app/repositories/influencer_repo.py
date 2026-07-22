@@ -113,8 +113,17 @@ class InfluencerRepo:
     async def update_scrape_settings(
         self, influencer_id: UUID, data: InfluencerScrapeSettingsUpdate
     ) -> Influencer:
+        """Partial update -- only fields actually present in the request
+        are applied (via model_fields_set), same convention as
+        InfluencerDetailsUpdate. Both fields default to None, so without
+        this a request setting only max_comments_per_post would silently
+        wipe scrape_posts_since (and vice versa) back to null."""
         influencer = await self.get_by_id(influencer_id)
-        influencer.scrape_posts_since = data.scrape_posts_since
+        fields_set = data.model_fields_set
+        if "scrape_posts_since" in fields_set:
+            influencer.scrape_posts_since = data.scrape_posts_since
+        if "max_comments_per_post" in fields_set:
+            influencer.max_comments_per_post = data.max_comments_per_post
         await self.session.commit()
         return influencer
 

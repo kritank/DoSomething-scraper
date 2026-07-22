@@ -63,6 +63,7 @@ class DashboardService:
                     deactivation_reason=influencer.deactivation_reason,
                     backfill_completed=influencer.backfill_completed,
                     scrape_posts_since=influencer.scrape_posts_since,
+                    max_comments_per_post=influencer.max_comments_per_post,
                     last_job_id=job.id if job else None,
                     last_job_status=job.status if job else None,
                     last_job_started_at=job.started_at if job else None,

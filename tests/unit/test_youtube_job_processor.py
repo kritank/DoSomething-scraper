@@ -250,9 +250,70 @@ async def test_sync_comments_does_not_double_count_inline_replies(monkeypatch):
 
     session = MagicMock()
     session.commit = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalar_one = MagicMock(return_value=0)
+    session.execute = AsyncMock(return_value=execute_result)
 
     total = await processor._sync_comments_for_post(session, post, creator_channel_id="creatorChannelId")
 
     # 1 top-level + 5 inline (counted once) + 15 NEW replies beyond what
     # was already counted inline (20 full - 5 already-counted) = 21.
     assert total == 21
+
+
+@pytest.mark.asyncio
+async def test_sync_comments_for_post_stops_at_per_video_cap(monkeypatch):
+    """Regression test: a mega-viral video's true comment count can be
+    mathematically unreachable at quota/pacing limits -- once already at
+    the cap, the walk must stop before spending another commentThreads.list
+    call, not fetch a page only to discard it."""
+    message = ScrapeJobMessage(job_id=uuid4(), influencer_id=uuid4(), handle="@creator", platform="youtube")
+    processor = YouTubeJobProcessor(message)
+    processor.client = MagicMock()
+    processor.client.get_comment_threads = AsyncMock(return_value={})
+
+    post = Post(id=uuid4(), media_pk="video1", shortcode="video1")
+
+    session = MagicMock()
+    session.commit = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalar_one = MagicMock(return_value=5000)  # already at/over the cap
+    session.execute = AsyncMock(return_value=execute_result)
+
+    total = await processor._sync_comments_for_post(
+        session, post, creator_channel_id="creatorChannelId", max_comments=5000
+    )
+
+    processor.client.get_comment_threads.assert_not_awaited()
+    assert total == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_comments_for_post_unlimited_by_default(monkeypatch):
+    message = ScrapeJobMessage(job_id=uuid4(), influencer_id=uuid4(), handle="@creator", platform="youtube")
+    processor = YouTubeJobProcessor(message)
+    processor.client = MagicMock()
+    processor.client.get_comment_threads = AsyncMock(return_value={})
+
+    post = Post(id=uuid4(), media_pk="video1", shortcode="video1")
+    parent = _yt_comment(comment_id="parent1", total_reply_count=0)
+
+    monkeypatch.setattr(
+        "app.workers.youtube_job_processor.YouTubeParser.parse_comment_threads",
+        MagicMock(return_value=([parent], [], None)),
+    )
+    monkeypatch.setattr(
+        "app.workers.youtube_job_processor.previous_child_counts", AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr("app.workers.youtube_job_processor.upsert_comments_bulk", AsyncMock())
+
+    session = MagicMock()
+    session.commit = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalar_one = MagicMock(return_value=999_999)  # would be "at cap" under any real limit
+    session.execute = AsyncMock(return_value=execute_result)
+
+    total = await processor._sync_comments_for_post(session, post, creator_channel_id="creatorChannelId")
+
+    processor.client.get_comment_threads.assert_awaited_once()
+    assert total == 1

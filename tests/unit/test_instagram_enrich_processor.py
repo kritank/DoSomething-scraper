@@ -143,7 +143,7 @@ async def test_run_enrich_skips_unmatched_feed_items_without_erroring(monkeypatc
     raise. The next API cycle picks it up."""
     processor = _processor()
     influencer_id = processor.message.influencer_id
-    influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None)
+    influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None, max_comments_per_post=None)
 
     job = SimpleNamespace(id=uuid4(), comments_processed=0)
 
@@ -174,7 +174,7 @@ async def test_run_enrich_skips_unmatched_feed_items_without_erroring(monkeypatc
 async def test_run_enrich_syncs_comments_for_matched_posts(monkeypatch):
     processor = _processor()
     influencer_id = processor.message.influencer_id
-    influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None)
+    influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None, max_comments_per_post=None)
     job = SimpleNamespace(id=uuid4(), comments_processed=0)
 
     existing_post = Post(id=uuid4(), shortcode="ABC123", media_pk="1")
@@ -217,7 +217,7 @@ async def test_run_enrich_skips_comment_sync_when_count_unchanged(monkeypatch):
     already has, just never ported here."""
     processor = _processor()
     influencer_id = processor.message.influencer_id
-    influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None)
+    influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None, max_comments_per_post=None)
     job = SimpleNamespace(id=uuid4(), comments_processed=0)
 
     existing_post = Post(id=uuid4(), shortcode="ABC123", media_pk="1")
@@ -266,6 +266,7 @@ async def test_run_enrich_stops_pagination_at_scrape_posts_since_cutoff(monkeypa
     influencer_id = processor.message.influencer_id
     influencer = SimpleNamespace(
         id=influencer_id, handle="myntra", scrape_posts_since=datetime(2026, 1, 1).date(),
+        max_comments_per_post=None,
     )
     job = SimpleNamespace(id=uuid4(), comments_processed=0)
 
@@ -298,7 +299,7 @@ async def test_run_enrich_captures_raw_response(monkeypatch):
     run" convention used for diagnosing field-shape drift."""
     processor = _processor()
     influencer_id = processor.message.influencer_id
-    influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None)
+    influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None, max_comments_per_post=None)
     job = SimpleNamespace(id=uuid4(), comments_processed=0)
 
     processor.client = MagicMock()

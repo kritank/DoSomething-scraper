@@ -227,6 +227,16 @@ async def refresh_instagram_tokens():
             )
 
 
+async def reset_instagram_token_daily_calls():
+    """calls_today on instagram_api_tokens was never reset by anything --
+    see InstagramApiTokenRepo.reset_daily_call_counts. Same cadence as
+    refresh_instagram_tokens (once a day), since this is purely a
+    dashboard-display counter, not something that needs the frequent
+    CRON_RETRY_FAILED tick the way actual usability-gating state does."""
+    async with get_session() as session:
+        await InstagramApiTokenRepo(session).reset_daily_call_counts()
+
+
 async def snapshot_credential_health():
     """Point-in-time health snapshot of every Instagram account and YouTube
     key, on the same cadence as the crash-recovery jobs above -- see
@@ -289,6 +299,10 @@ async def main():
     )
     scheduler.add_job(
         refresh_instagram_tokens,
+        CronTrigger.from_crontab(settings.CRON_PROFILE_UPDATE, timezone=settings.SCHEDULER_TIMEZONE),
+    )
+    scheduler.add_job(
+        reset_instagram_token_daily_calls,
         CronTrigger.from_crontab(settings.CRON_PROFILE_UPDATE, timezone=settings.SCHEDULER_TIMEZONE),
     )
     scheduler.add_job(

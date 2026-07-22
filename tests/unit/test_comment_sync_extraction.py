@@ -17,15 +17,18 @@ def _comment(**overrides) -> InstagramComment:
     return InstagramComment(**defaults)
 
 
-def _session(deleted_ids: list[str] | None = None) -> MagicMock:
-    """A mocked session whose .execute() supports the DELETE...RETURNING
-    call _delete_missing_comments makes (in addition to commit) -- used
-    by every test whose walk completes naturally, since that path now
-    always attempts a tombstone pass."""
+def _session(deleted_ids: list[str] | None = None, stored_count: int = 0) -> MagicMock:
+    """A mocked session whose .execute() supports both the DELETE...RETURNING
+    call _delete_missing_comments makes (in addition to commit) and the
+    COUNT(*) call count_stored_comments/refresh_comments_synced_count
+    makes -- used by every test whose walk completes, since that path
+    always attempts a tombstone pass and always refreshes the completeness
+    counter at the end."""
     session = MagicMock()
     session.commit = AsyncMock()
     execute_result = MagicMock()
     execute_result.all = MagicMock(return_value=[(cid,) for cid in (deleted_ids or [])])
+    execute_result.scalar_one = MagicMock(return_value=stored_count)
     session.execute = AsyncMock(return_value=execute_result)
     return session
 
@@ -134,7 +137,9 @@ async def test_sync_comments_persists_cursor_when_truncated_by_page_cap(monkeypa
     assert client.get_media_comments.call_args_list[1].args[2] == "cursor2"
     # Truncated by the page cap -- only saw c1/c2, not the post's full
     # top-level set, so must not tombstone anything else that's stored.
-    session.execute.assert_not_awaited()
+    # The one execute() call is the completeness-counter refresh, which
+    # always runs regardless of how the walk stopped.
+    assert session.execute.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -160,9 +165,10 @@ async def test_sync_comments_tombstones_deleted_top_level_comment(monkeypatch):
 
     await sync_comments_for_post(session, client, post, creator_handle="myntra")
 
-    # Two DELETE calls: the top-level tombstone pass, then the cascade
-    # pass for c2's now-orphaned replies (since c2 came back non-empty).
-    assert session.execute.await_count == 2
+    # Three execute() calls: the top-level tombstone pass, the cascade
+    # pass for c2's now-orphaned replies (since c2 came back non-empty),
+    # and the completeness-counter refresh at the end.
+    assert session.execute.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -193,7 +199,8 @@ async def test_sync_comments_resumes_from_stored_cursor(monkeypatch):
     # Completed naturally, but this was a RESUMED walk (not started from
     # page 1) -- it only saw comments from the cursor onward, not the full
     # top-level set, so it must not tombstone anything it never reached.
-    session.execute.assert_not_awaited()
+    # The one execute() call is the completeness-counter refresh.
+    assert session.execute.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -219,6 +226,87 @@ async def test_sync_comments_clears_stale_cursor_when_no_comments_returned(monke
 
     assert total == 0
     assert post.comment_sync_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_sync_comments_stops_at_per_post_cap_without_fetching(monkeypatch):
+    """Regression test: a mega-viral post's true comment count can be
+    mathematically unreachable at the account's rate limit -- once
+    already at the cap, the walk must stop before even fetching another
+    page, not burn a request only to discard the result."""
+    post = Post(id=uuid4(), media_pk="pk1", permalink="https://instagram.com/p/x/", shortcode="x")
+
+    client = MagicMock()
+    client.get_media_comments = AsyncMock(return_value={})
+    monkeypatch.setattr(
+        "app.workers.comment_sync.InstagramParser.parse_comments",
+        MagicMock(return_value=([_comment(comment_id="c1")], "cursor2", True)),
+    )
+
+    # Already at (in fact over) the cap.
+    session = _session(stored_count=5000)
+
+    total = await sync_comments_for_post(session, client, post, creator_handle="myntra", max_comments=5000)
+
+    client.get_media_comments.assert_not_awaited()
+    assert total == 0
+    # Cap-hit is treated like a truncation (partial view) -- cursor
+    # preserved in case the cap is raised later, no tombstone attempted.
+    assert post.comment_sync_cursor is None  # never had one to begin with; unaffected by cap-hit path
+
+
+@pytest.mark.asyncio
+async def test_sync_comments_cap_hit_mid_walk_preserves_cursor(monkeypatch):
+    post = Post(id=uuid4(), media_pk="pk1", permalink="https://instagram.com/p/x/", shortcode="x")
+
+    client = MagicMock()
+    client.get_media_comments = AsyncMock(return_value={})
+    monkeypatch.setattr(
+        "app.workers.comment_sync.InstagramParser.parse_comments",
+        MagicMock(return_value=([_comment(comment_id="c1")], "cursor2", True)),
+    )
+    monkeypatch.setattr("app.workers.comment_sync.previous_child_counts", AsyncMock(return_value={}))
+    monkeypatch.setattr("app.workers.comment_sync.upsert_comments_bulk", AsyncMock())
+
+    # Under the cap on the page-1 check (so it fetches), at/over it by the
+    # page-2 check (page 1 pushed it over), same value again for the
+    # final completeness-refresh call.
+    session = MagicMock()
+    session.commit = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalar_one = MagicMock(side_effect=[0, 5000, 5000])
+    session.execute = AsyncMock(return_value=execute_result)
+
+    total = await sync_comments_for_post(session, client, post, creator_handle="myntra", max_comments=5000)
+
+    assert client.get_media_comments.await_count == 1  # fetched page 1, stopped before page 2
+    assert total == 1
+    # Cursor preserved (cap-hit, not a natural stop) -- a later cap raise
+    # can resume from here instead of restarting from page 1.
+    assert post.comment_sync_cursor == "cursor2"
+
+
+@pytest.mark.asyncio
+async def test_sync_comments_unlimited_by_default(monkeypatch):
+    """max_comments=0 (the default) must never engage the cap check --
+    existing behavior for any caller that doesn't pass one explicitly."""
+    post = Post(id=uuid4(), media_pk="pk1", permalink="https://instagram.com/p/x/", shortcode="x")
+
+    client = MagicMock()
+    client.get_media_comments = AsyncMock(return_value={})
+    monkeypatch.setattr(
+        "app.workers.comment_sync.InstagramParser.parse_comments",
+        MagicMock(return_value=([_comment(comment_id="c1")], "", False)),
+    )
+    monkeypatch.setattr("app.workers.comment_sync.previous_child_counts", AsyncMock(return_value={}))
+    monkeypatch.setattr("app.workers.comment_sync.upsert_comments_bulk", AsyncMock())
+
+    session = _session(stored_count=999_999)  # would be "at cap" under almost any real limit
+
+    total = await sync_comments_for_post(session, client, post, creator_handle="myntra")
+
+    client.get_media_comments.assert_awaited_once()
+    assert total == 1
 
 
 @pytest.mark.asyncio

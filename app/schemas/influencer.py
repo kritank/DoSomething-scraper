@@ -20,6 +20,10 @@ class InfluencerCreate(BaseModel):
 
 class InfluencerScrapeSettingsUpdate(BaseModel):
     scrape_posts_since: Optional[date] = None
+    # Per-influencer override for settings.COMMENT_SYNC_DEFAULT_MAX_PER_POST
+    # -- omit/null to use the platform default, 0 for unlimited on this
+    # influencer specifically. See Influencer.max_comments_per_post.
+    max_comments_per_post: Optional[int] = None
 
 
 class InfluencerDetailsUpdate(BaseModel):
@@ -49,5 +53,6 @@ class InfluencerOut(BaseModel):
     deactivation_reason: Optional[str] = None
     scrape_posts_since: Optional[date] = None
     backfill_completed: bool
+    max_comments_per_post: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)

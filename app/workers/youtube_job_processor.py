@@ -33,8 +33,10 @@ from app.feature_extraction.extractor import FeatureExtractor
 from app.workers import youtube_key_provider as ykp
 from app.workers.comment_sync import (
     NormalizedComment,
+    count_stored_comments,
     last_comment_count,
     previous_child_counts,
+    refresh_comments_synced_count,
     update_engagement_timing_features,
     upsert_comments_bulk,
 )
@@ -231,6 +233,18 @@ class YouTubeJobProcessor:
         if influencer is None:
             raise InfluencerNotFoundError(str(self.message.influencer_id))
 
+        # Per-influencer override, else the platform default -- 0 means
+        # unlimited either way (see settings.COMMENT_SYNC_DEFAULT_MAX_PER_POST
+        # and Influencer.max_comments_per_post's docstrings). Same
+        # mega-viral-video problem as Instagram: a video with tens of
+        # thousands of comments can outstrip what's worth spending this
+        # channel's comment-sync budget on.
+        effective_comment_cap = (
+            influencer.max_comments_per_post
+            if influencer.max_comments_per_post is not None
+            else settings.COMMENT_SYNC_DEFAULT_MAX_PER_POST
+        )
+
         # 1. Resolve + fetch the channel. Prefer the already-resolved
         # channel ID (survives a handle rename) once we have one.
         if influencer.platform_user_id:
@@ -316,6 +330,9 @@ class YouTubeJobProcessor:
         posts_processed = 0
         page_token = (influencer.backfill_cursor or "") if is_backfilling else ""
         sync_candidates: dict[UUID, Post] = {}
+        # See JobProcessor._run_scrape's identical dict -- backing the
+        # backlog-priority sort below.
+        candidate_reported_counts: dict[UUID, int] = {}
         raw_uploads_captured = False
         # Bounds the invalidPageToken restart to once per run -- if
         # discovery fails again immediately after restarting from page 1,
@@ -410,8 +427,17 @@ class YouTubeJobProcessor:
                     # spending a commentThreads.list call (and quota) that
                     # YouTubeResourceGoneError("commentsDisabled") always
                     # rejects, forever, for as long as the video exists.
-                    if not video.comments_disabled and (prev_count is None or prev_count != new_comment_count):
+                    already_capped = (
+                        effective_comment_cap > 0
+                        and (post.comments_synced_count or 0) >= effective_comment_cap
+                    )
+                    if (
+                        not video.comments_disabled
+                        and not already_capped
+                        and (prev_count is None or prev_count != new_comment_count)
+                    ):
                         sync_candidates[post.id] = post
+                        candidate_reported_counts[post.id] = new_comment_count
                     continue
 
                 post = Post(
@@ -455,6 +481,7 @@ class YouTubeJobProcessor:
                 posts_processed += 1
                 if within_comment_window and not video.comments_disabled:
                     sync_candidates[post.id] = post
+                    candidate_reported_counts[post.id] = video.comment_count or 0
 
             await session.commit()
 
@@ -477,8 +504,18 @@ class YouTubeJobProcessor:
             raise JobCancelledError()
 
         # 4. Sync comments (including reply threads) for posts whose
-        # comment count changed since we last looked.
-        posts_to_sync = list(sync_candidates.values())[: settings.MAX_POSTS_PER_SCRAPE]
+        # comment count changed since we last looked -- sorted by backlog
+        # (reported - already-stored) descending, same reasoning as
+        # JobProcessor._run_scrape, so the furthest-behind videos get
+        # first claim on this run's comment-sync budget.
+        ranked_candidates = sorted(
+            sync_candidates.values(),
+            key=lambda p: max(
+                0, candidate_reported_counts.get(p.id, 0) - (p.comments_synced_count or 0)
+            ),
+            reverse=True,
+        )
+        posts_to_sync = ranked_candidates[: settings.MAX_POSTS_PER_SCRAPE]
         creator_channel_id = influencer.platform_user_id
         semaphore = asyncio.Semaphore(settings.COMMENT_SYNC_CONCURRENCY)
 
@@ -488,7 +525,9 @@ class YouTubeJobProcessor:
                     return 0
                 try:
                     async with get_session() as post_session:
-                        count = await self._sync_comments_for_post(post_session, post, creator_channel_id)
+                        count = await self._sync_comments_for_post(
+                            post_session, post, creator_channel_id, effective_comment_cap
+                        )
                         await update_engagement_timing_features(post_session, post)
                         return count
                 except YouTubeResourceGoneError as e:
@@ -524,71 +563,93 @@ class YouTubeJobProcessor:
         )
 
     async def _sync_comments_for_post(
-        self, session: AsyncSession, post: Post, creator_channel_id: str | None
+        self, session: AsyncSession, post: Post, creator_channel_id: str | None,
+        max_comments: int = 0,
     ) -> int:
+        """max_comments (0 = unlimited, see settings.COMMENT_SYNC_DEFAULT_MAX_PER_POST
+        and Influencer.max_comments_per_post) stops the walk once this
+        video's total stored comment count (top-level + replies) reaches
+        it -- same reasoning as comment_sync.py's Instagram equivalent: a
+        mega-viral video's true comment count can be mathematically
+        unreachable at quota/pacing limits, so capping frees the sync
+        budget for videos that CAN actually reach completeness."""
         page_token: str | None = None
         total = 0
-        for _ in range(MAX_COMMENT_PAGES):
-            try:
-                raw = await self.client.get_comment_threads(post.media_pk, page_token or "")
-            except YouTubeResourceGoneError as e:
-                if e.context.get("reason") == "commentsDisabled":
-                    return total
-                raise
-            top_level, inline_replies, next_page_token = YouTubeParser.parse_comment_threads(raw)
-            if not top_level:
-                break
+        try:
+            for _ in range(MAX_COMMENT_PAGES):
+                if max_comments > 0 and await count_stored_comments(session, post.id) >= max_comments:
+                    break
+                try:
+                    raw = await self.client.get_comment_threads(post.media_pk, page_token or "")
+                except YouTubeResourceGoneError as e:
+                    if e.context.get("reason") == "commentsDisabled":
+                        return total
+                    raise
+                top_level, inline_replies, next_page_token = YouTubeParser.parse_comment_threads(raw)
+                if not top_level:
+                    break
 
-            # Same diffing trick as JobProcessor._sync_comments_for_post:
-            # only threads whose totalReplyCount changed since last sync
-            # cost an extra request.
-            prev_child_counts = await previous_child_counts(
-                session, [c.comment_id for c in top_level]
-            )
+                # Same diffing trick as JobProcessor._sync_comments_for_post:
+                # only threads whose totalReplyCount changed since last sync
+                # cost an extra request.
+                prev_child_counts = await previous_child_counts(
+                    session, [c.comment_id for c in top_level]
+                )
 
-            normalized = [self._normalize_comment(c, creator_channel_id) for c in top_level]
-            normalized += [self._normalize_comment(c, creator_channel_id) for c in inline_replies]
-            await upsert_comments_bulk(session, post.id, normalized)
+                normalized = [self._normalize_comment(c, creator_channel_id) for c in top_level]
+                normalized += [self._normalize_comment(c, creator_channel_id) for c in inline_replies]
+                await upsert_comments_bulk(session, post.id, normalized)
+                await session.commit()
+                total += len(top_level) + len(inline_replies)
+
+                inline_counts_by_parent: dict[str, int] = {}
+                for reply in inline_replies:
+                    if reply.parent_comment_id:
+                        inline_counts_by_parent[reply.parent_comment_id] = (
+                            inline_counts_by_parent.get(reply.parent_comment_id, 0) + 1
+                        )
+
+                for comment in top_level:
+                    stored_inline = inline_counts_by_parent.get(comment.comment_id, 0)
+                    if (
+                        comment.total_reply_count > 0
+                        and comment.total_reply_count != prev_child_counts.get(comment.comment_id)
+                        and comment.total_reply_count > stored_inline
+                    ):
+                        # _sync_replies re-fetches the FULL reply set for this
+                        # parent via comments.list, not just the ones beyond
+                        # what commentThreads.list already returned inline --
+                        # those `stored_inline` replies were already counted
+                        # into `total` above, so counting the full set again
+                        # here double-counts them (a 20-reply thread with one
+                        # new reply since last sync reported ~20 extra
+                        # "comments processed" instead of ~15-16 actual
+                        # new/updated rows).
+                        full_reply_total = await self._sync_replies(
+                            session, post, comment.comment_id, creator_channel_id, max_comments
+                        )
+                        total += max(0, full_reply_total - stored_inline)
+
+                if not next_page_token:
+                    break
+                page_token = next_page_token
+            return total
+        finally:
+            # Runs on every exit path (natural end, comments-disabled
+            # early return, or an uncaught exception propagating) so
+            # completeness never drifts from what's actually stored.
+            await refresh_comments_synced_count(session, post)
             await session.commit()
-            total += len(top_level) + len(inline_replies)
-
-            inline_counts_by_parent: dict[str, int] = {}
-            for reply in inline_replies:
-                if reply.parent_comment_id:
-                    inline_counts_by_parent[reply.parent_comment_id] = (
-                        inline_counts_by_parent.get(reply.parent_comment_id, 0) + 1
-                    )
-
-            for comment in top_level:
-                stored_inline = inline_counts_by_parent.get(comment.comment_id, 0)
-                if (
-                    comment.total_reply_count > 0
-                    and comment.total_reply_count != prev_child_counts.get(comment.comment_id)
-                    and comment.total_reply_count > stored_inline
-                ):
-                    # _sync_replies re-fetches the FULL reply set for this
-                    # parent via comments.list, not just the ones beyond
-                    # what commentThreads.list already returned inline --
-                    # those `stored_inline` replies were already counted
-                    # into `total` above, so counting the full set again
-                    # here double-counts them (a 20-reply thread with one
-                    # new reply since last sync reported ~20 extra
-                    # "comments processed" instead of ~15-16 actual
-                    # new/updated rows).
-                    full_reply_total = await self._sync_replies(session, post, comment.comment_id, creator_channel_id)
-                    total += max(0, full_reply_total - stored_inline)
-
-            if not next_page_token:
-                break
-            page_token = next_page_token
-        return total
 
     async def _sync_replies(
-        self, session: AsyncSession, post: Post, parent_comment_id: str, creator_channel_id: str | None
+        self, session: AsyncSession, post: Post, parent_comment_id: str, creator_channel_id: str | None,
+        max_comments: int = 0,
     ) -> int:
         page_token: str | None = None
         total = 0
         for _ in range(MAX_REPLY_PAGES):
+            if max_comments > 0 and await count_stored_comments(session, post.id) >= max_comments:
+                break
             raw = await self.client.get_comment_replies(parent_comment_id, page_token or "")
             replies, next_page_token = YouTubeParser.parse_comment_replies(raw, parent_comment_id)
             if not replies:

@@ -34,6 +34,18 @@ class InstagramAccountRepo:
         )
         return list(result.scalars().all())
 
+    async def count_healthy(self) -> int:
+        """Cheap COUNT (not a full row fetch) of accounts actually usable
+        for a concurrent job right now -- same "active" or "in_use"
+        definition as alerts_service.get_alerts (in_use is a healthy
+        account currently leased for a running job, not a problem state).
+        Backs worker_runner.py's dynamic MAX_SCRAPER_WORKERS cap."""
+        stmt = select(func.count()).select_from(InstagramAccount).where(
+            InstagramAccount.status.in_(("active", "in_use"))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
+
     async def create(
         self,
         username: str,

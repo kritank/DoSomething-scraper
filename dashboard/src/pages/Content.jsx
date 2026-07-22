@@ -259,7 +259,24 @@ export default function Content() {
                         {format(new Date(p.posted_at), 'MMM d, yyyy')}
                       </td>
                       <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.likes?.toLocaleString() ?? '—'}</td>
-                      <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.comments?.toLocaleString() ?? '—'}</td>
+                      <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>
+                        {p.comments?.toLocaleString() ?? '—'}
+                        {/* Sync completeness -- how many of the platform's
+                            reported comments we've actually stored. A big
+                            gap usually means the post hit its per-post
+                            comment-sync cap (mega-viral content is often
+                            mathematically unreachable at the scraper's
+                            rate limit), not a broken sync. */}
+                        {p.comments > 0 && p.comments_synced < p.comments * 0.9 && (
+                          <span
+                            className="ml-1.5 text-xs"
+                            style={{ color: 'var(--color-warning)' }}
+                            title={`${p.comments_synced.toLocaleString()} of ${p.comments.toLocaleString()} reported comments synced (${Math.round(100 * p.comments_synced / p.comments)}%) -- likely capped, see Influencer scrape settings to raise the per-post limit.`}
+                          >
+                            ({Math.round(100 * p.comments_synced / p.comments)}%)
+                          </span>
+                        )}
+                      </td>
                       <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{p.views?.toLocaleString() ?? '—'}</td>
                       <td
                         className="py-2.5 px-3"

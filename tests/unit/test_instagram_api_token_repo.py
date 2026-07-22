@@ -1,12 +1,29 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.core.crypto import decrypt_json, encrypt_json
 from app.models.instagram_api_token import InstagramApiToken
 from app.repositories.instagram_api_token_repo import InstagramApiTokenRepo
+
+
+@pytest.mark.asyncio
+async def test_reset_daily_call_counts_updates_all_tokens():
+    """Regression test: calls_today previously had no reset path at all
+    despite the class's own docstring claiming one existed -- it just
+    accumulated forever as a lifetime total mislabeled "today"."""
+    session = MagicMock()
+    session.execute = AsyncMock()
+    session.commit = AsyncMock()
+    repo = InstagramApiTokenRepo(session)
+
+    await repo.reset_daily_call_counts()
+
+    session.execute.assert_awaited_once()
+    session.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio

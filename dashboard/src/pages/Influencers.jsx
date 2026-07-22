@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { PlayCircle, RefreshCw, Power, PowerOff, Trash2, History, ChevronDown, ChevronUp, Pencil, Check, X, Link2, Users, AtSign, AlertTriangle } from 'lucide-react';
-import { format } from 'date-fns';
+import { RefreshCw, Power, PowerOff, Trash2, ChevronDown, ChevronUp, Pencil, Check, X, Link2, Users, AtSign } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { getDashboardStatus } from '../services/dashboardService';
@@ -15,9 +14,6 @@ import {
   updateInfluencerScrapeSettings,
   deleteInfluencer,
 } from '../services/influencerService';
-import StatusBadge from '../components/common/StatusBadge';
-import PlatformBadge from '../components/common/PlatformBadge';
-import AccountTypeBadge from '../components/common/AccountTypeBadge';
 import PlatformFilter from '../components/common/PlatformFilter';
 import AccountTypeFilter from '../components/common/AccountTypeFilter';
 import Button from '../components/common/Button';
@@ -28,7 +24,7 @@ import HeaderPill from '../components/common/HeaderPill';
 import AddCategoryForm from '../components/influencers/AddCategoryForm';
 import AddInfluencerForm from '../components/influencers/AddInfluencerForm';
 import MassImportInfluencersForm from '../components/influencers/MassImportInfluencersForm';
-import JobHistoryPanel from '../components/influencers/JobHistoryPanel';
+import InfluencerRow from '../components/influencers/InfluencerRow';
 import { useAppStore } from '../store/useAppStore';
 import { formatHandle } from '../utils/platform';
 import { groupByCreator } from '../utils/groupByCreator';
@@ -56,7 +52,7 @@ export default function Influencers() {
   const [editingCreatorId, setEditingCreatorId] = useState(null);
   const [creatorNameDraft, setCreatorNameDraft] = useState('');
   const [editingInfluencerId, setEditingInfluencerId] = useState(null);
-  const [influencerDraft, setInfluencerDraft] = useState({ handle: '', categoryId: '', scrapePostsSince: '', creatorName: '', accountType: 'individual' });
+  const [influencerDraft, setInfluencerDraft] = useState({ handle: '', categoryId: '', scrapePostsSince: '', maxCommentsPerPost: '', creatorName: '', accountType: 'individual' });
   const [savingEdit, setSavingEdit] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedPlatforms, setSelectedPlatforms] = useState(enabledPlatforms);
@@ -310,6 +306,7 @@ export default function Influencers() {
       handle: row.handle,
       categoryId: row.category_id,
       scrapePostsSince: row.scrape_posts_since || '',
+      maxCommentsPerPost: row.max_comments_per_post ?? '',
       creatorName: row.creator_name || '',
       accountType: row.account_type,
     });
@@ -317,7 +314,7 @@ export default function Influencers() {
 
   const cancelEditInfluencer = () => {
     setEditingInfluencerId(null);
-    setInfluencerDraft({ handle: '', categoryId: '', scrapePostsSince: '', creatorName: '', accountType: 'individual' });
+    setInfluencerDraft({ handle: '', categoryId: '', scrapePostsSince: '', maxCommentsPerPost: '', creatorName: '', accountType: 'individual' });
   };
 
   const handleSaveInfluencer = async (row) => {
@@ -336,6 +333,8 @@ export default function Influencers() {
       const detailsChanged =
         cleanHandle !== previousBareHandle || influencerDraft.categoryId !== row.category_id || creatorChanged || typeChanged;
       const scrapeSinceChanged = influencerDraft.scrapePostsSince !== (row.scrape_posts_since || '');
+      const maxCommentsChanged =
+        String(influencerDraft.maxCommentsPerPost) !== String(row.max_comments_per_post ?? '');
       if (detailsChanged) {
         await updateInfluencerDetails(row.influencer_id, {
           handle: cleanHandle,
@@ -344,8 +343,11 @@ export default function Influencers() {
           accountType: typeChanged ? influencerDraft.accountType : undefined,
         });
       }
-      if (scrapeSinceChanged) {
-        await updateInfluencerScrapeSettings(row.influencer_id, influencerDraft.scrapePostsSince);
+      if (scrapeSinceChanged || maxCommentsChanged) {
+        await updateInfluencerScrapeSettings(row.influencer_id, {
+          scrapePostsSince: scrapeSinceChanged ? influencerDraft.scrapePostsSince : undefined,
+          maxCommentsPerPost: maxCommentsChanged ? influencerDraft.maxCommentsPerPost : undefined,
+        });
       }
       toast.success(`${formatHandle(cleanHandle, row.platform)} updated`);
       cancelEditInfluencer();
@@ -644,180 +646,3 @@ export default function Influencers() {
   );
 }
 
-function InfluencerRow({
-  row, categories, creators, isEditing, draft, setDraft, savingEdit,
-  onStartEdit, onCancelEdit, onSave, isInFlight, triggeringThis,
-  historyOpen, onToggleHistory, onScrapeNow, onToggleActive, onDelete,
-}) {
-  return (
-    <div className="py-2.5">
-      {isEditing ? (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-end gap-3 flex-wrap">
-            <div className="min-w-[140px]">
-              <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                Handle
-              </label>
-              <Input
-                value={draft.handle}
-                onChange={(e) => setDraft((d) => ({ ...d, handle: e.target.value }))}
-              />
-            </div>
-            <div className="min-w-[160px]">
-              <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                Category
-              </label>
-              <select
-                value={draft.categoryId}
-                onChange={(e) => setDraft((d) => ({ ...d, categoryId: e.target.value }))}
-                className="w-full px-3.5 py-2.5 rounded-xl text-sm outline-none border"
-                style={{
-                  background: 'var(--color-bg-secondary)',
-                  color: 'var(--color-text-primary)',
-                  borderColor: 'var(--color-border-default)',
-                }}
-              >
-                {categories.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
-            </div>
-            <div className="min-w-[140px]">
-              <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                Type
-              </label>
-              <select
-                value={draft.accountType}
-                onChange={(e) => setDraft((d) => ({ ...d, accountType: e.target.value }))}
-                className="w-full px-3.5 py-2.5 rounded-xl text-sm outline-none border"
-                style={{
-                  background: 'var(--color-bg-secondary)',
-                  color: 'var(--color-text-primary)',
-                  borderColor: 'var(--color-border-default)',
-                }}
-              >
-                <option value="individual">Individual</option>
-                <option value="business">Business</option>
-              </select>
-            </div>
-            <div className="min-w-[150px]">
-              <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                Scrape posts since
-              </label>
-              <Input
-                type="date"
-                value={draft.scrapePostsSince}
-                onChange={(e) => setDraft((d) => ({ ...d, scrapePostsSince: e.target.value }))}
-              />
-            </div>
-            <div className="min-w-[160px] flex-1">
-              <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                Creator <span style={{ color: 'var(--color-text-muted)' }}>(links platforms)</span>
-              </label>
-              <Input
-                list="creator-name-options-edit"
-                placeholder="unlinked"
-                value={draft.creatorName}
-                onChange={(e) => setDraft((d) => ({ ...d, creatorName: e.target.value }))}
-              />
-              <datalist id="creator-name-options-edit">
-                {creators.map((c) => (
-                  <option key={c.id} value={c.name} />
-                ))}
-              </datalist>
-            </div>
-            <Button size="sm" onClick={onSave} loading={savingEdit}>
-              <Check className="w-3.5 h-3.5" />
-              Save
-            </Button>
-            <Button variant="ghost" size="sm" onClick={onCancelEdit}>
-              <X className="w-3.5 h-3.5" />
-              Cancel
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-3 min-w-0">
-            <Link
-              to={`/influencers/${row.influencer_id}`}
-              className="font-medium text-sm truncate hover:underline"
-              style={{ color: 'var(--color-text-primary)' }}
-            >
-              {formatHandle(row.handle, row.platform)}
-            </Link>
-            <PlatformBadge platform={row.platform} handle={row.handle} />
-            <AccountTypeBadge accountType={row.account_type} />
-            <StatusBadge status={row.last_job_status} />
-            {!row.is_active && (
-              <span
-                title={
-                  row.deactivation_reason === 'handle_not_found'
-                    ? "Auto-deactivated: this platform confirmed the handle doesn't exist. Edit the handle (pencil icon) to fix it, then reactivate."
-                    : row.paused_by_category
-                      ? 'Paused because its category is held -- reactivate the category to resume it, or use the power button to resume just this influencer.'
-                      : undefined
-                }
-              >
-                <HeaderPill
-                  icon={row.deactivation_reason === 'handle_not_found' ? AlertTriangle : PowerOff}
-                  color={row.deactivation_reason === 'handle_not_found' ? 'var(--color-danger)' : undefined}
-                >
-                  {row.deactivation_reason === 'handle_not_found'
-                    ? 'handle not found -- recheck'
-                    : row.paused_by_category
-                      ? 'held with category'
-                      : 'inactive'}
-                </HeaderPill>
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-4 shrink-0">
-            <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
-              {row.last_job_finished_at
-                ? `Last scraped ${format(new Date(row.last_job_finished_at), 'MMM d, HH:mm')}`
-                : 'Never scraped'}
-            </span>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={onScrapeNow}
-              loading={triggeringThis}
-              disabled={isInFlight}
-            >
-              <PlayCircle className="w-3.5 h-3.5" />
-              Scrape now
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              title={historyOpen ? 'Hide run history' : 'Show run history'}
-              onClick={onToggleHistory}
-            >
-              {historyOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <History className="w-3.5 h-3.5" />}
-            </Button>
-            <Button variant="ghost" size="sm" title="Edit influencer" onClick={onStartEdit}>
-              <Pencil className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              title={row.is_active ? 'Deactivate' : 'Activate'}
-              onClick={onToggleActive}
-            >
-              <Power className="w-3.5 h-3.5" style={{ color: row.is_active ? 'var(--color-warning)' : 'var(--color-success)' }} />
-            </Button>
-            <Button variant="ghost" size="sm" title="Delete permanently" onClick={onDelete}>
-              <Trash2 className="w-3.5 h-3.5" style={{ color: 'var(--color-danger)' }} />
-            </Button>
-          </div>
-        </div>
-      )}
-      {historyOpen && !isEditing && (
-        <div className="mt-2">
-          <JobHistoryPanel influencerId={row.influencer_id} />
-        </div>
-      )}
-    </div>
-  );
-}

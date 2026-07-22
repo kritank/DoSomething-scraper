@@ -84,6 +84,17 @@ class Post(Base):
     # makes forward progress past that cap.
     comment_sync_cursor: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # How many Comment rows actually exist for this post (top-level +
+    # replies), as of the last sync -- a cheap, durable capture of sync
+    # completeness (compare against the platform's own reported count,
+    # PostMetricsSnapshot.comments, without an expensive COUNT(*) join
+    # every time something wants to know "how caught up are we"). Also
+    # what comment_sync.py's per-post cap and the job processors'
+    # backlog-priority sort are computed from. Updated at the end of every
+    # sync_comments_for_post run, not incrementally, so it self-corrects
+    # after a tombstone pass removes deleted comments.
+    comments_synced_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

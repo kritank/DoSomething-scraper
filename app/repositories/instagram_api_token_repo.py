@@ -82,12 +82,24 @@ class InstagramApiTokenRepo:
         YouTubeApiKeyRepo._reset_if_due (midnight Pacific), a token in
         cooldown just flips back to active once cooldown_until has passed;
         there is no quota counter to zero alongside it (calls_today is
-        bookkeeping only, reset separately at UTC midnight by the caller,
-        not gating usability here)."""
+        bookkeeping only, reset separately at UTC midnight by
+        reset_daily_call_counts() below, not gating usability here)."""
         if token.cooldown_until is not None and token.cooldown_until <= datetime.now(timezone.utc):
             token.cooldown_until = None
             if token.status == "cooldown":
                 token.status = "active"
+
+    async def reset_daily_call_counts(self) -> None:
+        """calls_today is a plain observability counter (BUC usage_pct is
+        what actually gates rotation) -- previously never reset by
+        anything despite this class's own docstring claiming it was,
+        so it silently accumulated as a lifetime total instead of "today's"
+        count. Run once a day by the scheduler (app/scheduler/runner.py),
+        same UTC-midnight-ish cadence as YouTube key resets even though
+        BUC itself doesn't have a fixed reset boundary -- this is purely
+        for the dashboard's own daily-usage display, not for gating."""
+        await self.session.execute(update(InstagramApiToken).values(calls_today=0))
+        await self.session.commit()
 
     async def get_usable_token(self) -> Optional[InstagramApiToken]:
         """Round-robin by last_used_at among active tokens -- unlike

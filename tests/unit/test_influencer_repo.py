@@ -6,10 +6,12 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from datetime import date
+
 from app.core.exceptions import DuplicateInfluencerError
 from app.models.influencer import Influencer
 from app.repositories.influencer_repo import InfluencerRepo
-from app.schemas.influencer import InfluencerDetailsUpdate
+from app.schemas.influencer import InfluencerDetailsUpdate, InfluencerScrapeSettingsUpdate
 
 
 def _repo_with_influencer(influencer: Influencer) -> tuple[InfluencerRepo, MagicMock]:
@@ -99,3 +101,55 @@ async def test_update_details_duplicate_handle_raises_friendly_error():
         await repo.update_details(influencer.id, InfluencerDetailsUpdate(handle="taken"))
 
     session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_scrape_settings_applies_both_when_both_provided():
+    influencer = Influencer(id=uuid4(), handle="x", category_id=uuid4())
+    repo, _ = _repo_with_influencer(influencer)
+
+    result = await repo.update_scrape_settings(
+        influencer.id,
+        InfluencerScrapeSettingsUpdate(scrape_posts_since=date(2026, 1, 1), max_comments_per_post=2000),
+    )
+
+    assert result.scrape_posts_since == date(2026, 1, 1)
+    assert result.max_comments_per_post == 2000
+
+
+@pytest.mark.asyncio
+async def test_update_scrape_settings_partial_update_leaves_other_field_untouched():
+    """Regression test: both fields default to None on the schema, so an
+    unconditional overwrite of both would silently wipe whichever one the
+    caller didn't intend to touch -- a request setting only
+    max_comments_per_post must not reset scrape_posts_since back to null,
+    and vice versa."""
+    influencer = Influencer(
+        id=uuid4(), handle="x", category_id=uuid4(),
+        scrape_posts_since=date(2026, 1, 1), max_comments_per_post=2000,
+    )
+    repo, _ = _repo_with_influencer(influencer)
+
+    result = await repo.update_scrape_settings(
+        influencer.id, InfluencerScrapeSettingsUpdate(max_comments_per_post=500)
+    )
+
+    assert result.max_comments_per_post == 500
+    assert result.scrape_posts_since == date(2026, 1, 1)  # untouched
+
+
+@pytest.mark.asyncio
+async def test_update_scrape_settings_explicit_null_clears_field():
+    """Distinguishing "omitted" from "explicitly sent as null" -- a
+    caller that DOES send max_comments_per_post=None is intentionally
+    clearing the override back to "use the platform default"."""
+    influencer = Influencer(
+        id=uuid4(), handle="x", category_id=uuid4(), max_comments_per_post=2000,
+    )
+    repo, _ = _repo_with_influencer(influencer)
+
+    result = await repo.update_scrape_settings(
+        influencer.id, InfluencerScrapeSettingsUpdate(max_comments_per_post=None)
+    )
+
+    assert result.max_comments_per_post is None

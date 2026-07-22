@@ -174,6 +174,23 @@ async def last_comment_count(session: AsyncSession, post_id: UUID) -> int | None
     return result.scalar_one_or_none()
 
 
+async def count_stored_comments(session: AsyncSession, post_id: UUID) -> int:
+    """How many Comment rows actually exist for this post (top-level +
+    replies) right now -- the source of truth backing
+    Post.comments_synced_count, cheap thanks to the index on post_id."""
+    stmt = select(func.count()).select_from(Comment).where(Comment.post_id == post_id)
+    result = await session.execute(stmt)
+    return result.scalar_one()
+
+
+async def refresh_comments_synced_count(session: AsyncSession, post: Post) -> None:
+    """Re-derives Post.comments_synced_count from the Comment table --
+    called at the end of every sync_comments_for_post run (not maintained
+    incrementally) so it self-corrects after a tombstone pass removes
+    deleted comments, rather than drifting out of sync with reality."""
+    post.comments_synced_count = await count_stored_comments(session, post.id)
+
+
 async def update_engagement_timing_features(session: AsyncSession, post: Post) -> None:
     """Derive engagement-timing signals from comments already saved for
     this post -- no extra API calls, just better use of scraped data.
@@ -248,7 +265,8 @@ def normalize_comment(comment: InstagramComment, creator_handle: str) -> Normali
 
 
 async def sync_replies(
-    session: AsyncSession, client: InstagramClient, post: Post, parent: InstagramComment, creator_handle: str
+    session: AsyncSession, client: InstagramClient, post: Post, parent: InstagramComment, creator_handle: str,
+    max_comments: int = 0,
 ) -> int:
     """Extracted from JobProcessor._sync_replies -- identical behavior,
     just parameterized on (session, client, post) instead of reading
@@ -260,12 +278,20 @@ async def sync_replies(
     naturally (has_more=False) has always seen this parent's COMPLETE
     current reply set, and tombstones any stored reply not in it (deleted
     by its author or by moderation since the last sync). A walk truncated
-    by MAX_REPLY_PAGES has only seen a partial set and must not tombstone."""
+    by MAX_REPLY_PAGES has only seen a partial set and must not tombstone.
+
+    max_comments (0 = unlimited) is the POST's total comment budget
+    (top-level + every reply thread combined, see
+    settings.COMMENT_SYNC_DEFAULT_MAX_PER_POST) -- stopping here once hit
+    is treated the same as a truncated walk (no tombstone), since a
+    capped stop hasn't seen this thread's complete current set either."""
     after: str | None = None
     total = 0
     seen_ids: set[str] = set()
     truncated = True
     for _ in range(MAX_REPLY_PAGES):
+        if max_comments > 0 and await count_stored_comments(session, post.id) >= max_comments:
+            break
         connection = await client.get_comment_replies(post.media_pk, parent.comment_id, post.permalink, after)
         replies, next_after, has_more = InstagramParser.parse_replies(connection, parent.comment_id)
         if not replies:
@@ -289,7 +315,8 @@ async def sync_replies(
 
 
 async def sync_comments_for_post(
-    session: AsyncSession, client: InstagramClient, post: Post, creator_handle: str
+    session: AsyncSession, client: InstagramClient, post: Post, creator_handle: str,
+    max_comments: int = 0,
 ) -> int:
     """Extracted from JobProcessor._sync_comments_for_post -- same
     diffing logic (only re-walk a thread whose reply count actually
@@ -310,13 +337,26 @@ async def sync_comments_for_post(
     started fresh from page 1 (no stored cursor) AND completed naturally,
     since either a resumed or a truncated walk has only seen a PARTIAL
     slice of the real top-level set and diffing against that would
-    incorrectly delete comments this call simply never reached."""
+    incorrectly delete comments this call simply never reached.
+
+    max_comments (0 = unlimited, see settings.COMMENT_SYNC_DEFAULT_MAX_PER_POST
+    and Influencer.max_comments_per_post) stops the walk once this post's
+    total stored comment count (top-level + replies) reaches it -- treated
+    like a page-cap truncation (cursor preserved so a later cap increase
+    can resume, no tombstone since the walk never saw the complete set),
+    not like a natural end. Refreshes Post.comments_synced_count at the
+    end regardless of how the walk stopped, so completeness stays
+    accurate even when capped."""
     started_fresh = post.comment_sync_cursor is None
     after: str | None = post.comment_sync_cursor
     total = 0
     truncated = True
+    cap_hit = False
     seen_ids: set[str] = set()
     for _ in range(MAX_COMMENT_PAGES):
+        if max_comments > 0 and await count_stored_comments(session, post.id) >= max_comments:
+            cap_hit = True
+            break
         connection = await client.get_media_comments(post.media_pk, post.permalink, after)
         comments, next_after, has_more = InstagramParser.parse_comments(connection)
         if not comments:
@@ -335,7 +375,7 @@ async def sync_comments_for_post(
                 comment.child_comment_count > 0
                 and comment.child_comment_count != prev_child_counts.get(comment.comment_id)
             ):
-                total += await sync_replies(session, client, post, comment, creator_handle)
+                total += await sync_replies(session, client, post, comment, creator_handle, max_comments)
 
         if not has_more or not next_after:
             truncated = False
@@ -346,8 +386,9 @@ async def sync_comments_for_post(
     # `after` holds the cursor for the next unfetched page, exactly where
     # the next sync should resume.
 
-    post.comment_sync_cursor = after if truncated else None
-    if started_fresh and not truncated:
+    post.comment_sync_cursor = after if (truncated or cap_hit) else None
+    if started_fresh and not truncated and not cap_hit:
         await _delete_missing_comments(session, post.id, None, seen_ids)
+    await refresh_comments_synced_count(session, post)
     await session.commit()
     return total
