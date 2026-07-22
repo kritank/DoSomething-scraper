@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 from app.core.exceptions import DuplicateInfluencerError, InfluencerNotFoundError
 from app.models.category import Category
 from app.models.comment import Comment
+from app.models.creator import Creator
 from app.models.influencer import Influencer
 from app.models.post import Post
 from app.models.snapshot import PostMetricsSnapshot, ProfileSnapshot
@@ -39,6 +40,9 @@ class LeaderboardEntry:
 
     id: UUID
     link_id: UUID
+    # Display name -- the linked Creator's admin-curated name (e.g. "Ajey
+    # Nagar" for @carryminati) when one has been set, else the handle.
+    name: str
     handle: str
     platform: str
     platforms: list[str]
@@ -316,10 +320,16 @@ class InfluencerRepo:
                 # for Instagram rows -- see ProfileSnapshot.platform_metadata.
                 latest_snapshot.c.platform_metadata,
                 engagement.c.avg_engagement,
+                # Admin-curated display name (e.g. "Ajey Nagar" for
+                # @carryminati) -- null for influencers with no linked
+                # Creator, or a Creator that's never been renamed off its
+                # auto-assigned default (the handle itself).
+                Creator.name.label("creator_name"),
             )
             .join(latest_snapshot, latest_snapshot.c.influencer_id == Influencer.id)
             .join(Category, Category.id == Influencer.category_id)
             .outerjoin(engagement, engagement.c.influencer_id == Influencer.id)
+            .outerjoin(Creator, Creator.id == Influencer.creator_id)
             .where(latest_snapshot.c.rn == 1)
         )
         return stmt, latest_snapshot
@@ -386,6 +396,7 @@ class InfluencerRepo:
         return LeaderboardEntry(
             id=primary.id,
             link_id=link_id,
+            name=primary.creator_name or primary.handle,
             handle=primary.handle,
             platform=primary.platform,
             platforms=sorted({r.platform for r in rows}),
