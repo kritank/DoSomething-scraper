@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -153,3 +154,117 @@ async def test_update_scrape_settings_explicit_null_clears_field():
     )
 
     assert result.max_comments_per_post is None
+
+
+@pytest.mark.asyncio
+async def test_get_public_accounts_empty_ids_skips_query():
+    """No influencer_ids (e.g. a Creator with no linked accounts) should
+    short-circuit rather than issue a `WHERE id IN ()` query."""
+    session = MagicMock()
+    session.execute = AsyncMock()
+    repo = InfluencerRepo(session)
+
+    result = await repo.get_public_accounts([])
+
+    assert result == []
+    session.execute.assert_not_awaited()
+
+
+def test_get_top_ranked_platform_filter_applied_to_query():
+    """Regression guard for the /influencers/top platform query param --
+    the compiled statement must gain a `WHERE ... platform = :platform`
+    predicate when one is given, and must not when omitted."""
+    session = MagicMock()
+    repo = InfluencerRepo(session)
+
+    stmt, _ = repo._leaderboard_base_stmt()
+    filtered_stmt = stmt.where(Influencer.platform == "youtube")
+    unfiltered_where = str(stmt.whereclause).lower()
+    filtered_where = str(filtered_stmt.whereclause).lower()
+
+    assert "platform" not in unfiltered_where
+    assert "platform" in filtered_where
+
+
+def _fake_leaderboard_row(**overrides):
+    """Stand-in for the Row objects _leaderboard_base_stmt's query returns
+    -- get_top_ranked only ever accesses these via attribute access, so a
+    plain namespace is enough without a real DB round-trip."""
+    defaults = dict(
+        id=uuid4(),
+        handle="handle",
+        platform="instagram",
+        creator_id=None,
+        category_name="Category",
+        followers=100,
+        following=10,
+        posts=5,
+        is_verified=False,
+        last_updated=date(2026, 1, 1),
+        avg_engagement=None,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_get_top_ranked_merges_multi_platform_creator_into_one_row():
+    """Two Influencer rows sharing a creator_id (one per platform) must
+    collapse into a single leaderboard entry with summed followers/posts
+    and the combined engagement rate averaged across accounts -- otherwise
+    a cross-platform creator would occupy two leaderboard slots instead of
+    ranking as one."""
+    creator_id = uuid4()
+    ig_id, yt_id = uuid4(), uuid4()
+    ig_row = _fake_leaderboard_row(
+        id=ig_id, creator_id=creator_id, platform="instagram", handle="ashishchanchlani",
+        followers=17_800_000, posts=1800, avg_engagement=546_460, is_verified=True,
+    )
+    yt_row = _fake_leaderboard_row(
+        id=yt_id, creator_id=creator_id, platform="youtube", handle="@geekyranjit",
+        followers=3_300_000, posts=3400, avg_engagement=1320,
+    )
+    solo_row = _fake_leaderboard_row(followers=50, handle="solo")
+
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=MagicMock(all=lambda: [ig_row, yt_row, solo_row]))
+    repo = InfluencerRepo(session)
+
+    entries = await repo.get_top_ranked(limit=10)
+
+    assert len(entries) == 2
+    merged = next(e for e in entries if e.link_id == creator_id)
+    assert merged.id == ig_id  # representative = highest-follower account
+    assert merged.platforms == ["instagram", "youtube"]
+    assert merged.followers == 17_800_000 + 3_300_000
+    assert merged.posts == 1800 + 3400
+    assert merged.is_verified is True
+    assert merged.engagement_rate == round((3.07 + 0.04) / 2, 2)
+
+    solo = next(e for e in entries if e.link_id == solo_row.id)
+    assert solo.platforms == ["instagram"]
+    assert solo.followers == 50
+
+
+@pytest.mark.asyncio
+async def test_get_top_ranked_sort_by_posts_and_engagement():
+    """`sort` re-ranks by posts/engagement instead of followers, and
+    entries missing the sorted field (e.g. no engagement history) sort
+    last rather than floating to the top as a false zero."""
+    most_followers = _fake_leaderboard_row(followers=1000, posts=10, avg_engagement=None, handle="a")
+    most_posts = _fake_leaderboard_row(followers=10, posts=1000, avg_engagement=None, handle="b")
+    most_engagement = _fake_leaderboard_row(followers=10, posts=10, avg_engagement=500, handle="c")  # 5% rate
+    no_engagement_history = _fake_leaderboard_row(followers=5, posts=5, avg_engagement=None, handle="d")
+
+    session = MagicMock()
+    rows = [most_followers, most_posts, most_engagement, no_engagement_history]
+    session.execute = AsyncMock(return_value=MagicMock(all=lambda: rows))
+    repo = InfluencerRepo(session)
+
+    by_posts = await repo.get_top_ranked(limit=10, sort="posts")
+    assert [e.handle for e in by_posts][:2] == ["b", "a"]
+
+    by_engagement = await repo.get_top_ranked(limit=10, sort="engagement")
+    assert by_engagement[0].handle == "c"
+    assert by_engagement[-1].handle in ("a", "b", "d")  # None-engagement rows sort last
+    assert by_engagement[-1].engagement_rate is None

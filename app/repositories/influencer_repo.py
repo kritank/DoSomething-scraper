@@ -1,3 +1,6 @@
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional, Sequence
 from uuid import UUID
 
@@ -24,6 +27,28 @@ from app.schemas.influencer import (
 # average on the top-influencers leaderboard. Keeps the metric responsive to
 # recent performance instead of being diluted by years of post history.
 ENGAGEMENT_LOOKBACK_POSTS = 12
+
+
+@dataclass
+class LeaderboardEntry:
+    """One /influencers/top row -- either a single platform account, or a
+    creator's multiple platform accounts merged into one combined entry.
+    `id` is the representative (highest-follower) account's own id, kept
+    distinct from `link_id` (routes to /creators/{link_id}, the Creator id
+    when merged) so the frontend always has a stable per-row React key."""
+
+    id: UUID
+    link_id: UUID
+    handle: str
+    platform: str
+    platforms: list[str]
+    category_name: str
+    followers: int
+    following: int
+    posts: int
+    is_verified: bool
+    engagement_rate: Optional[float]
+    last_updated: datetime
 
 
 class InfluencerRepo:
@@ -214,16 +239,11 @@ class InfluencerRepo:
             raise InfluencerNotFoundError(handle)
         return influencer
 
-    async def get_top_ranked(
-        self, limit: int = 20, category_name: Optional[str] = None
-    ) -> Sequence[Row]:
-        """Ranked leaderboard for the public "Top Influencers" page: each
-        active influencer's latest profile snapshot (followers/verified/etc.)
+    def _leaderboard_base_stmt(self):
+        """Shared projection behind get_top_ranked and get_public_accounts:
+        each influencer's latest profile snapshot (followers/verified/etc.)
         plus an engagement rate averaged over their most recent posts.
-
-        Returns raw Rows (not ORM objects) since this is a read-only
-        aggregate projection, not a mapped entity.
-        """
+        Callers apply their own .where()/.order_by()/.limit()."""
         latest_snapshot = (
             select(
                 ProfileSnapshot,
@@ -283,22 +303,114 @@ class InfluencerRepo:
             select(
                 Influencer.id,
                 Influencer.handle,
+                Influencer.platform,
+                Influencer.creator_id,
+                Influencer.profile_pic_url,
                 Category.name.label("category_name"),
                 latest_snapshot.c.followers,
                 latest_snapshot.c.following,
                 latest_snapshot.c.posts,
                 latest_snapshot.c.is_verified,
                 latest_snapshot.c.updated_at.label("last_updated"),
+                # YouTube-only extras (country, channel creation date); null
+                # for Instagram rows -- see ProfileSnapshot.platform_metadata.
+                latest_snapshot.c.platform_metadata,
                 engagement.c.avg_engagement,
             )
             .join(latest_snapshot, latest_snapshot.c.influencer_id == Influencer.id)
             .join(Category, Category.id == Influencer.category_id)
             .outerjoin(engagement, engagement.c.influencer_id == Influencer.id)
-            .where(Influencer.is_active.is_(True), latest_snapshot.c.rn == 1)
+            .where(latest_snapshot.c.rn == 1)
         )
+        return stmt, latest_snapshot
+
+    # Ranking key per `sort` value -- entries missing the sorted field (e.g.
+    # no engagement history yet) sort last rather than erroring or floating
+    # to the top as a false zero.
+    _SORT_KEYS = {
+        "followers": lambda e: (True, e.followers),
+        "posts": lambda e: (True, e.posts),
+        "engagement": lambda e: (e.engagement_rate is not None, e.engagement_rate or 0),
+    }
+
+    async def get_top_ranked(
+        self,
+        limit: int = 20,
+        category_name: Optional[str] = None,
+        platform: Optional[str] = None,
+        sort: str = "followers",
+    ) -> list[LeaderboardEntry]:
+        """Ranked leaderboard for the public "Top Influencers" page.
+
+        A creator with linked accounts on multiple platforms (Influencer
+        rows sharing a creator_id) is merged into a single combined entry
+        -- otherwise the same person/brand would occupy two leaderboard
+        slots. Merging happens whether or not `platform` is set: filtering
+        to one platform just means each merge group only ever has one
+        member (a creator's second platform account is excluded by the
+        Influencer.platform predicate below), so the grouping code path
+        stays uniform instead of branching.
+
+        No limit is applied at the SQL level -- accounts must be pulled in
+        full and merged first, since a creator's combined rank can differ
+        from either individual account's rank. `limit` and `sort` are both
+        applied in Python after merging instead.
+        """
+        stmt, latest_snapshot = self._leaderboard_base_stmt()
+        stmt = stmt.where(Influencer.is_active.is_(True))
         if category_name:
             stmt = stmt.where(Category.name == category_name)
-        stmt = stmt.order_by(latest_snapshot.c.followers.desc()).limit(limit)
+        if platform:
+            stmt = stmt.where(Influencer.platform == platform)
+        stmt = stmt.order_by(latest_snapshot.c.followers.desc())
 
+        result = await self.session.execute(stmt)
+        rows = result.all()
+
+        groups: dict[UUID, list[Row]] = defaultdict(list)
+        for row in rows:
+            groups[row.creator_id or row.id].append(row)
+
+        entries = [self._merge_leaderboard_group(key, group) for key, group in groups.items()]
+        entries.sort(key=self._SORT_KEYS.get(sort, self._SORT_KEYS["followers"]), reverse=True)
+        return entries[:limit]
+
+    @staticmethod
+    def _merge_leaderboard_group(link_id: UUID, rows: Sequence[Row]) -> LeaderboardEntry:
+        primary = max(rows, key=lambda r: r.followers)
+        engagement_rates = [
+            round(r.avg_engagement / r.followers * 100, 2)
+            for r in rows
+            if r.avg_engagement is not None and r.followers
+        ]
+        return LeaderboardEntry(
+            id=primary.id,
+            link_id=link_id,
+            handle=primary.handle,
+            platform=primary.platform,
+            platforms=sorted({r.platform for r in rows}),
+            category_name=primary.category_name,
+            followers=sum(r.followers for r in rows),
+            following=sum(r.following for r in rows),
+            posts=sum(r.posts for r in rows),
+            is_verified=any(r.is_verified for r in rows),
+            engagement_rate=(
+                round(sum(engagement_rates) / len(engagement_rates), 2) if engagement_rates else None
+            ),
+            last_updated=max(r.last_updated for r in rows),
+        )
+
+    async def get_public_accounts(self, influencer_ids: Sequence[UUID]) -> Sequence[Row]:
+        """Same per-influencer stats projection as get_top_ranked, scoped to
+        a specific set of influencer ids -- backs the public combined
+        creator profile page. Includes paused accounts (unlike the
+        leaderboard) since a creator's profile shouldn't drop a platform
+        just because scraping is temporarily paused on it."""
+        if not influencer_ids:
+            return []
+        stmt, latest_snapshot = self._leaderboard_base_stmt()
+        stmt = stmt.where(Influencer.id.in_(influencer_ids)).order_by(
+            latest_snapshot.c.followers.desc()
+        )
         result = await self.session.execute(stmt)
         return result.all()

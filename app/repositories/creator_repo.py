@@ -32,6 +32,22 @@ class CreatorRepo:
             raise CreatorNotFoundError(str(creator_id))
         return creator
 
+    async def get_by_id_with_influencers(self, creator_id: UUID) -> Creator:
+        """Same as get_by_id but eager-loads Creator.influencers -- plain
+        get_by_id's relationship attribute can't be lazy-loaded outside an
+        awaited context (raises MissingGreenlet under asyncio), so any
+        caller that reads .influencers needs this instead."""
+        stmt = (
+            select(Creator)
+            .options(selectinload(Creator.influencers))
+            .where(Creator.id == creator_id)
+        )
+        result = await self.session.execute(stmt)
+        creator = result.scalar_one_or_none()
+        if not creator:
+            raise CreatorNotFoundError(str(creator_id))
+        return creator
+
     async def get_or_create_by_name(self, name: str) -> Creator:
         """Case-insensitive match on the trimmed name -- so registering a
         creator's second platform account under the same name links to the

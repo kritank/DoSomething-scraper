@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 import httpx
@@ -15,6 +15,15 @@ from app.repositories.influencer_repo import InfluencerRepo
 class TopInfluencerOut(BaseModel):
     id: UUID
     handle: str
+    # Representative platform (the merged entry's highest-follower account)
+    # -- kept for simple single-icon rendering. `platforms` below is the
+    # full list and should be preferred when a row spans more than one.
+    platform: str
+    platforms: list[str]
+    # Where the frontend should route a click-through to: the Creator id
+    # when this row merges multiple linked platform accounts, otherwise
+    # the influencer's own id (single-platform profile fallback).
+    link_id: UUID
     category_name: str
     followers: int
     following: int
@@ -32,29 +41,34 @@ router = APIRouter(prefix="/influencers", tags=["Influencers"])
 async def get_top_influencers(
     limit: int = Query(20, ge=1, le=100),
     category: Optional[str] = Query(None, description="Filter by category name"),
+    platform: Optional[str] = Query(None, description="Filter by platform (instagram, youtube)"),
+    sort: Literal["followers", "posts", "engagement"] = Query("followers", description="Ranking metric"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Public leaderboard, ranked by follower count, for the marketing site's
-    "Top Influencers" page. No auth required — same trust level as
-    /benchmarks and /recommendations."""
-    rows = await InfluencerRepo(db).get_top_ranked(limit=limit, category_name=category)
+    """Public leaderboard, ranked by follower count (or posts/engagement via
+    `sort`), for the marketing site's "Top Influencers" page. No auth
+    required — same trust level as /benchmarks and /recommendations. A
+    creator linked across multiple platforms occupies a single combined row
+    (see InfluencerRepo.get_top_ranked) rather than one row per platform."""
+    entries = await InfluencerRepo(db).get_top_ranked(
+        limit=limit, category_name=category, platform=platform, sort=sort
+    )
     return [
         TopInfluencerOut(
-            id=row.id,
-            handle=row.handle,
-            category_name=row.category_name,
-            followers=row.followers,
-            following=row.following,
-            posts=row.posts,
-            is_verified=row.is_verified,
-            engagement_rate=(
-                round(row.avg_engagement / row.followers * 100, 2)
-                if row.avg_engagement is not None and row.followers
-                else None
-            ),
-            last_updated=row.last_updated,
+            id=entry.id,
+            handle=entry.handle,
+            platform=entry.platform,
+            platforms=entry.platforms,
+            link_id=entry.link_id,
+            category_name=entry.category_name,
+            followers=entry.followers,
+            following=entry.following,
+            posts=entry.posts,
+            is_verified=entry.is_verified,
+            engagement_rate=entry.engagement_rate,
+            last_updated=entry.last_updated,
         )
-        for row in rows
+        for entry in entries
     ]
 
 
