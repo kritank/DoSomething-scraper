@@ -189,7 +189,9 @@ export default function CombinedCreatorProfile() {
   const [sponsorshipLoading, setSponsorshipLoading] = useState(true);
   const [sponsorshipPlatform, setSponsorshipPlatform] = useState('all');
 
-  const [replyTimeDays, setReplyTimeDays] = useState(90);
+  // 28, not 90 -- Response Insights depends entirely on synced comments,
+  // which only stay fresh within settings.COMMENT_SYNC_WINDOW_DAYS (30).
+  const [replyTimeDays, setReplyTimeDays] = useState(28);
   const [replyTimeByInfluencer, setReplyTimeByInfluencer] = useState({});
   const [replyTimeLoading, setReplyTimeLoading] = useState(true);
   const [replyTimePlatform, setReplyTimePlatform] = useState('all');
@@ -204,7 +206,9 @@ export default function CombinedCreatorProfile() {
   const [decayLoading, setDecayLoading] = useState(true);
   const [decayPlatform, setDecayPlatform] = useState('all');
 
-  const [commentEngagementDays, setCommentEngagementDays] = useState(90);
+  // 28, not 90 -- reads the Comment table directly, which only stays
+  // fresh within settings.COMMENT_SYNC_WINDOW_DAYS (30).
+  const [commentEngagementDays, setCommentEngagementDays] = useState(28);
   const [commentEngagementByInfluencer, setCommentEngagementByInfluencer] = useState({});
   const [commentEngagementLoading, setCommentEngagementLoading] = useState(true);
   const [commentEngagementPlatform, setCommentEngagementPlatform] = useState('all');

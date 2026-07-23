@@ -18,7 +18,7 @@ succeeded and committed real API-sourced data.
 
 import time
 from uuid import UUID
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import asyncio
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -306,6 +306,22 @@ class InstagramEnrichProcessor:
                 influencer.scrape_posts_since, datetime.min.time()
             ).replace(tzinfo=timezone.utc)
 
+        # The *real* bound on how far back comment sync needs to reach --
+        # confirmed missing entirely: pagination was bounded only by a
+        # fixed INSTAGRAM_ENRICH_FEED_PAGES page count, with no notion of
+        # how far back in time that actually covers. For a high-frequency
+        # poster (e.g. 9 posts/day), 2 feed pages reaches only a few hours
+        # back -- every post older than that inside
+        # settings.COMMENT_SYNC_WINDOW_DAYS never got a single enrich pass,
+        # ever, regardless of how many enrich cycles ran. JobProcessor's
+        # cookie path already bounds itself this way (comment_sync_cutoff);
+        # enrich needs the identical stop condition, not just a page cap.
+        comment_sync_cutoff: datetime | None = None
+        if settings.COMMENT_SYNC_WINDOW_DAYS > 0:
+            comment_sync_cutoff = datetime.now(timezone.utc) - timedelta(
+                days=settings.COMMENT_SYNC_WINDOW_DAYS
+            )
+
         max_id = ""
         matched_shortcodes: set[str] = set()
         sync_candidates: dict[UUID, Post] = {}
@@ -341,6 +357,13 @@ class InstagramEnrichProcessor:
                 if (
                     posts_since_cutoff is not None
                     and item_posted_at < posts_since_cutoff
+                    and not item.is_pinned
+                ):
+                    stop_pagination = True
+                    break
+                if (
+                    comment_sync_cutoff is not None
+                    and item_posted_at < comment_sync_cutoff
                     and not item.is_pinned
                 ):
                     stop_pagination = True

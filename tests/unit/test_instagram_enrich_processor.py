@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.core.config import settings
 from app.models.post import Post
 from app.queue.base import ScrapeJobMessage
 from app.schemas.instagram import InstagramMediaItem
@@ -21,7 +22,12 @@ def _processor() -> InstagramEnrichProcessor:
 
 def _media_item(**overrides) -> InstagramMediaItem:
     defaults = dict(
-        id="1", pk="1", code="ABC123", media_type=2, taken_at=0,
+        id="1", pk="1", code="ABC123", media_type=2,
+        # An hour ago, not epoch 0 -- _run_enrich now stops pagination once
+        # a post falls outside settings.COMMENT_SYNC_WINDOW_DAYS, so a
+        # test that doesn't care about timing needs a default recent
+        # enough to never accidentally trip that cutoff.
+        taken_at=int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()),
         like_count=10, comment_count=2, view_count=5000, play_count=0, reshare_count=3,
         is_paid_partnership=True, product_type="clips",
         music_metadata={"song": "x"}, locations=[{"name": "Mumbai"}],
@@ -329,6 +335,46 @@ async def test_run_enrich_stops_pagination_at_scrape_posts_since_cutoff(monkeypa
     job = SimpleNamespace(id=uuid4(), comments_processed=0)
 
     old_item = _media_item(code="TOO_OLD", taken_at=int(datetime(2025, 11, 15, tzinfo=timezone.utc).timestamp()))
+
+    processor.client = MagicMock()
+    processor.client.get_user_feed = AsyncMock(return_value={"items": []})
+
+    monkeypatch.setattr(
+        "app.workers.instagram_enrich_processor.InstagramParser.parse_feed",
+        MagicMock(return_value=([old_item], "next_cursor")),  # has a next page, but must not be fetched
+    )
+
+    session = MagicMock()
+    session.get = AsyncMock(return_value=influencer)
+    session.commit = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+    session.execute = AsyncMock(return_value=execute_result)
+
+    await processor._run_enrich(session, job)
+
+    assert processor.client.get_user_feed.call_count == 1  # stopped, didn't fetch page 2
+
+
+@pytest.mark.asyncio
+async def test_run_enrich_stops_pagination_at_comment_sync_window(monkeypatch):
+    """Regression: pagination was bounded only by a fixed
+    INSTAGRAM_ENRICH_FEED_PAGES page count, with no notion of how far back
+    in time that covers -- a high-frequency poster's older-but-still-
+    inside-the-window posts never got a single enrich pass. Must now stop
+    once a post falls outside settings.COMMENT_SYNC_WINDOW_DAYS, same as
+    JobProcessor's cookie path already does."""
+    monkeypatch.setattr(settings, "COMMENT_SYNC_WINDOW_DAYS", 1)
+
+    processor = _processor()
+    influencer_id = processor.message.influencer_id
+    influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None, max_comments_per_post=None)
+    job = SimpleNamespace(id=uuid4(), comments_processed=0)
+
+    old_item = _media_item(
+        code="OUTSIDE_WINDOW",
+        taken_at=int((datetime.now(timezone.utc) - timedelta(days=5)).timestamp()),
+    )
 
     processor.client = MagicMock()
     processor.client.get_user_feed = AsyncMock(return_value={"items": []})

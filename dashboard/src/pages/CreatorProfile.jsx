@@ -133,7 +133,10 @@ export default function CreatorProfile() {
   const [sponsorshipBreakdown, setSponsorshipBreakdown] = useState(null);
   const [sponsorshipLoading, setSponsorshipLoading] = useState(true);
 
-  const [replyTimeDays, setReplyTimeDays] = useState(90);
+  // 28, not 90 -- matches the backend default and the "28D" preset button:
+  // Response Insights depends entirely on synced comments, which only stay
+  // fresh within settings.COMMENT_SYNC_WINDOW_DAYS (30).
+  const [replyTimeDays, setReplyTimeDays] = useState(28);
   const [replyTimeHeatmap, setReplyTimeHeatmap] = useState(null);
   const [replyTimeLoading, setReplyTimeLoading] = useState(true);
 

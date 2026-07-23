@@ -176,7 +176,17 @@ class Settings(BaseSettings):
     # How often (in scrape cycles) a successful Graph API scrape enqueues a
     # cookie enrichment follow-on (PR3) -- 1 = every cycle.
     INSTAGRAM_ENRICH_EVERY_N_CYCLES: int = 1
-    INSTAGRAM_ENRICH_FEED_PAGES: int = 2
+    # Safety valve only, not the primary bound -- InstagramEnrichProcessor
+    # stops pagination once it reaches a post older than
+    # COMMENT_SYNC_WINDOW_DAYS regardless of page count (see
+    # comment_sync_cutoff in _run_enrich). This just caps how many feed
+    # pages a single run will ever walk if that date cutoff were somehow
+    # never reached, so a runaway account can't paginate indefinitely.
+    # Was 2 (the actual bound before the date cutoff existed) -- confirmed
+    # in production that left every post older than a few hours
+    # permanently un-synced for a high-frequency poster, since the fixed
+    # page count was reached long before COMMENT_SYNC_WINDOW_DAYS was.
+    INSTAGRAM_ENRICH_FEED_PAGES: int = 20
 
     # ── Alerting ──────────────────────────────────────────────────────────────
     # Critical alerts (alerts_service.get_alerts) were previously pull-only --

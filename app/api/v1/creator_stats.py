@@ -144,7 +144,13 @@ async def get_creator_posting_times(
 @router.get("/{influencer_id}/reply-time-heatmap", response_model=ReplyTimeHeatmapOut)
 async def get_creator_reply_time_heatmap(
     influencer_id: UUID,
-    days: int = Query(90, ge=1, le=3650),
+    # 28 (not 90, like most of this file's other days params) -- this
+    # depends entirely on synced comments, which only stay fresh within
+    # settings.COMMENT_SYNC_WINDOW_DAYS (30). A 90-day default query
+    # window claimed 60 days of coverage this pipeline never actually
+    # provides; 28 matches the dashboard's own "28D" preset button so the
+    # default view and its active-range highlight agree with each other.
+    days: int = Query(28, ge=1, le=3650),
     db: AsyncSession = Depends(get_db),
 ):
     service = CreatorStatsService(db)
@@ -184,7 +190,10 @@ async def get_creator_performance_decay(
 @router.get("/{influencer_id}/comment-engagement", response_model=CommentEngagementOut)
 async def get_creator_comment_engagement(
     influencer_id: UUID,
-    days: int = Query(90, ge=1, le=3650),
+    # Same reasoning as reply-time-heatmap above -- reads the Comment
+    # table directly, which only stays fresh within
+    # settings.COMMENT_SYNC_WINDOW_DAYS (30).
+    days: int = Query(28, ge=1, le=3650),
     db: AsyncSession = Depends(get_db),
 ):
     service = CreatorStatsService(db)
