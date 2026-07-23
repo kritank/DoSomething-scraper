@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Users, CheckCircle2, Clock, FileText, MessageSquare, Layers, ListOrdered, RefreshCw, BadgeCheck } from 'lucide-react';
-import { format } from 'date-fns';
 import {
   getDashboardStatus, getDashboardMetrics, getAlerts, getQueueStatus, getDlqContents,
   getCredentialHealth, getQueueHistory, getRecentVerifyJobs, getVerifyJobsSummary,
@@ -9,7 +8,6 @@ import { getCategories } from '../services/influencerService';
 import KPICard from '../components/common/KPICard';
 import PlatformIcon from '../components/common/PlatformIcon';
 import PlatformFilter from '../components/common/PlatformFilter';
-import StatusBadge from '../components/common/StatusBadge';
 import { SkeletonKPICard } from '../components/common/Skeleton';
 import ErrorState from '../components/common/ErrorState';
 import Button from '../components/common/Button';
@@ -18,10 +16,11 @@ import PerformanceChart from '../components/charts/PerformanceChart';
 import CredentialHealthChart from '../components/charts/CredentialHealthChart';
 import QueueDepthChart from '../components/charts/QueueDepthChart';
 import StatusTable from '../components/dashboard/StatusTable';
+import VerifyJobsPanel from '../components/dashboard/VerifyJobsPanel';
 import DateRangeSelector from '../components/dashboard/DateRangeSelector';
 import AlertsBanner from '../components/dashboard/AlertsBanner';
 import { useAppStore } from '../store/useAppStore';
-import { platformLabel, formatHandle } from '../utils/platform';
+import { platformLabel } from '../utils/platform';
 
 // The backend buckets date ranges as UTC calendar days (see
 // DateRangeSelector.jsx's toUtcIso for the full explanation) -- the
@@ -111,7 +110,7 @@ export default function Overview() {
         getDlqContents(),
         getCredentialHealth(startDate, endDate),
         getQueueHistory(startDate, endDate),
-        getRecentVerifyJobs(),
+        getRecentVerifyJobs(200),
         getVerifyJobsSummary(),
       ]);
       setStatus(statusRows);
@@ -370,76 +369,15 @@ export default function Overview() {
           Recent verify jobs
         </h3>
         <p className="text-xs mb-3" style={{ color: 'var(--color-text-muted)' }}>
-          On-demand is_verified checks, most recent first -- excluded from the "Last Scrape" status
-          table below on purpose (see StatusTable), so this is the only place their outcome is visible
-          without opening each influencer's own job history.
+          On-demand is_verified checks -- excluded from the "Last Scrape" status table below on
+          purpose (see StatusTable), so this is the only place their outcome is visible without
+          opening each influencer's own job history. Click a platform's total/in-flight/completed/
+          failed count to filter the table straight to it.
         </p>
-        {!loading && verifyJobsSummary && verifyJobsSummary.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 mb-4">
-            {verifyJobsSummary.map((s) => {
-              const inFlight = s.queued + s.running + s.retry_pending;
-              const total = inFlight + s.completed + s.failed + s.cancelled;
-              return (
-                <div
-                  key={s.platform}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs"
-                  style={{ background: 'var(--color-bg-card-hover)', border: '1px solid var(--color-border-subtle)' }}
-                >
-                  <PlatformIcon platform={s.platform} className="w-4 h-4 rounded" />
-                  <span className="font-medium" style={{ color: 'var(--color-text-primary)' }}>{platformLabel(s.platform)}</span>
-                  <span style={{ color: 'var(--color-text-muted)' }}>{total} total</span>
-                  {inFlight > 0 && (
-                    <span style={{ color: 'var(--color-accent)' }}>{inFlight} in flight</span>
-                  )}
-                  <span style={{ color: 'var(--color-success)' }}>{s.completed} completed</span>
-                  {s.failed > 0 && <span style={{ color: 'var(--color-danger)' }}>{s.failed} failed</span>}
-                </div>
-              );
-            })}
-          </div>
-        )}
         {loading ? (
           <ChartSkeleton short />
-        ) : !verifyJobs || verifyJobs.length === 0 ? (
-          <p className="text-sm text-center py-6" style={{ color: 'var(--color-text-muted)' }}>
-            No verify jobs have run yet.
-          </p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                  {['Status', 'Influencer', 'Platform', 'Started', 'Duration', 'Error'].map((h) => (
-                    <th key={h} className="text-left py-2 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {verifyJobs.map((j) => (
-                  <tr key={j.job_id} style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                    <td className="py-2 px-3"><StatusBadge status={j.status} /></td>
-                    <td className="py-2 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-primary)' }}>
-                      {formatHandle(j.handle, j.platform)}
-                    </td>
-                    <td className="py-2 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
-                      {platformLabel(j.platform)}
-                    </td>
-                    <td className="py-2 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
-                      {format(new Date(j.created_at), 'MMM d, HH:mm')}
-                    </td>
-                    <td className="py-2 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
-                      {j.duration_s != null ? `${j.duration_s.toFixed(1)}s` : '—'}
-                    </td>
-                    <td className="py-2 px-3 text-xs max-w-[260px]" style={{ color: 'var(--color-text-muted)' }} title={j.error_message ?? undefined}>
-                      <div className="truncate">{j.error_message ?? '—'}</div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <VerifyJobsPanel jobs={verifyJobs} summary={verifyJobsSummary} />
         )}
       </div>
 
