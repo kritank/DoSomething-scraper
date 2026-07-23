@@ -38,6 +38,7 @@ from app.schemas.dashboard import (
     DashboardMetricsOut,
     DashboardStatusRow,
     QueueDepthHistoryOut,
+    VerifyJobStatusRow,
 )
 from app.schemas.bulk_import import BulkImportResult
 from app.schemas.db_schema import SchemaTable
@@ -302,6 +303,15 @@ async def cancel_job(job_id: UUID, db: AsyncSession = Depends(get_db)):
     # this endpoint returns immediately either way, it doesn't wait for
     # that to happen.
     return await ScrapeJobRepo(db).request_cancel(job_id)
+
+
+@router.get("/dashboard/verify-jobs", response_model=list[VerifyJobStatusRow])
+async def get_recent_verify_jobs(
+    limit: int = Query(default=30, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await ScrapeJobRepo(db).get_recent_by_job_type("verify", limit=limit)
+    return [VerifyJobStatusRow(**row._mapping) for row in rows]
 
 
 @router.get("/dashboard/status", response_model=list[DashboardStatusRow])

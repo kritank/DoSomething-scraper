@@ -42,3 +42,8 @@ export async function getDlqContents() {
   const { data } = await apiClient.get('/admin/queue/dlq');
   return data;
 }
+
+export async function getRecentVerifyJobs(limit = 30) {
+  const { data } = await apiClient.get('/admin/dashboard/verify-jobs', { params: { limit } });
+  return data;
+}
