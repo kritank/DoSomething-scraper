@@ -1,13 +1,15 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { Users, CheckCircle2, Clock, FileText, MessageSquare, Layers, ListOrdered, RefreshCw } from 'lucide-react';
+import { Users, CheckCircle2, Clock, FileText, MessageSquare, Layers, ListOrdered, RefreshCw, BadgeCheck } from 'lucide-react';
+import { format } from 'date-fns';
 import {
   getDashboardStatus, getDashboardMetrics, getAlerts, getQueueStatus, getDlqContents,
-  getCredentialHealth, getQueueHistory,
+  getCredentialHealth, getQueueHistory, getRecentVerifyJobs,
 } from '../services/dashboardService';
 import { getCategories } from '../services/influencerService';
 import KPICard from '../components/common/KPICard';
 import PlatformIcon from '../components/common/PlatformIcon';
 import PlatformFilter from '../components/common/PlatformFilter';
+import StatusBadge from '../components/common/StatusBadge';
 import { SkeletonKPICard } from '../components/common/Skeleton';
 import ErrorState from '../components/common/ErrorState';
 import Button from '../components/common/Button';
@@ -19,7 +21,7 @@ import StatusTable from '../components/dashboard/StatusTable';
 import DateRangeSelector from '../components/dashboard/DateRangeSelector';
 import AlertsBanner from '../components/dashboard/AlertsBanner';
 import { useAppStore } from '../store/useAppStore';
-import { platformLabel } from '../utils/platform';
+import { platformLabel, formatHandle } from '../utils/platform';
 
 // The backend buckets date ranges as UTC calendar days (see
 // DateRangeSelector.jsx's toUtcIso for the full explanation) -- the
@@ -67,6 +69,7 @@ export default function Overview() {
   const [dlqMessages, setDlqMessages] = useState([]);
   const [credentialHealth, setCredentialHealth] = useState(null);
   const [queueHistory, setQueueHistory] = useState(null);
+  const [verifyJobs, setVerifyJobs] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -98,7 +101,7 @@ export default function Overview() {
     setLoading(true);
     setError(null);
     try {
-      const [statusRows, metricsData, categories, alertRows, queue, dlq, health, queueHist] = await Promise.all([
+      const [statusRows, metricsData, categories, alertRows, queue, dlq, health, queueHist, verifyRows] = await Promise.all([
         getDashboardStatus(reliabilityWindowDays),
         getDashboardMetrics(startDate, endDate),
         getCategories(),
@@ -107,6 +110,7 @@ export default function Overview() {
         getDlqContents(),
         getCredentialHealth(startDate, endDate),
         getQueueHistory(startDate, endDate),
+        getRecentVerifyJobs(),
       ]);
       setStatus(statusRows);
       setMetrics(metricsData);
@@ -116,6 +120,7 @@ export default function Overview() {
       setDlqMessages(dlq);
       setCredentialHealth(health);
       setQueueHistory(queueHist);
+      setVerifyJobs(verifyRows);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -354,6 +359,61 @@ export default function Overview() {
           Scrape queue depth <span className="font-normal text-xs" style={{ color: 'var(--color-text-muted)' }}>hourly, all platforms share one queue</span>
         </h3>
         {loading ? <ChartSkeleton short /> : <QueueDepthChart buckets={queueHistory?.buckets ?? []} />}
+      </div>
+
+      <div className="card p-5 min-w-0">
+        <h3 className="text-sm font-semibold mb-1 flex items-center gap-2" style={{ color: 'var(--color-text-primary)' }}>
+          <BadgeCheck className="w-4 h-4" />
+          Recent verify jobs
+        </h3>
+        <p className="text-xs mb-4" style={{ color: 'var(--color-text-muted)' }}>
+          On-demand is_verified checks, most recent first -- excluded from the "Last Scrape" status
+          table below on purpose (see StatusTable), so this is the only place their outcome is visible
+          without opening each influencer's own job history.
+        </p>
+        {loading ? (
+          <ChartSkeleton short />
+        ) : !verifyJobs || verifyJobs.length === 0 ? (
+          <p className="text-sm text-center py-6" style={{ color: 'var(--color-text-muted)' }}>
+            No verify jobs have run yet.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
+                  {['Status', 'Influencer', 'Platform', 'Started', 'Duration', 'Error'].map((h) => (
+                    <th key={h} className="text-left py-2 px-3 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {verifyJobs.map((j) => (
+                  <tr key={j.job_id} style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
+                    <td className="py-2 px-3"><StatusBadge status={j.status} /></td>
+                    <td className="py-2 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-primary)' }}>
+                      {formatHandle(j.handle, j.platform)}
+                    </td>
+                    <td className="py-2 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
+                      {platformLabel(j.platform)}
+                    </td>
+                    <td className="py-2 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
+                      {format(new Date(j.created_at), 'MMM d, HH:mm')}
+                    </td>
+                    <td className="py-2 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
+                      {j.duration_s != null ? `${j.duration_s.toFixed(1)}s` : '—'}
+                    </td>
+                    <td className="py-2 px-3 text-xs max-w-[260px]" style={{ color: 'var(--color-text-muted)' }} title={j.error_message ?? undefined}>
+                      <div className="truncate">{j.error_message ?? '—'}</div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {loading ? (

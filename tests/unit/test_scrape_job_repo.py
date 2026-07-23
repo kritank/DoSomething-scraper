@@ -217,3 +217,19 @@ async def test_get_daily_metrics_excludes_verify_job_type():
 
     stmt = session.execute.call_args.args[0]
     assert "job_type != 'verify'" in _compiled(stmt)
+
+
+@pytest.mark.asyncio
+async def test_get_recent_by_job_type_filters_and_limits():
+    session = MagicMock()
+    result = MagicMock()
+    result.all = MagicMock(return_value=[])
+    session.execute = AsyncMock(return_value=result)
+    repo = ScrapeJobRepo(session)
+
+    await repo.get_recent_by_job_type("verify", limit=15)
+
+    stmt = session.execute.call_args.args[0]
+    compiled = _compiled(stmt)
+    assert "job_type = 'verify'" in compiled
+    assert "LIMIT 15" in compiled

@@ -107,3 +107,19 @@ class QueueDepthHistoryOut(BaseModel):
     start_date: date
     end_date: date
     buckets: list[QueueDepthBucket]
+
+
+class VerifyJobStatusRow(BaseModel):
+    """One row per recent "verify" job (see app/workers/verify_badge_processor.py),
+    across every influencer/platform -- powers the Overview page's "Recent
+    verify jobs" section, since these jobs are deliberately excluded from
+    the main "Last Scrape" status table (get_latest_per_influencer)."""
+    job_id: UUID
+    influencer_id: UUID
+    handle: str
+    platform: str
+    status: str
+    created_at: datetime
+    finished_at: Optional[datetime] = None
+    duration_s: Optional[float] = None
+    error_message: Optional[str] = None

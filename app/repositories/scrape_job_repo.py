@@ -333,3 +333,32 @@ class ScrapeJobRepo:
         )
         result = await self.session.execute(stmt)
         return result.all()
+
+    async def get_recent_by_job_type(self, job_type: str, limit: int = 30) -> Sequence[Row]:
+        """Most recent N jobs of one job_type, across every influencer --
+        powers the Overview page's "Recent verify jobs" section. Deliberately
+        separate from get_latest_per_influencer (one row per influencer,
+        job_type == "scrape" only): this is a flat recency feed, can show
+        several rows for the same influencer, and is the only place verify-
+        job outcomes are visible outside a single influencer's own job
+        history panel."""
+        stmt = (
+            select(
+                ScrapeJob.id.label("job_id"),
+                ScrapeJob.influencer_id,
+                Influencer.handle,
+                Influencer.platform,
+                ScrapeJob.status,
+                ScrapeJob.created_at,
+                ScrapeJob.finished_at,
+                ScrapeJob.duration_s,
+                ScrapeJob.error_message,
+            )
+            .select_from(ScrapeJob)
+            .join(Influencer, Influencer.id == ScrapeJob.influencer_id)
+            .where(ScrapeJob.job_type == job_type)
+            .order_by(ScrapeJob.created_at.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return result.all()
