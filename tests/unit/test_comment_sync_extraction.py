@@ -8,7 +8,13 @@ import pytest
 
 from app.models.post import Post
 from app.schemas.instagram import InstagramComment
-from app.workers.comment_sync import _UPDATE_COLUMNS, normalize_comment, sync_comments_for_post, sync_replies
+from app.workers.comment_sync import (
+    _UPDATE_COLUMNS,
+    get_latest_comment_synced_at,
+    normalize_comment,
+    sync_comments_for_post,
+    sync_replies,
+)
 
 
 def _comment(**overrides) -> InstagramComment:
@@ -39,6 +45,33 @@ def test_update_columns_refreshes_verified_badge_and_display_name():
     silently going stale on every re-sync after that."""
     assert "is_verified" in _UPDATE_COLUMNS
     assert "full_name" in _UPDATE_COLUMNS
+
+
+# ── get_latest_comment_synced_at (pure query shape) ──────────────────────
+
+@pytest.mark.asyncio
+async def test_get_latest_comment_synced_at_returns_max_created_at():
+    expected = datetime(2026, 7, 23, 11, 20, tzinfo=timezone.utc)
+    session = MagicMock()
+    execute_result = MagicMock()
+    execute_result.scalar_one_or_none = MagicMock(return_value=expected)
+    session.execute = AsyncMock(return_value=execute_result)
+
+    result = await get_latest_comment_synced_at(session)
+
+    assert result == expected
+
+
+@pytest.mark.asyncio
+async def test_get_latest_comment_synced_at_returns_none_when_no_comments_ever():
+    session = MagicMock()
+    execute_result = MagicMock()
+    execute_result.scalar_one_or_none = MagicMock(return_value=None)
+    session.execute = AsyncMock(return_value=execute_result)
+
+    result = await get_latest_comment_synced_at(session)
+
+    assert result is None
 
 
 # ── normalize_comment (pure) ─────────────────────────────────────────────

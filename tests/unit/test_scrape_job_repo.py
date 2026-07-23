@@ -302,3 +302,22 @@ async def test_get_job_type_status_counts_by_platform_filters_and_groups():
     compiled = _compiled(stmt)
     assert "job_type = 'verify'" in compiled
     assert "GROUP BY" in compiled
+
+
+@pytest.mark.asyncio
+async def test_count_completed_since_filters_job_types_platform_and_status():
+    session = MagicMock()
+    result = MagicMock()
+    result.scalar_one = MagicMock(return_value=25)
+    session.execute = AsyncMock(return_value=result)
+    repo = ScrapeJobRepo(session)
+
+    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    count = await repo.count_completed_since(("scrape", "enrich"), "instagram", since)
+
+    assert count == 25
+    stmt = session.execute.call_args.args[0]
+    compiled = _compiled(stmt)
+    assert "job_type IN ('scrape', 'enrich')" in compiled
+    assert "platform = 'instagram'" in compiled
+    assert "status = 'completed'" in compiled

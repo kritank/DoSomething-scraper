@@ -163,6 +163,19 @@ async def _delete_missing_comments(
         await session.execute(delete(Comment).where(Comment.parent_comment_id.in_(removed_ids)))
 
 
+async def get_latest_comment_synced_at(session: AsyncSession) -> Optional[datetime]:
+    """Most recent Comment.created_at across the whole platform -- the one
+    reliable, failure-mode-agnostic signal that comment sync is actually
+    producing data. Confirmed in production: enrich/scrape jobs can
+    report "completed" indefinitely while every single comment/reply sync
+    attempt inside them silently fails (each is caught per-post, not
+    surfaced as a job failure) -- job status, account status, and queue
+    depth all looked completely normal while this had been zero for days.
+    See alerts_service's use of this for the actual alert."""
+    result = await session.execute(select(func.max(Comment.created_at)))
+    return result.scalar_one_or_none()
+
+
 async def last_comment_count(session: AsyncSession, post_id: UUID) -> int | None:
     stmt = (
         select(PostMetricsSnapshot.comments)

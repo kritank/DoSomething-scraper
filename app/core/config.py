@@ -206,6 +206,18 @@ class Settings(BaseSettings):
     ALERT_FAILURE_RATE_WINDOW_HOURS: int = 6
     ALERT_FAILURE_RATE_MIN_JOBS: int = 5
     ALERT_FAILURE_RATE_THRESHOLD: float = 0.5
+    # Comment-sync stall alert -- catches the failure mode the fleet-wide
+    # rate alert above structurally cannot: enrich/scrape jobs report
+    # "completed" indefinitely while every comment/reply sync attempt
+    # inside them silently fails (each caught per-post, never surfaced as
+    # a job failure). Confirmed in production this went undetected for
+    # days -- job status, account health, and queue depth all looked
+    # normal throughout. MIN_JOBS is the "proof jobs are actually
+    # running" guard, same role as ALERT_FAILURE_RATE_MIN_JOBS -- without
+    # it, a genuinely idle platform (nothing due, or paused) would
+    # falsely alarm just for having no new comments.
+    ALERT_COMMENT_SYNC_STALE_HOURS: int = 6
+    ALERT_COMMENT_SYNC_MIN_JOBS: int = 10
 
     # ── Scheduler ─────────────────────────────────────────────────────────────
     SCHEDULER_TIMEZONE: str = "UTC"

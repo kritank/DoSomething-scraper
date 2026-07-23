@@ -410,3 +410,24 @@ class ScrapeJobRepo:
         )
         result = await self.session.execute(stmt)
         return result.all()
+
+    async def count_completed_since(self, job_types: Sequence[str], platform: str, since: datetime) -> int:
+        """How many completed jobs of these types ran for this platform
+        since `since` -- the "proof of activity" half of the comment-sync
+        stall alert (see alerts_service): a lack of new comments only
+        means something's actually wrong if jobs were running the whole
+        time. Without this, a genuinely idle platform (no due scrapes,
+        or paused) would falsely alarm."""
+        stmt = (
+            select(func.count())
+            .select_from(ScrapeJob)
+            .join(Influencer, Influencer.id == ScrapeJob.influencer_id)
+            .where(
+                ScrapeJob.job_type.in_(job_types),
+                Influencer.platform == platform,
+                ScrapeJob.status == "completed",
+                ScrapeJob.created_at >= since,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
