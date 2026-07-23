@@ -85,6 +85,27 @@ async def test_401_raises_blocked_error_without_retry(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_too_many_redirects_raises_blocked_error_without_retry(monkeypatch):
+    """Confirmed live in production: TooManyRedirects means the account's
+    cookie session can no longer load this page at all (Instagram
+    redirects it to itself indefinitely, sending Set-Cookie:
+    sessionid=deleted) -- not a transient network blip. Must raise
+    immediately, same as a genuine checkpoint, not burn 3 retries against
+    a deterministic failure."""
+    from curl_cffi.requests.exceptions import TooManyRedirects
+
+    client = _make_client()
+    mock_get = AsyncMock(side_effect=TooManyRedirects("Maximum (30) redirects followed"))
+    monkeypatch.setattr(client._curl, "get", mock_get)
+
+    with pytest.raises(ScraperBlockedError):
+        await client._get("https://i.instagram.com/api/v1/some_endpoint", handle="testuser")
+
+    assert mock_get.call_count == 1  # never retried
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_401_with_please_wait_body_retries_instead_of_blocking(monkeypatch):
     """Confirmed live in production: Instagram returns HTTP 401 with
     {"message": "Please wait a few minutes before you try again.",
@@ -312,6 +333,25 @@ async def test_graphql_post_exhausts_retries_when_csrf_token_fetch_always_raises
 
     with pytest.raises(ScraperTimeoutError):
         await client._graphql_post("SomeQuery", "12345", {}, referer="https://instagram.com/p/x/")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_graphql_post_too_many_redirects_raises_blocked_error_without_retry(monkeypatch):
+    """Same distinction as _get's equivalent test -- TooManyRedirects from
+    the CSRF token fetch means the session can't authenticate for the
+    full-page surface at all, so it must raise immediately rather than
+    retrying a deterministic failure 3 times first."""
+    from curl_cffi.requests.exceptions import TooManyRedirects
+
+    client = _make_client()
+    mock_ensure = AsyncMock(side_effect=TooManyRedirects("Maximum (30) redirects followed"))
+    monkeypatch.setattr(client, "_ensure_csrf_tokens", mock_ensure)
+
+    with pytest.raises(ScraperBlockedError):
+        await client._graphql_post("SomeQuery", "12345", {}, referer="https://instagram.com/p/x/")
+
+    assert mock_ensure.call_count == 1  # never retried
     await client.close()
 
 

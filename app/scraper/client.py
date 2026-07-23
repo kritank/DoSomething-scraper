@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from curl_cffi.requests import AsyncSession as CurlAsyncSession
+from curl_cffi.requests.exceptions import TooManyRedirects
 
 from app.core.config import settings
 from app.core.exceptions import (
@@ -206,6 +207,25 @@ class InstagramClient:
                     cookies=self.cookies,
                     timeout=15.0,
                 )
+            except TooManyRedirects:
+                # Confirmed live in production: this specific exception --
+                # not a generic network blip -- means the account's cookie
+                # session can no longer load a full Instagram HTML page at
+                # all (Instagram redirects it to itself indefinitely,
+                # sending Set-Cookie: sessionid=deleted). Reproduced
+                # identically across every pooled account; retrying with
+                # backoff never once cleared it, since it isn't transient.
+                # Raise this as an immediate hard block instead of folding
+                # it into the generic retry path below -- 3 retries against
+                # a deterministic failure only wastes rate-limit budget and
+                # delays the account showing up in the dashboard's "needs
+                # manual resolution" list / the critical alert for it.
+                logger.error(
+                    "CSRF token fetch hit an infinite redirect -- session likely can't "
+                    "load full Instagram pages anymore, needs fresh cookies",
+                    handle=handle,
+                )
+                raise ScraperBlockedError(handle=handle)
             except Exception:
                 # curl_cffi has no implicit timeout -- without catching this,
                 # a network blip (DNS hiccup, connection stall) hangs the
@@ -324,6 +344,16 @@ class InstagramClient:
                     cookies=self.cookies,
                     timeout=15.0,
                 )
+            except TooManyRedirects:
+                # Same session-can't-load-a-full-page signal as
+                # _graphql_post's identical catch -- an immediate hard
+                # block, not a retryable blip. See that docstring.
+                logger.error(
+                    "Request hit an infinite redirect -- session likely can't "
+                    "load this page anymore, needs fresh cookies",
+                    handle=handle, url=url,
+                )
+                raise ScraperBlockedError(handle=handle)
             except Exception:
                 # curl_cffi surfaces timeouts/network blips as generic errors
                 # and has no implicit timeout guard -- treat like a retryable

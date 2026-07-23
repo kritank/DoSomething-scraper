@@ -12,6 +12,7 @@ from app.repositories.instagram_api_token_repo import InstagramApiTokenRepo
 from app.repositories.scrape_job_repo import ScrapeJobRepo
 from app.repositories.youtube_api_key_repo import YouTubeApiKeyRepo
 from app.schemas.alert import AlertOut
+from app.workers.comment_sync import get_latest_comment_synced_at
 
 _TOKEN_EXPIRY_ALERT_DAYS = 3
 
@@ -125,5 +126,30 @@ async def get_alerts(session: AsyncSession) -> list[AlertOut]:
             severity="warning",
             message=f"{stale_running} job(s) stuck running with no heartbeat -- likely a crashed worker",
         ))
+
+    # Comment-sync stall: catches the one failure mode the fleet-wide
+    # failure-rate check above structurally can't -- enrich/scrape jobs
+    # reporting "completed" indefinitely while every comment/reply sync
+    # attempt inside them silently fails (each caught per-post, never
+    # surfaced as a job failure or reflected in account/queue health).
+    # Confirmed in production this went undetected for days. Only fires
+    # once there's proof jobs are actually running -- otherwise a
+    # genuinely idle platform would falsely alarm for having no new
+    # comments.
+    comment_sync_since = datetime.now(timezone.utc) - timedelta(hours=settings.ALERT_COMMENT_SYNC_STALE_HOURS)
+    instagram_jobs_ran = await job_repo.count_completed_since(
+        ("scrape", "enrich"), "instagram", comment_sync_since
+    )
+    if instagram_jobs_ran >= settings.ALERT_COMMENT_SYNC_MIN_JOBS:
+        latest_comment_at = await get_latest_comment_synced_at(session)
+        if latest_comment_at is None or latest_comment_at < comment_sync_since:
+            alerts.append(AlertOut(
+                severity="critical",
+                message=(
+                    f"No Instagram comments synced in over {settings.ALERT_COMMENT_SYNC_STALE_HOURS}h "
+                    f"despite {instagram_jobs_ran} completed scrape/enrich job(s) -- comment sync is "
+                    "likely broken (check for an expired Instagram session on the Accounts page)"
+                ),
+            ))
 
     return alerts
