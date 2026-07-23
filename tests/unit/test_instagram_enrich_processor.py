@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 from app.core.config import settings
+from app.core.exceptions import ScraperBlockedError, ScraperRateLimitError
 from app.models.post import Post
 from app.queue.base import ScrapeJobMessage
 from app.schemas.instagram import InstagramMediaItem
@@ -268,6 +269,54 @@ async def test_run_enrich_syncs_comments_for_matched_posts(monkeypatch):
     await processor._run_enrich(session, job)
 
     assert job.comments_processed == 5
+    assert job.posts_processed == 1
+
+
+@pytest.mark.asyncio
+async def test_run_enrich_propagates_scraper_blocked_error(monkeypatch):
+    """Regression: a dead cookie session made every single comment sync in
+    a run fail with ScraperBlockedError, but _sync_one's blanket except
+    Exception swallowed it as a per-post warning -- the job still reported
+    status=completed and the account was never marked at fault, so a
+    provably dead session kept getting leased for every future job.
+    ScraperBlockedError/ScraperRateLimitError must propagate out of
+    _run_enrich so process()'s except blocks can fail the job and flag
+    the account."""
+    processor = _processor()
+    influencer_id = processor.message.influencer_id
+    influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None, max_comments_per_post=None)
+    job = SimpleNamespace(id=uuid4(), comments_processed=0, posts_processed=0)
+
+    existing_post = Post(id=uuid4(), shortcode="ABC123", media_pk="1")
+    item = _media_item(code="ABC123")
+
+    processor.client = MagicMock()
+    processor.client.get_user_feed = AsyncMock(return_value={"items": []})
+
+    monkeypatch.setattr(
+        "app.workers.instagram_enrich_processor.InstagramParser.parse_feed",
+        MagicMock(return_value=([item], "")),
+    )
+    monkeypatch.setattr(
+        "app.workers.instagram_enrich_processor.sync_comments_for_post",
+        AsyncMock(side_effect=ScraperBlockedError(handle="myntra")),
+    )
+    monkeypatch.setattr("app.workers.instagram_enrich_processor.update_engagement_timing_features", AsyncMock())
+
+    session = MagicMock()
+    session.get = AsyncMock(return_value=influencer)
+    session.commit = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[existing_post])))
+    session.execute = AsyncMock(return_value=execute_result)
+
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=session)
+    session_cm.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr("app.workers.instagram_enrich_processor.get_session", MagicMock(return_value=session_cm))
+
+    with pytest.raises(ScraperBlockedError):
+        await processor._run_enrich(session, job)
 
 
 @pytest.mark.asyncio

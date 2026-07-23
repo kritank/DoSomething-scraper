@@ -584,6 +584,14 @@ class JobProcessor:
                         )
                         await update_engagement_timing_features(post_session, post)
                         return count
+                except (ScraperBlockedError, ScraperRateLimitError):
+                    # A session-level failure, not a per-post one -- must
+                    # propagate. See instagram_enrich_processor._sync_one's
+                    # identical fix for the production failure mode this
+                    # closes: every post failing "blocked" while the job
+                    # still reported completed and the account stayed
+                    # healthy.
+                    raise
                 except Exception as e:
                     logger.warning("Comment sync failed", shortcode=post.shortcode, error=str(e))
                     return 0
