@@ -80,3 +80,47 @@ class DispatchService:
         await queue.enqueue(message)
 
         return job.id
+
+    async def dispatch_verify_all(self, platform: str) -> tuple[int, int]:
+        """Bulk "refresh all verified badges" for a platform -- the
+        per-influencer button's fan-out, done server-side rather than as a
+        client-side loop, so a page refresh/navigation mid-run can't leave
+        it half-done. Skips any influencer with a job already in flight,
+        same "don't pile on a duplicate" convention
+        app.scheduler.runner.run_daily_scrapes uses. Returns
+        (queued_count, skipped_count)."""
+        influencers = [
+            i for i in await self.influencer_repo.get_all()
+            if i.is_active and i.platform == platform
+        ]
+        queued = 0
+        skipped = 0
+        for influencer in influencers:
+            if await self.job_repo.has_active_job(influencer.id):
+                skipped += 1
+                continue
+            await self.dispatch_verify_job(influencer.id)
+            queued += 1
+        return queued, skipped
+
+    async def dispatch_verify_job(self, influencer_id: UUID) -> UUID:
+        """On-demand is_verified refresh -- admin-triggered "refresh
+        verified badge" button, either platform. See
+        app/workers/verify_badge_processor.py for why neither platform's
+        regular scrape can (re)learn this on its own."""
+        influencer = await self.influencer_repo.get_by_id(influencer_id)
+
+        job = await self.job_repo.create(influencer.id, job_type="verify")
+
+        queue = get_queue()
+        message = ScrapeJobMessage(
+            job_id=job.id,
+            influencer_id=influencer.id,
+            handle=influencer.handle,
+            platform=influencer.platform,
+            job_type="verify",
+            backend="cookies",
+        )
+        await queue.enqueue(message)
+
+        return job.id

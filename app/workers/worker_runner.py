@@ -13,6 +13,7 @@ from app.workers.account_revalidator import revalidate_checkpoint_accounts
 from app.workers.instagram_enrich_processor import InstagramEnrichProcessor
 from app.workers.instagram_graph_job_processor import InstagramGraphJobProcessor
 from app.workers.job_processor import JobProcessor
+from app.workers.verify_badge_processor import VerifyBadgeProcessor
 from app.workers.youtube_job_processor import YouTubeJobProcessor
 
 
@@ -76,7 +77,9 @@ def handle_sigterm(*args):
 async def _run_one(receipt: str, msg, queue) -> None:
     logger.info("Processing job", job_id=msg.job_id, platform=msg.platform, job_type=msg.job_type, backend=msg.backend)
     try:
-        if msg.job_type == "enrich":
+        if msg.job_type == "verify":
+            processor = VerifyBadgeProcessor(msg)
+        elif msg.job_type == "enrich":
             processor = InstagramEnrichProcessor(msg)
         elif msg.platform == "youtube":
             processor = YouTubeJobProcessor(msg)

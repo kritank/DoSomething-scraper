@@ -304,6 +304,24 @@ class YouTubeResourceGoneError(ScraperError):
         )
 
 
+class YouTubeChannelPageError(ScraperError):
+    """The public (unauthenticated) youtube.com channel page couldn't be
+    fetched or didn't parse as expected -- the only source for the
+    verification checkmark, since the Data API doesn't expose it at all
+    (see docs/YOUTUBE_SCRAPER_DESIGN.md). Distinct from
+    YouTubeResourceGoneError: this is about the *page scrape itself*
+    failing (non-200, layout change, no ytInitialData), not the API
+    reporting a specific resource as gone."""
+    code = "YOUTUBE_CHANNEL_PAGE_ERROR"
+
+    def __init__(self, reason: str, target: str = "") -> None:
+        super().__init__(
+            f"Couldn't read the YouTube channel page{f' for {target}' if target else ''}: {reason}",
+            reason=reason,
+            target=target,
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Export
 # ─────────────────────────────────────────────────────────────────────────────

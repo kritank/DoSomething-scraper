@@ -1,5 +1,5 @@
 from datetime import date, timedelta
-from typing import Sequence
+from typing import Literal, Sequence
 from uuid import UUID
 
 import os
@@ -271,6 +271,20 @@ async def trigger_scrape(influencer_id: UUID, db: AsyncSession = Depends(get_db)
     service = DispatchService(db)
     job_id = await service.dispatch_scrape_job(influencer_id)
     return {"status": "queued", "job_id": str(job_id)}
+
+
+@router.post("/influencers/{influencer_id}/verify")
+async def trigger_verify(influencer_id: UUID, db: AsyncSession = Depends(get_db)):
+    job_id = await DispatchService(db).dispatch_verify_job(influencer_id)
+    return {"status": "queued", "job_id": str(job_id)}
+
+
+@router.post("/influencers/verify-all")
+async def trigger_verify_all(
+    platform: Literal["instagram", "youtube"], db: AsyncSession = Depends(get_db)
+):
+    queued, skipped = await DispatchService(db).dispatch_verify_all(platform)
+    return {"queued": queued, "skipped": skipped}
 
 
 @router.get("/jobs", response_model=list[ScrapeJobOut])

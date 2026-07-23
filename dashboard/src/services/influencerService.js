@@ -29,6 +29,18 @@ export async function triggerScrape(influencerId) {
   return data;
 }
 
+export async function refreshVerified(influencerId) {
+  const { data } = await apiClient.post(`/admin/influencers/${influencerId}/verify`);
+  return data;
+}
+
+export async function refreshVerifiedAll(platform) {
+  const { data } = await apiClient.post('/admin/influencers/verify-all', null, {
+    params: { platform },
+  });
+  return data;
+}
+
 export async function updateCategory(categoryId, payload) {
   const { data } = await apiClient.patch(`/admin/categories/${categoryId}`, payload);
   return data;
