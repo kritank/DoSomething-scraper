@@ -203,10 +203,18 @@ class ScrapeJobRepo:
         Influencers with zero jobs simply don't appear here; the caller
         merges this against the full influencer list separately so "never
         scraped" stays representable.
+
+        job_type == "scrape" only -- this powers the "Last Scrape" column
+        on Overview/Influencers (DashboardService.get_status_rows). Without
+        this filter, an "enrich" or "verify" job (near-instant, 0 posts/
+        comments processed by design) becomes the "latest job" the moment
+        it runs, silently overwriting the real last scrape's status/
+        duration/counts with unrelated, confusing numbers.
         """
         stmt = (
             select(ScrapeJob)
             .options(*_WITH_SCRAPER_ACCOUNT)
+            .where(ScrapeJob.job_type == "scrape")
             .distinct(ScrapeJob.influencer_id)
             .order_by(ScrapeJob.influencer_id, ScrapeJob.created_at.desc())
         )
@@ -225,6 +233,11 @@ class ScrapeJobRepo:
         zero jobs (in the window) simply don't appear in the returned dict;
         the caller (DashboardService) defaults them to zero/None, same
         convention as get_latest_per_influencer.
+
+        job_type == "scrape" only, same reasoning as get_latest_per_influencer
+        -- an "enrich"/"verify" job's near-instant completions would
+        otherwise inflate run counts and dilute the real scrape success
+        rate/streak with runs that were never a scrape attempt.
         """
         counts_stmt = (
             select(
@@ -233,10 +246,12 @@ class ScrapeJobRepo:
                 func.sum(case((ScrapeJob.status == "completed", 1), else_=0)).label("completed_job_runs"),
                 func.sum(case((ScrapeJob.status == "failed", 1), else_=0)).label("failed_job_runs"),
             )
+            .where(ScrapeJob.job_type == "scrape")
             .group_by(ScrapeJob.influencer_id)
         )
         streak_stmt = (
             select(ScrapeJob.influencer_id, ScrapeJob.status)
+            .where(ScrapeJob.job_type == "scrape")
             .where(ScrapeJob.status.in_(_TERMINAL_JOB_STATUSES))
             .order_by(ScrapeJob.influencer_id, ScrapeJob.created_at.desc())
         )
@@ -274,6 +289,13 @@ class ScrapeJobRepo:
         # end_date is inclusive -- bump to the start of the next day so a
         # single-day range (start_date == end_date) still captures that
         # whole day's jobs rather than matching zero rows.
+        #
+        # Excludes job_type == "verify" -- an on-demand is_verified check
+        # (near-instant, always 0 posts/comments by design) would otherwise
+        # drag down avg_duration_s and inflate "completed" job counts on
+        # whatever day it ran, with nothing real to show for it. "enrich"
+        # stays included: unlike verify, it contributes genuine
+        # comments_processed the API scrape alone wouldn't have synced.
         range_start = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=timezone.utc)
         range_end = datetime.combine(end_date, datetime.min.time()).replace(tzinfo=timezone.utc) + timedelta(days=1)
         day = func.date_trunc("day", ScrapeJob.created_at).label("day")
@@ -303,6 +325,7 @@ class ScrapeJobRepo:
             )
             .select_from(ScrapeJob)
             .join(Influencer, Influencer.id == ScrapeJob.influencer_id)
+            .where(ScrapeJob.job_type != "verify")
             .where(ScrapeJob.created_at >= range_start)
             .where(ScrapeJob.created_at < range_end)
             .group_by(day, ScrapeJob.status, Influencer.platform)
