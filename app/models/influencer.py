@@ -56,6 +56,7 @@ class Influencer(Base):
         UUID(as_uuid=True),
         ForeignKey("categories.id", ondelete="RESTRICT"),
         nullable=False,
+        index=True,
     )
     # "business" | "individual" -- freeform enough that a bad value doesn't
     # break reads (no DB CHECK constraint, same convention as `platform`),
@@ -63,7 +64,7 @@ class Influencer(Base):
     # InfluencerDetailsUpdate). Defaults to "individual"; set explicitly at
     # creation or edited after the fact via update_details, same as category.
     account_type: Mapped[str] = mapped_column(String(16), nullable=False, server_default="individual")
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true", index=True)
     # True only when this row's is_active=false was set by a category-level
     # deactivate (CategoryRepo.update), never by a direct per-influencer
     # toggle -- lets reactivating the category resume exactly the

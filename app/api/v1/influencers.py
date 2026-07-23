@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.simple_cache import get_or_set
 from app.repositories.influencer_repo import InfluencerRepo
 
 
@@ -42,6 +43,7 @@ router = APIRouter(prefix="/influencers", tags=["Influencers"])
 
 @router.get("/top", response_model=list[TopInfluencerOut])
 async def get_top_influencers(
+    response: Response,
     limit: int = Query(20, ge=1, le=100),
     category: Optional[str] = Query(None, description="Filter by category name"),
     platform: Optional[str] = Query(None, description="Filter by platform (instagram, youtube)"),
@@ -52,9 +54,26 @@ async def get_top_influencers(
     `sort`), for the marketing site's "Top Influencers" page. No auth
     required — same trust level as /benchmarks and /recommendations. A
     creator linked across multiple platforms occupies a single combined row
-    (see InfluencerRepo.get_top_ranked) rather than one row per platform."""
-    entries = await InfluencerRepo(db).get_top_ranked(
-        limit=limit, category_name=category, platform=platform, sort=sort
+    (see InfluencerRepo.get_top_ranked) rather than one row per platform.
+
+    get_top_ranked has no SQL-level LIMIT -- it has to pull every active
+    influencer's latest snapshot plus a 12-post engagement aggregate before
+    merging multi-platform creators and ranking, since a creator's combined
+    rank can beat either individual account's rank alone (see that method's
+    docstring). That's expensive and only changes when a scrape job lands,
+    not per-request, so it's cached here for a short TTL rather than
+    rewritten -- cuts DB load without touching the merge/ranking logic's
+    correctness. Cache-Control also lets Cloudflare serve repeat requests
+    from the edge without reaching this process at all.
+    """
+    response.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=300"
+    cache_key = f"top_influencers:{limit}:{category}:{platform}:{sort}"
+    entries = await get_or_set(
+        cache_key,
+        ttl_seconds=60,
+        compute=lambda: InfluencerRepo(db).get_top_ranked(
+            limit=limit, category_name=category, platform=platform, sort=sort
+        ),
     )
     return [
         TopInfluencerOut(
