@@ -165,27 +165,40 @@ class InstagramClient:
         last_retry_after: int | None = None
         for attempt in range(settings.SCRAPER_MAX_RETRIES + 1):
             await self._rate_limiter.acquire()
-            fb_dtsg, lsd = await self._ensure_csrf_tokens()
-            body = {
-                "fb_dtsg": fb_dtsg,
-                "lsd": lsd,
-                "jazoest": "2" + str(sum(ord(c) for c in fb_dtsg)),
-                "fb_api_caller_class": "RelayModern",
-                "fb_api_req_friendly_name": friendly_name,
-                "doc_id": doc_id,
-                "variables": json.dumps(variables),
-            }
-            headers = {
-                "x-ig-app-id": _IG_APP_ID,
-                "x-csrftoken": self.cookies.get("csrftoken", ""),
-                "x-fb-lsd": lsd,
-                "x-fb-friendly-name": friendly_name,
-                "x-asbd-id": _ASBD_ID,
-                "referer": referer,
-                "content-type": "application/x-www-form-urlencoded",
-                "user-agent": self.headers["User-Agent"],
-            }
             try:
+                # Confirmed live in production: _ensure_csrf_tokens's plain
+                # page-load GET had no exception handling at all, unlike
+                # every other request in this client. When that request
+                # hit an infinite self-redirect (Instagram serving a
+                # logged-out/consent interstitial that only a real
+                # browser's JS can break out of -- observed identically
+                # across all 3 pooled accounts), the raw, untyped
+                # TooManyRedirects propagated straight out of this whole
+                # method, skipping the retry loop below entirely and
+                # failing every single comment/reply sync attempt outright
+                # with zero backoff. Folded into the same try/except as
+                # the POST below so a token-fetch failure gets the
+                # identical retry/backoff treatment as a network blip.
+                fb_dtsg, lsd = await self._ensure_csrf_tokens()
+                body = {
+                    "fb_dtsg": fb_dtsg,
+                    "lsd": lsd,
+                    "jazoest": "2" + str(sum(ord(c) for c in fb_dtsg)),
+                    "fb_api_caller_class": "RelayModern",
+                    "fb_api_req_friendly_name": friendly_name,
+                    "doc_id": doc_id,
+                    "variables": json.dumps(variables),
+                }
+                headers = {
+                    "x-ig-app-id": _IG_APP_ID,
+                    "x-csrftoken": self.cookies.get("csrftoken", ""),
+                    "x-fb-lsd": lsd,
+                    "x-fb-friendly-name": friendly_name,
+                    "x-asbd-id": _ASBD_ID,
+                    "referer": referer,
+                    "content-type": "application/x-www-form-urlencoded",
+                    "user-agent": self.headers["User-Agent"],
+                }
                 response = await self._curl.post(
                     "https://www.instagram.com/api/graphql",
                     data=body,
@@ -200,6 +213,13 @@ class InstagramClient:
                 # not just the 15s below. Give it the same retry/backoff as
                 # a 429 rather than bailing out of the post immediately.
                 if attempt < settings.SCRAPER_MAX_RETRIES:
+                    # A redirect-looping token fetch won't clear on its own
+                    # within one attempt's normal backoff -- force a fresh
+                    # token fetch (force=True) next attempt too, in case the
+                    # loop was caused by stale/poisoned fb_dtsg/lsd rather
+                    # than a transient network blip.
+                    self._fb_dtsg = None
+                    self._lsd = None
                     wait_s = min(_BACKOFF_BASE_S * (2 ** attempt), _BACKOFF_MAX_S)
                     wait_s += random.uniform(0, wait_s * 0.2)
                     await asyncio.sleep(wait_s)
