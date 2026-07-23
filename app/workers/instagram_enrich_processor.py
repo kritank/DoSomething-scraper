@@ -434,6 +434,18 @@ class InstagramEnrichProcessor:
                         )
                         await update_engagement_timing_features(post_session, post)
                         return count
+                except (ScraperBlockedError, ScraperRateLimitError):
+                    # A session-level failure, not a per-post one -- must
+                    # propagate instead of being absorbed here. Confirmed
+                    # live: swallowing this let every post in a job fail
+                    # with "blocked" while the job still reported
+                    # status=completed and the account stayed "active",
+                    # so a dead session kept getting leased for every
+                    # future enrich job instead of being caught by the
+                    # process()-level except ScraperBlockedError/
+                    # ScraperRateLimitError blocks that mark the account
+                    # at fault.
+                    raise
                 except Exception as e:
                     logger.warning("Enrich comment sync failed", shortcode=post.shortcode, error=str(e))
                     return 0
@@ -447,6 +459,7 @@ class InstagramEnrichProcessor:
             reverse=True,
         )
         posts_to_sync = ranked_candidates[: settings.MAX_POSTS_PER_SCRAPE]
+        job.posts_processed = len(posts_to_sync)
         comment_counts = await asyncio.gather(*(_sync_one(post) for post in posts_to_sync))
         job.comments_processed = sum(comment_counts)
         await session.commit()
