@@ -123,3 +123,17 @@ class VerifyJobStatusRow(BaseModel):
     finished_at: Optional[datetime] = None
     duration_s: Optional[float] = None
     error_message: Optional[str] = None
+
+
+class VerifyJobPlatformSummary(BaseModel):
+    """Lifetime verify-job status counts for one platform -- the "one place,
+    platform-level status" view above the recent-jobs feed, so a burst from
+    "refresh all badges" (one job per influencer, easily 70+ at once) has
+    an at-a-glance overall outcome instead of only a scrollable row list."""
+    platform: str
+    queued: int = 0
+    running: int = 0
+    retry_pending: int = 0
+    completed: int = 0
+    failed: int = 0
+    cancelled: int = 0

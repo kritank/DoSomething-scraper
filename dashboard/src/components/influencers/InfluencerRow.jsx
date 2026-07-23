@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { PlayCircle, Power, PowerOff, Trash2, History, ChevronUp, Pencil, Check, X, AlertTriangle, BadgeCheck } from 'lucide-react';
+import { PlayCircle, Power, PowerOff, Trash2, History, ChevronUp, Pencil, Check, X, AlertTriangle, BadgeCheck, Sparkles } from 'lucide-react';
 import { format } from 'date-fns';
 import StatusBadge from '../common/StatusBadge';
 import PlatformBadge from '../common/PlatformBadge';
@@ -20,7 +20,7 @@ export default function InfluencerRow({
   row, categories, creators, isEditing, draft, setDraft, savingEdit,
   onStartEdit, onCancelEdit, onSave, isInFlight, triggeringThis,
   historyOpen, onToggleHistory, onScrapeNow, onToggleActive, onDelete,
-  onRefreshVerified, verifyingThis,
+  onRefreshVerified, verifyingThis, onForceEnrich, enrichingThis,
 }) {
   return (
     <div className="py-2.5">
@@ -182,6 +182,17 @@ export default function InfluencerRow({
             >
               <BadgeCheck className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
             </Button>
+            {row.platform === 'instagram' && (
+              <Button
+                variant="ghost"
+                size="sm"
+                title="Force-run enrich now (cookie comment/reply sync + view counts for this influencer's existing posts)"
+                onClick={onForceEnrich}
+                loading={enrichingThis}
+              >
+                <Sparkles className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"

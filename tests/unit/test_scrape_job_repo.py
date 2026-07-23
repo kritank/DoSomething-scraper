@@ -233,3 +233,19 @@ async def test_get_recent_by_job_type_filters_and_limits():
     compiled = _compiled(stmt)
     assert "job_type = 'verify'" in compiled
     assert "LIMIT 15" in compiled
+
+
+@pytest.mark.asyncio
+async def test_get_job_type_status_counts_by_platform_filters_and_groups():
+    session = MagicMock()
+    result = MagicMock()
+    result.all = MagicMock(return_value=[])
+    session.execute = AsyncMock(return_value=result)
+    repo = ScrapeJobRepo(session)
+
+    await repo.get_job_type_status_counts_by_platform("verify")
+
+    stmt = session.execute.call_args.args[0]
+    compiled = _compiled(stmt)
+    assert "job_type = 'verify'" in compiled
+    assert "GROUP BY" in compiled

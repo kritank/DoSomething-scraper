@@ -362,3 +362,25 @@ class ScrapeJobRepo:
         )
         result = await self.session.execute(stmt)
         return result.all()
+
+    async def get_job_type_status_counts_by_platform(self, job_type: str) -> Sequence[Row]:
+        """Lifetime (platform, status) -> count for one job_type -- powers
+        the Overview page's per-platform verify-job summary. A flat recent-
+        N feed (get_recent_by_job_type) can under-represent whichever
+        platform has fewer jobs if the other platform dominates the most
+        recent N rows; this aggregates the whole history per platform
+        instead, same "since=None is lifetime" convention as
+        get_job_stats_by_influencer."""
+        stmt = (
+            select(
+                Influencer.platform,
+                ScrapeJob.status,
+                func.count().label("job_count"),
+            )
+            .select_from(ScrapeJob)
+            .join(Influencer, Influencer.id == ScrapeJob.influencer_id)
+            .where(ScrapeJob.job_type == job_type)
+            .group_by(Influencer.platform, ScrapeJob.status)
+        )
+        result = await self.session.execute(stmt)
+        return result.all()

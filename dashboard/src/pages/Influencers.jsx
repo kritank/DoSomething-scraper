@@ -9,6 +9,7 @@ import {
   triggerScrape,
   refreshVerified,
   refreshVerifiedAll,
+  triggerEnrich,
   updateCategory,
   deleteCategory,
   updateInfluencerActive,
@@ -43,6 +44,7 @@ export default function Influencers() {
   const [loading, setLoading] = useState(true);
   const [triggering, setTriggering] = useState(() => new Set());
   const [verifying, setVerifying] = useState(() => new Set());
+  const [enriching, setEnriching] = useState(() => new Set());
   const [verifyingAllPlatform, setVerifyingAllPlatform] = useState(() => new Set());
   const [expandedHistory, setExpandedHistory] = useState(() => new Set());
   // Presence in these sets means expanded -- both default empty so every
@@ -182,6 +184,22 @@ export default function Influencers() {
       // apiClient's interceptor already toasts the error detail.
     } finally {
       setVerifying((prev) => {
+        const next = new Set(prev);
+        next.delete(row.influencer_id);
+        return next;
+      });
+    }
+  };
+
+  const handleForceEnrich = async (row) => {
+    setEnriching((prev) => new Set(prev).add(row.influencer_id));
+    try {
+      await triggerEnrich(row.influencer_id);
+      toast.success(`Enrich queued for ${formatHandle(row.handle, row.platform)}`);
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    } finally {
+      setEnriching((prev) => {
         const next = new Set(prev);
         next.delete(row.influencer_id);
         return next;
@@ -658,6 +676,8 @@ export default function Influencers() {
                                 onScrapeNow={() => handleScrapeNow(row)}
                                 onRefreshVerified={() => handleRefreshVerified(row)}
                                 verifyingThis={verifying.has(row.influencer_id)}
+                                onForceEnrich={() => handleForceEnrich(row)}
+                                enrichingThis={enriching.has(row.influencer_id)}
                                 onToggleActive={() => handleToggleInfluencerActive(row)}
                                 onDelete={() => handleDeleteInfluencer(row)}
                               />
@@ -685,6 +705,8 @@ export default function Influencers() {
                           onScrapeNow={() => handleScrapeNow(group.rows[0])}
                           onRefreshVerified={() => handleRefreshVerified(group.rows[0])}
                           verifyingThis={verifying.has(group.rows[0].influencer_id)}
+                          onForceEnrich={() => handleForceEnrich(group.rows[0])}
+                          enrichingThis={enriching.has(group.rows[0].influencer_id)}
                           onToggleActive={() => handleToggleInfluencerActive(group.rows[0])}
                           onDelete={() => handleDeleteInfluencer(group.rows[0])}
                         />

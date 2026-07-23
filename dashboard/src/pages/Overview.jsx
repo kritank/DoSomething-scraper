@@ -3,7 +3,7 @@ import { Users, CheckCircle2, Clock, FileText, MessageSquare, Layers, ListOrdere
 import { format } from 'date-fns';
 import {
   getDashboardStatus, getDashboardMetrics, getAlerts, getQueueStatus, getDlqContents,
-  getCredentialHealth, getQueueHistory, getRecentVerifyJobs,
+  getCredentialHealth, getQueueHistory, getRecentVerifyJobs, getVerifyJobsSummary,
 } from '../services/dashboardService';
 import { getCategories } from '../services/influencerService';
 import KPICard from '../components/common/KPICard';
@@ -70,6 +70,7 @@ export default function Overview() {
   const [credentialHealth, setCredentialHealth] = useState(null);
   const [queueHistory, setQueueHistory] = useState(null);
   const [verifyJobs, setVerifyJobs] = useState(null);
+  const [verifyJobsSummary, setVerifyJobsSummary] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -101,7 +102,7 @@ export default function Overview() {
     setLoading(true);
     setError(null);
     try {
-      const [statusRows, metricsData, categories, alertRows, queue, dlq, health, queueHist, verifyRows] = await Promise.all([
+      const [statusRows, metricsData, categories, alertRows, queue, dlq, health, queueHist, verifyRows, verifySummary] = await Promise.all([
         getDashboardStatus(reliabilityWindowDays),
         getDashboardMetrics(startDate, endDate),
         getCategories(),
@@ -111,6 +112,7 @@ export default function Overview() {
         getCredentialHealth(startDate, endDate),
         getQueueHistory(startDate, endDate),
         getRecentVerifyJobs(),
+        getVerifyJobsSummary(),
       ]);
       setStatus(statusRows);
       setMetrics(metricsData);
@@ -121,6 +123,7 @@ export default function Overview() {
       setCredentialHealth(health);
       setQueueHistory(queueHist);
       setVerifyJobs(verifyRows);
+      setVerifyJobsSummary(verifySummary);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -366,11 +369,35 @@ export default function Overview() {
           <BadgeCheck className="w-4 h-4" />
           Recent verify jobs
         </h3>
-        <p className="text-xs mb-4" style={{ color: 'var(--color-text-muted)' }}>
+        <p className="text-xs mb-3" style={{ color: 'var(--color-text-muted)' }}>
           On-demand is_verified checks, most recent first -- excluded from the "Last Scrape" status
           table below on purpose (see StatusTable), so this is the only place their outcome is visible
           without opening each influencer's own job history.
         </p>
+        {!loading && verifyJobsSummary && verifyJobsSummary.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 mb-4">
+            {verifyJobsSummary.map((s) => {
+              const inFlight = s.queued + s.running + s.retry_pending;
+              const total = inFlight + s.completed + s.failed + s.cancelled;
+              return (
+                <div
+                  key={s.platform}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs"
+                  style={{ background: 'var(--color-bg-card-hover)', border: '1px solid var(--color-border-subtle)' }}
+                >
+                  <PlatformIcon platform={s.platform} className="w-4 h-4 rounded" />
+                  <span className="font-medium" style={{ color: 'var(--color-text-primary)' }}>{platformLabel(s.platform)}</span>
+                  <span style={{ color: 'var(--color-text-muted)' }}>{total} total</span>
+                  {inFlight > 0 && (
+                    <span style={{ color: 'var(--color-accent)' }}>{inFlight} in flight</span>
+                  )}
+                  <span style={{ color: 'var(--color-success)' }}>{s.completed} completed</span>
+                  {s.failed > 0 && <span style={{ color: 'var(--color-danger)' }}>{s.failed} failed</span>}
+                </div>
+              );
+            })}
+          </div>
+        )}
         {loading ? (
           <ChartSkeleton short />
         ) : !verifyJobs || verifyJobs.length === 0 ? (
