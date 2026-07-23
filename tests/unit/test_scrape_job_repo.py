@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -219,20 +219,73 @@ async def test_get_daily_metrics_excludes_verify_job_type():
     assert "job_type != 'verify'" in _compiled(stmt)
 
 
+def _row(job_id, platform, status, created_at):
+    return SimpleNamespace(
+        job_id=job_id, influencer_id=uuid4(), handle=f"h-{job_id}", platform=platform,
+        status=status, created_at=created_at, finished_at=None, duration_s=1.0, error_message=None,
+    )
+
+
 @pytest.mark.asyncio
-async def test_get_recent_by_job_type_filters_and_limits():
+async def test_get_recent_by_job_type_issues_two_queries_with_expected_filters():
     session = MagicMock()
-    result = MagicMock()
-    result.all = MagicMock(return_value=[])
-    session.execute = AsyncMock(return_value=result)
+    non_completed_result = MagicMock()
+    non_completed_result.all = MagicMock(return_value=[])
+    completed_result = MagicMock()
+    completed_result.all = MagicMock(return_value=[])
+    session.execute = AsyncMock(side_effect=[non_completed_result, completed_result])
     repo = ScrapeJobRepo(session)
 
     await repo.get_recent_by_job_type("verify", limit=15)
 
-    stmt = session.execute.call_args.args[0]
-    compiled = _compiled(stmt)
-    assert "job_type = 'verify'" in compiled
-    assert "LIMIT 15" in compiled
+    non_completed_stmt = session.execute.call_args_list[0].args[0]
+    completed_stmt = session.execute.call_args_list[1].args[0]
+    non_completed_compiled = _compiled(non_completed_stmt)
+    completed_compiled = _compiled(completed_stmt)
+
+    assert "job_type = 'verify'" in non_completed_compiled
+    assert "status != 'completed'" in non_completed_compiled
+    assert "LIMIT 1000" in non_completed_compiled
+
+    assert "job_type = 'verify'" in completed_compiled
+    assert "status = 'completed'" in completed_compiled
+    assert "LIMIT 15" in completed_compiled
+
+
+@pytest.mark.asyncio
+async def test_get_recent_by_job_type_never_drops_non_completed_rows_to_a_completed_burst():
+    """Regression: a plain "most recent N overall" query let a burst of
+    newer completed jobs on one platform silently push every one of
+    another platform's still-retrying/failed jobs out of the window --
+    confirmed live in production (198 YouTube "completed" rows filled the
+    entire top-200, hiding 57 Instagram retry_pending + 1 failed job that
+    existed at the same time)."""
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    non_completed_rows = [
+        _row(1, "instagram", "retry_pending", now - timedelta(minutes=i))
+        for i in range(57)
+    ] + [_row(58, "instagram", "failed", now - timedelta(minutes=30))]
+    completed_rows = [
+        _row(100 + i, "youtube", "completed", now + timedelta(minutes=i))
+        for i in range(200)
+    ]
+
+    session = MagicMock()
+    non_completed_result = MagicMock()
+    non_completed_result.all = MagicMock(return_value=non_completed_rows)
+    completed_result = MagicMock()
+    completed_result.all = MagicMock(return_value=completed_rows)
+    session.execute = AsyncMock(side_effect=[non_completed_result, completed_result])
+    repo = ScrapeJobRepo(session)
+
+    combined = await repo.get_recent_by_job_type("verify", limit=200)
+
+    ig_retry = [r for r in combined if r.platform == "instagram" and r.status == "retry_pending"]
+    ig_failed = [r for r in combined if r.platform == "instagram" and r.status == "failed"]
+    assert len(ig_retry) == 57
+    assert len(ig_failed) == 1
+    # Still sorted by recency across both buckets combined, not grouped.
+    assert combined == sorted(combined, key=lambda r: r.created_at, reverse=True)
 
 
 @pytest.mark.asyncio

@@ -335,33 +335,59 @@ class ScrapeJobRepo:
         return result.all()
 
     async def get_recent_by_job_type(self, job_type: str, limit: int = 30) -> Sequence[Row]:
-        """Most recent N jobs of one job_type, across every influencer --
-        powers the Overview page's "Recent verify jobs" section. Deliberately
+        """Recent jobs of one job_type, across every influencer -- powers
+        the Overview page's "Recent verify jobs" section. Deliberately
         separate from get_latest_per_influencer (one row per influencer,
         job_type == "scrape" only): this is a flat recency feed, can show
         several rows for the same influencer, and is the only place verify-
         job outcomes are visible outside a single influencer's own job
-        history panel."""
-        stmt = (
-            select(
-                ScrapeJob.id.label("job_id"),
-                ScrapeJob.influencer_id,
-                Influencer.handle,
-                Influencer.platform,
-                ScrapeJob.status,
-                ScrapeJob.created_at,
-                ScrapeJob.finished_at,
-                ScrapeJob.duration_s,
-                ScrapeJob.error_message,
-            )
+        history panel.
+
+        Two-part fetch, not a single "most recent N overall" -- confirmed
+        live: a plain top-200-by-created_at query returned 198 YouTube rows
+        (all "completed", the high-volume happy path) and only 2 Instagram
+        rows, silently hiding every one of that platform's 57 retry_pending
+        and 1 failed jobs that existed at the same time. Non-"completed"
+        statuses (queued/running/retry_pending/failed/cancelled) are
+        exactly the actionable ones an operator needs to see in full, and
+        are inherently bounded (a real backlog, not unbounded history) --
+        fetched with a generous safety cap, not `limit`, which only bounds
+        the "completed" bucket's recent-history window.
+        """
+        base_columns = (
+            ScrapeJob.id.label("job_id"),
+            ScrapeJob.influencer_id,
+            Influencer.handle,
+            Influencer.platform,
+            ScrapeJob.status,
+            ScrapeJob.created_at,
+            ScrapeJob.finished_at,
+            ScrapeJob.duration_s,
+            ScrapeJob.error_message,
+        )
+        non_completed_stmt = (
+            select(*base_columns)
             .select_from(ScrapeJob)
             .join(Influencer, Influencer.id == ScrapeJob.influencer_id)
             .where(ScrapeJob.job_type == job_type)
+            .where(ScrapeJob.status != "completed")
+            .order_by(ScrapeJob.created_at.desc())
+            .limit(1000)
+        )
+        completed_stmt = (
+            select(*base_columns)
+            .select_from(ScrapeJob)
+            .join(Influencer, Influencer.id == ScrapeJob.influencer_id)
+            .where(ScrapeJob.job_type == job_type)
+            .where(ScrapeJob.status == "completed")
             .order_by(ScrapeJob.created_at.desc())
             .limit(limit)
         )
-        result = await self.session.execute(stmt)
-        return result.all()
+        non_completed = (await self.session.execute(non_completed_stmt)).all()
+        completed = (await self.session.execute(completed_stmt)).all()
+        combined = list(non_completed) + list(completed)
+        combined.sort(key=lambda row: row.created_at, reverse=True)
+        return combined
 
     async def get_job_type_status_counts_by_platform(self, job_type: str) -> Sequence[Row]:
         """Lifetime (platform, status) -> count for one job_type -- powers
