@@ -1,12 +1,13 @@
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.analytics.creator_stats import CreatorStatsService
 from app.core.database import get_db
 from app.core.exceptions import CreatorNotFoundError
+from app.core.simple_cache import get_or_set
 from app.repositories.creator_repo import CreatorRepo
 from app.repositories.influencer_repo import InfluencerRepo
 from app.schemas.public_creator import (
@@ -59,48 +60,58 @@ _PLATFORM_QUERY = Query(
 
 
 @router.get("/{id}", response_model=PublicCreatorProfileOut)
-async def get_public_creator_profile(id: UUID, db: AsyncSession = Depends(get_db)):
+async def get_public_creator_profile(id: UUID, response: Response, db: AsyncSession = Depends(get_db)):
     """Public combined creator profile for the marketing site's creator
-    detail page. No auth required -- same trust level as GET /influencers/top."""
-    creator_repo = CreatorRepo(db)
-    influencer_repo = InfluencerRepo(db)
+    detail page. No auth required -- same trust level as GET /influencers/top.
 
-    name, refs = await _resolve_creator_refs(id, creator_repo, influencer_repo)
-    influencer_ids = [influencer_id for influencer_id, _ in refs]
+    get_public_accounts reuses the same unbounded leaderboard base query as
+    /influencers/top (see that route's docstring), so it's cached here too
+    -- short TTL, since the underlying data only changes on scrape, not
+    per-request. Cache-Control lets Cloudflare absorb repeat requests
+    before they reach this process at all."""
+    response.headers["Cache-Control"] = "public, max-age=120, stale-while-revalidate=600"
 
-    rows = await influencer_repo.get_public_accounts(influencer_ids)
-    if not rows:
-        raise CreatorNotFoundError(str(id))
+    async def compute():
+        creator_repo = CreatorRepo(db)
+        influencer_repo = InfluencerRepo(db)
 
-    accounts = [
-        PublicPlatformAccountOut(
-            influencer_id=row.id,
-            platform=row.platform,
-            handle=row.handle,
-            followers=row.followers,
-            posts=row.posts,
-            is_verified=row.is_verified,
-            category_name=row.category_name,
-            engagement_rate=(
-                round(row.avg_engagement / row.followers * 100, 2)
-                if row.avg_engagement is not None and row.followers
-                else None
-            ),
-            last_updated=row.last_updated,
-            country=(row.platform_metadata or {}).get("country"),
-            joined_at=(row.platform_metadata or {}).get("published_at"),
+        name, refs = await _resolve_creator_refs(id, creator_repo, influencer_repo)
+        influencer_ids = [influencer_id for influencer_id, _ in refs]
+
+        rows = await influencer_repo.get_public_accounts(influencer_ids)
+        if not rows:
+            raise CreatorNotFoundError(str(id))
+
+        accounts = [
+            PublicPlatformAccountOut(
+                influencer_id=row.id,
+                platform=row.platform,
+                handle=row.handle,
+                followers=row.followers,
+                posts=row.posts,
+                is_verified=row.is_verified,
+                category_name=row.category_name,
+                engagement_rate=(
+                    round(row.avg_engagement / row.followers * 100, 2)
+                    if row.avg_engagement is not None and row.followers
+                    else None
+                ),
+                last_updated=row.last_updated,
+                country=(row.platform_metadata or {}).get("country"),
+                joined_at=(row.platform_metadata or {}).get("published_at"),
+            )
+            for row in rows
+        ]
+        return PublicCreatorProfileOut(
+            id=id,
+            name=name,
+            platforms=sorted({a.platform for a in accounts}),
+            accounts=accounts,
+            combined_followers=sum(a.followers for a in accounts),
+            combined_posts=sum(a.posts for a in accounts),
         )
-        for row in rows
-    ]
 
-    return PublicCreatorProfileOut(
-        id=id,
-        name=name,
-        platforms=sorted({a.platform for a in accounts}),
-        accounts=accounts,
-        combined_followers=sum(a.followers for a in accounts),
-        combined_posts=sum(a.posts for a in accounts),
-    )
+    return await get_or_set(f"public_creator_profile:{id}", ttl_seconds=120, compute=compute)
 
 
 @router.get("/{id}/posts", response_model=list[PublicPostOut])
