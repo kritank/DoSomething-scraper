@@ -336,7 +336,22 @@ class InstagramAccountRepo:
             account.failure_count += 1
             account.last_failure_at = datetime.now(timezone.utc)
 
-        if account.status == "active" and account.failure_count >= settings.ACCOUNT_MAX_CONSECUTIVE_FAILURES:
+        # rate_limited is excluded here -- confirmed live in production:
+        # a real, sustained Instagram throttle (not a code bug -- see
+        # client.py's soft-throttle-vs-checkpoint split) kept this
+        # perfectly valid account at status="active" while failure_count
+        # climbed across separate job attempts (cooldown_until only gates
+        # the *next* lease, it doesn't reset the counter), and it crossed
+        # ACCOUNT_MAX_CONSECUTIVE_FAILURES within a couple hours -- landing
+        # in "disabled", a state NOTHING auto-recovers from (unlike
+        # checkpoint_required, which account_revalidator actively polls).
+        # A rate-limited account isn't unhealthy, it's contended/throttled;
+        # only a genuine "error" outcome should ever escalate to disabled.
+        if (
+            outcome != "rate_limited"
+            and account.status == "active"
+            and account.failure_count >= settings.ACCOUNT_MAX_CONSECUTIVE_FAILURES
+        ):
             account.status = "disabled"
             logger.error(
                 "Instagram account disabled after repeated failures",
