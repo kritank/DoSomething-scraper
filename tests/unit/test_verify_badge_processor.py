@@ -173,7 +173,13 @@ async def test_no_prior_snapshot_is_a_clean_noop():
 
 
 @pytest.mark.asyncio
-async def test_no_healthy_instagram_accounts_retries_without_spending_retry_count():
+async def test_no_healthy_instagram_accounts_spends_a_retry():
+    """Unlike JobProcessor/YouTubeJobProcessor's identical branch, a verify
+    job DOES spend a retry here -- it's a manual, non-critical action, not
+    the critical path those processors are, so it must not retry forever
+    against a pool that's genuinely, permanently unhealthy (confirmed
+    live: 71 verify jobs stuck in retry_pending indefinitely before this
+    fix). See the processor's inline comment for the full reasoning."""
     job_id, influencer_id = uuid4(), uuid4()
     message = ScrapeJobMessage(job_id=job_id, influencer_id=influencer_id, handle="myntra", platform="instagram", job_type="verify")
     processor = VerifyBadgeProcessor(message)
@@ -193,8 +199,33 @@ async def test_no_healthy_instagram_accounts_retries_without_spending_retry_coun
         await processor.process()
 
     assert job.status == "retry_pending"
-    assert job.retry_count == 0
+    assert job.retry_count == 1
     assert job.error_message == "no healthy Instagram accounts available"
+
+
+@pytest.mark.asyncio
+async def test_no_healthy_instagram_accounts_fails_after_max_retries():
+    job_id, influencer_id = uuid4(), uuid4()
+    message = ScrapeJobMessage(job_id=job_id, influencer_id=influencer_id, handle="myntra", platform="instagram", job_type="verify")
+    processor = VerifyBadgeProcessor(message)
+
+    job = _job(job_id)
+    job.retry_count = 2  # one short of SCRAPER_MAX_RETRIES (3)
+    session = MagicMock()
+    session.get = AsyncMock(return_value=job)
+    session.commit = AsyncMock()
+
+    account_repo_instance = MagicMock()
+    account_repo_instance.acquire_healthy_account = AsyncMock(return_value=None)
+
+    with (
+        patch("app.workers.verify_badge_processor.get_session", return_value=_session_cm(session)),
+        patch("app.workers.verify_badge_processor.InstagramAccountRepo", return_value=account_repo_instance),
+    ):
+        await processor.process()
+
+    assert job.status == "failed"
+    assert job.retry_count == 3
 
 
 @pytest.mark.asyncio

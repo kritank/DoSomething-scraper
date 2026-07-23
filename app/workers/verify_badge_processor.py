@@ -82,11 +82,23 @@ class VerifyBadgeProcessor:
                 self._account_repo = InstagramAccountRepo(session)
                 self._account = await self._account_repo.acquire_healthy_account(worker_id=WORKER_ID)
                 if self._account is None:
-                    # Never got to attempt anything -- same "don't spend a
-                    # retry on a pool that was never tried" convention as
-                    # NoUsableYouTubeKeyError/NoUsableInstagramTokenError.
+                    # Unlike JobProcessor/YouTubeJobProcessor's identical
+                    # branch, this DOES spend a retry. Confirmed live: with
+                    # every Instagram cookie account dead, 71 verify jobs
+                    # sat in retry_pending indefinitely (retry_count never
+                    # incremented), re-enqueued and re-failing on every
+                    # retry_failed_scrapes() tick forever with no terminal
+                    # state and no visibility. That "retry forever, an
+                    # operator problem not a per-job one" reasoning holds
+                    # for scrape/enrich, which are the critical path and
+                    # must eventually run -- it doesn't hold for verify,
+                    # a manual, non-critical action competing for the same
+                    # scarce pool. Capping it lets it fail out cleanly and
+                    # be re-triggered on demand instead of piling up as
+                    # permanent backlog.
                     logger.warning("No healthy Instagram accounts available for verify job -- will retry")
-                    job.status = "retry_pending"
+                    job.retry_count += 1
+                    job.status = "retry_pending" if job.retry_count < settings.SCRAPER_MAX_RETRIES else "failed"
                     job.error_message = "no healthy Instagram accounts available"
                     job.finished_at = datetime.now(timezone.utc)
                     job.duration_s = time.perf_counter() - start_time
