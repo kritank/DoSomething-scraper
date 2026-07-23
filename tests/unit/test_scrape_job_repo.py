@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -159,3 +160,60 @@ async def test_job_stats_success_rate_none_with_no_terminal_runs():
 
     assert stats[influencer_id].job_success_rate is None
     assert stats[influencer_id].consecutive_job_failures == 0
+
+
+def _compiled(stmt) -> str:
+    return str(stmt.compile(compile_kwargs={"literal_binds": True}))
+
+
+@pytest.mark.asyncio
+async def test_get_latest_per_influencer_filters_to_scrape_job_type():
+    """Regression: without this filter, an "enrich" or "verify" job (both
+    near-instant, 0 posts/comments by design) becomes the "latest job" the
+    moment it runs, silently overwriting the real last scrape's status on
+    the Overview page's "Last Scrape" column with unrelated numbers."""
+    session = MagicMock()
+    result = MagicMock()
+    result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+    session.execute = AsyncMock(return_value=result)
+    repo = ScrapeJobRepo(session)
+
+    await repo.get_latest_per_influencer()
+
+    stmt = session.execute.call_args.args[0]
+    assert "job_type = 'scrape'" in _compiled(stmt)
+
+
+@pytest.mark.asyncio
+async def test_get_job_stats_by_influencer_filters_to_scrape_job_type():
+    session = MagicMock()
+    counts_result = MagicMock()
+    counts_result.all = MagicMock(return_value=[])
+    streak_result = MagicMock()
+    streak_result.all = MagicMock(return_value=[])
+    session.execute = AsyncMock(side_effect=[counts_result, streak_result])
+    repo = ScrapeJobRepo(session)
+
+    await repo.get_job_stats_by_influencer()
+
+    counts_stmt = session.execute.call_args_list[0].args[0]
+    streak_stmt = session.execute.call_args_list[1].args[0]
+    assert "job_type = 'scrape'" in _compiled(counts_stmt)
+    assert "job_type = 'scrape'" in _compiled(streak_stmt)
+
+
+@pytest.mark.asyncio
+async def test_get_daily_metrics_excludes_verify_job_type():
+    """Verify jobs contribute nothing real (0 posts/comments, sub-second
+    duration) -- left in, they'd drag down avg_duration_s and inflate
+    "completed" counts on the Overview charts for no real throughput."""
+    session = MagicMock()
+    result = MagicMock()
+    result.all = MagicMock(return_value=[])
+    session.execute = AsyncMock(return_value=result)
+    repo = ScrapeJobRepo(session)
+
+    await repo.get_daily_metrics(date(2026, 1, 1), date(2026, 1, 1))
+
+    stmt = session.execute.call_args.args[0]
+    assert "job_type != 'verify'" in _compiled(stmt)
