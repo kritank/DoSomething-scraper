@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  RefreshCw, ChevronDown, ChevronUp, Power, Trash2,
+  RefreshCw, ChevronDown, ChevronUp, Power, Trash2, Pencil, Check, X,
   Users, ShieldCheck, AlertTriangle, Wifi, KeyRound, Gauge, Activity,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { toast } from 'sonner';
-import { getAccounts, updateAccountStatus, deleteAccount } from '../services/accountsService';
+import { getAccounts, updateAccountStatus, deleteAccount, setAccountProxy } from '../services/accountsService';
 import { getYoutubeKeys, updateYoutubeKeyStatus, deleteYoutubeKey } from '../services/youtubeKeysService';
 import {
   getInstagramTokens, updateInstagramTokenStatus, deleteInstagramToken,
@@ -49,6 +49,9 @@ export default function Accounts() {
   const [addPanelOpen, setAddPanelOpen] = useState(false);
   const [expandedRowId, setExpandedRowId] = useState(null);
   const [search, setSearch] = useState('');
+  const [editingProxyId, setEditingProxyId] = useState(null);
+  const [proxyDraft, setProxyDraft] = useState('');
+  const [savingProxy, setSavingProxy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -128,6 +131,36 @@ export default function Accounts() {
       load();
     } catch {
       // apiClient's interceptor already toasts the error detail.
+    }
+  };
+
+  const startEditProxy = (account) => {
+    setEditingProxyId(account.id);
+    // The proxy URL itself is never returned by the API (same convention
+    // as cookies -- write-only secrets), so this always starts blank
+    // rather than pre-filled with the current value.
+    setProxyDraft('');
+  };
+
+  const cancelEditProxy = () => {
+    setEditingProxyId(null);
+    setProxyDraft('');
+  };
+
+  const handleSaveProxy = async (account) => {
+    setSavingProxy(true);
+    try {
+      await setAccountProxy(account.id, proxyDraft.trim());
+      toast.success(
+        proxyDraft.trim() ? `Proxy set for @${account.username}` : `Proxy cleared for @${account.username}`,
+      );
+      setEditingProxyId(null);
+      setProxyDraft('');
+      load();
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    } finally {
+      setSavingProxy(false);
     }
   };
 
@@ -365,9 +398,40 @@ export default function Accounts() {
                           <td className="py-2.5 px-3 font-medium" style={{ color: 'var(--color-text-primary)' }}>@{a.username}</td>
                           <td className="py-2.5 px-3"><StatusBadge status={a.status} /></td>
                           <td className="py-2.5 px-3" style={{ color: 'var(--color-text-secondary)' }}>{a.auth_method}</td>
-                          <td className="py-2.5 px-3" style={{ color: a.has_proxy ? 'var(--color-success)' : 'var(--color-warning)' }}
-                              title={a.has_proxy ? 'Egress pinned to a proxy' : 'No proxy — scraping from the host IP risks Instagram checkpoints'}>
-                            {a.has_proxy ? 'proxied' : 'direct'}
+                          <td className="py-2.5 px-3">
+                            {editingProxyId === a.id ? (
+                              <div className="flex items-center gap-1 min-w-[220px]">
+                                <Input
+                                  autoFocus
+                                  placeholder="http://user:pass@host:port (blank clears it)"
+                                  value={proxyDraft}
+                                  onChange={(e) => setProxyDraft(e.target.value)}
+                                  className="text-xs py-1.5"
+                                />
+                                <Button variant="ghost" size="sm" title="Save" onClick={() => handleSaveProxy(a)} loading={savingProxy}>
+                                  <Check className="w-3.5 h-3.5" />
+                                </Button>
+                                <Button variant="ghost" size="sm" title="Cancel" onClick={cancelEditProxy}>
+                                  <X className="w-3.5 h-3.5" />
+                                </Button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                className="flex items-center gap-1.5 hover:underline"
+                                style={{ color: a.has_proxy ? 'var(--color-success)' : 'var(--color-warning)' }}
+                                title={
+                                  (a.has_proxy
+                                    ? 'Egress pinned to a proxy'
+                                    : 'No proxy — scraping from the host IP risks Instagram checkpoints')
+                                  + ' -- click to edit'
+                                }
+                                onClick={() => startEditProxy(a)}
+                              >
+                                {a.has_proxy ? 'proxied' : 'direct'}
+                                <Pencil className="w-3 h-3" />
+                              </button>
+                            )}
                           </td>
                           <td className="py-2.5 px-3" style={{ color: a.failure_count > 0 ? 'var(--color-warning)' : 'var(--color-text-secondary)' }}>
                             {a.failure_count}
