@@ -98,8 +98,14 @@ export default function JobHistoryPanel({ influencerId }) {
             <tr key={job.id} style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
               <td className="py-2 px-3"><StatusBadge status={job.status} /></td>
               <td className="py-2 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}
-                  title={job.job_type === 'enrich' ? 'Cookie follow-on: syncs comment text/replies and view counts' : 'Graph API (or cookie) scrape: profile + posts'}>
-                {job.job_type === 'enrich' ? 'Enrich' : 'Scrape'}
+                  title={
+                    job.job_type === 'enrich'
+                      ? 'Cookie follow-on: syncs comment text/replies and view counts'
+                      : job.job_type === 'verify'
+                        ? 'On-demand is_verified refresh -- no posts/comments touched'
+                        : 'Graph API (or cookie) scrape: profile + posts'
+                  }>
+                {job.job_type === 'enrich' ? 'Enrich' : job.job_type === 'verify' ? 'Verify' : 'Scrape'}
               </td>
               <td className="py-2 px-3 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
                 {job.started_at ? format(new Date(job.started_at), 'MMM d, HH:mm') : '—'}

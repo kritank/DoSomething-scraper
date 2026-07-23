@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import {
   getCategories,
   triggerScrape,
+  refreshVerified,
   updateInfluencerActive,
   updateInfluencerDetails,
   updateInfluencerScrapeSettings,
@@ -46,6 +47,7 @@ export default function CategoryProfile() {
   // Same row-level interaction state as Influencers.jsx -- InfluencerRow
   // is the identical shared component, so it needs the identical props.
   const [triggering, setTriggering] = useState(() => new Set());
+  const [verifying, setVerifying] = useState(() => new Set());
   const [expandedHistory, setExpandedHistory] = useState(() => new Set());
   const [editingInfluencerId, setEditingInfluencerId] = useState(null);
   const [influencerDraft, setInfluencerDraft] = useState(EMPTY_DRAFT);
@@ -121,6 +123,22 @@ export default function CategoryProfile() {
       // apiClient's interceptor already toasts the error detail.
     } finally {
       setTriggering((prev) => {
+        const next = new Set(prev);
+        next.delete(row.influencer_id);
+        return next;
+      });
+    }
+  };
+
+  const handleRefreshVerified = async (row) => {
+    setVerifying((prev) => new Set(prev).add(row.influencer_id));
+    try {
+      await refreshVerified(row.influencer_id);
+      toast.success(`Verified-badge refresh queued for ${formatHandle(row.handle, row.platform)}`);
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    } finally {
+      setVerifying((prev) => {
         const next = new Set(prev);
         next.delete(row.influencer_id);
         return next;
@@ -297,6 +315,8 @@ export default function CategoryProfile() {
                       onStartEdit={startEditInfluencer}
                       triggering={triggering}
                       onScrapeNow={handleScrapeNow}
+                      verifying={verifying}
+                      onRefreshVerified={handleRefreshVerified}
                       expandedHistory={expandedHistory}
                       onToggleHistory={toggleHistory}
                     />
@@ -313,7 +333,7 @@ export default function CategoryProfile() {
 
 function CategoryAccountGroup({
   group, expanded, onToggleExpanded, rowProps, editingInfluencerId, influencerDraft, setInfluencerDraft,
-  onStartEdit, triggering, onScrapeNow, expandedHistory, onToggleHistory,
+  onStartEdit, triggering, onScrapeNow, verifying, onRefreshVerified, expandedHistory, onToggleHistory,
 }) {
   // Solo (unlinked) groups are a single row with no header of their own --
   // nothing to collapse, so they always render their row directly.
@@ -358,6 +378,8 @@ function CategoryAccountGroup({
               isInFlight={triggering.has(row.influencer_id)}
               triggeringThis={triggering.has(row.influencer_id)}
               onScrapeNow={() => onScrapeNow(row)}
+              verifyingThis={verifying.has(row.influencer_id)}
+              onRefreshVerified={() => onRefreshVerified(row)}
               historyOpen={expandedHistory.has(row.influencer_id)}
               onToggleHistory={() => onToggleHistory(row.influencer_id)}
               onSave={() => rowProps.onSave(row)}

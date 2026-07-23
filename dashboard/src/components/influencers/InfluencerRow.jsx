@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { PlayCircle, Power, PowerOff, Trash2, History, ChevronUp, Pencil, Check, X, AlertTriangle } from 'lucide-react';
+import { PlayCircle, Power, PowerOff, Trash2, History, ChevronUp, Pencil, Check, X, AlertTriangle, BadgeCheck } from 'lucide-react';
 import { format } from 'date-fns';
 import StatusBadge from '../common/StatusBadge';
 import PlatformBadge from '../common/PlatformBadge';
@@ -20,6 +20,7 @@ export default function InfluencerRow({
   row, categories, creators, isEditing, draft, setDraft, savingEdit,
   onStartEdit, onCancelEdit, onSave, isInFlight, triggeringThis,
   historyOpen, onToggleHistory, onScrapeNow, onToggleActive, onDelete,
+  onRefreshVerified, verifyingThis,
 }) {
   return (
     <div className="py-2.5">
@@ -171,6 +172,15 @@ export default function InfluencerRow({
             >
               <PlayCircle className="w-3.5 h-3.5" />
               Scrape now
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              title="Refresh verified badge"
+              onClick={onRefreshVerified}
+              loading={verifyingThis}
+            >
+              <BadgeCheck className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
             </Button>
             <Button
               variant="ghost"

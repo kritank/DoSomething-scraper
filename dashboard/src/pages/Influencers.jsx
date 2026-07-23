@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { RefreshCw, Power, PowerOff, Trash2, ChevronDown, ChevronUp, Pencil, Check, X, Link2, Users, AtSign } from 'lucide-react';
+import { RefreshCw, Power, PowerOff, Trash2, ChevronDown, ChevronUp, Pencil, Check, X, Link2, Users, AtSign, BadgeCheck } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { getDashboardStatus } from '../services/dashboardService';
@@ -7,6 +7,8 @@ import { getCreators, renameCreator, deleteCreator } from '../services/creatorSe
 import {
   getCategories,
   triggerScrape,
+  refreshVerified,
+  refreshVerifiedAll,
   updateCategory,
   deleteCategory,
   updateInfluencerActive,
@@ -26,7 +28,7 @@ import AddInfluencerForm from '../components/influencers/AddInfluencerForm';
 import MassImportInfluencersForm from '../components/influencers/MassImportInfluencersForm';
 import InfluencerRow from '../components/influencers/InfluencerRow';
 import { useAppStore } from '../store/useAppStore';
-import { formatHandle } from '../utils/platform';
+import { formatHandle, platformLabel } from '../utils/platform';
 import { groupByCreator } from '../utils/groupByCreator';
 
 const IN_FLIGHT_STATUSES = new Set(['queued', 'running']);
@@ -40,6 +42,8 @@ export default function Influencers() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [triggering, setTriggering] = useState(() => new Set());
+  const [verifying, setVerifying] = useState(() => new Set());
+  const [verifyingAllPlatform, setVerifyingAllPlatform] = useState(() => new Set());
   const [expandedHistory, setExpandedHistory] = useState(() => new Set());
   // Presence in these sets means expanded -- both default empty so every
   // category/creator group starts collapsed. Works without needing to
@@ -164,6 +168,41 @@ export default function Influencers() {
       setTriggering((prev) => {
         const next = new Set(prev);
         next.delete(row.influencer_id);
+        return next;
+      });
+    }
+  };
+
+  const handleRefreshVerified = async (row) => {
+    setVerifying((prev) => new Set(prev).add(row.influencer_id));
+    try {
+      await refreshVerified(row.influencer_id);
+      toast.success(`Verified-badge refresh queued for ${formatHandle(row.handle, row.platform)}`);
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    } finally {
+      setVerifying((prev) => {
+        const next = new Set(prev);
+        next.delete(row.influencer_id);
+        return next;
+      });
+    }
+  };
+
+  const handleRefreshVerifiedAll = async (platform) => {
+    setVerifyingAllPlatform((prev) => new Set(prev).add(platform));
+    try {
+      const { queued, skipped } = await refreshVerifiedAll(platform);
+      toast.success(
+        `Queued verified-badge refresh for ${queued} ${platformLabel(platform)} influencer${queued === 1 ? '' : 's'}`
+        + (skipped ? ` (${skipped} skipped -- already had a job in flight)` : ''),
+      );
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    } finally {
+      setVerifyingAllPlatform((prev) => {
+        const next = new Set(prev);
+        next.delete(platform);
         return next;
       });
     }
@@ -398,6 +437,19 @@ export default function Influencers() {
         <div className="flex items-center gap-3 flex-wrap">
           <AccountTypeFilter value={selectedTypes} onChange={setSelectedTypes} />
           <PlatformFilter value={selectedPlatforms} onChange={setSelectedPlatforms} options={enabledPlatforms} />
+          {enabledPlatforms.map((platform) => (
+            <Button
+              key={platform}
+              variant="secondary"
+              size="sm"
+              title={`Refresh the verified badge for every active ${platformLabel(platform)} influencer`}
+              onClick={() => handleRefreshVerifiedAll(platform)}
+              loading={verifyingAllPlatform.has(platform)}
+            >
+              <BadgeCheck className="w-3.5 h-3.5" />
+              Refresh all {platformLabel(platform)} badges
+            </Button>
+          ))}
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
@@ -604,6 +656,8 @@ export default function Influencers() {
                                 historyOpen={expandedHistory.has(row.influencer_id)}
                                 onToggleHistory={() => toggleHistory(row.influencer_id)}
                                 onScrapeNow={() => handleScrapeNow(row)}
+                                onRefreshVerified={() => handleRefreshVerified(row)}
+                                verifyingThis={verifying.has(row.influencer_id)}
                                 onToggleActive={() => handleToggleInfluencerActive(row)}
                                 onDelete={() => handleDeleteInfluencer(row)}
                               />
@@ -629,6 +683,8 @@ export default function Influencers() {
                           historyOpen={expandedHistory.has(group.rows[0].influencer_id)}
                           onToggleHistory={() => toggleHistory(group.rows[0].influencer_id)}
                           onScrapeNow={() => handleScrapeNow(group.rows[0])}
+                          onRefreshVerified={() => handleRefreshVerified(group.rows[0])}
+                          verifyingThis={verifying.has(group.rows[0].influencer_id)}
                           onToggleActive={() => handleToggleInfluencerActive(group.rows[0])}
                           onDelete={() => handleDeleteInfluencer(group.rows[0])}
                         />
