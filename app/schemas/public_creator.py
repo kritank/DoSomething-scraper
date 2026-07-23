@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -49,6 +49,10 @@ class PublicGrowthPoint(BaseModel):
     # frontend line chart just skips the point rather than drawing a
     # misleading zero.
     value: Optional[float] = None
+    # Only populated for metric="earnings" (value stays None there) -- a
+    # daily estimate band, not a cumulative total.
+    value_low: Optional[float] = None
+    value_high: Optional[float] = None
 
 
 class PublicGrowthOut(BaseModel):
@@ -61,3 +65,66 @@ class PublicGrowthOut(BaseModel):
     # platform, so the frontend can always read series["combined"] for
     # the "Combined" tab without a special case).
     series: dict[str, list[PublicGrowthPoint]]
+
+
+class PublicPostingFrequencyPoint(BaseModel):
+    # Bucket start date -- the Monday of that week for bucket="week", or
+    # the day itself for bucket="day".
+    date: date
+    post_count: int
+
+
+class PublicSponsorshipStats(BaseModel):
+    post_count: int = 0
+    avg_views: Optional[float] = None
+    avg_likes: Optional[float] = None
+    avg_comments: Optional[float] = None
+
+
+class PublicFormatSponsorshipStats(BaseModel):
+    format: Literal["long_form", "short_form"]
+    organic: PublicSponsorshipStats
+    sponsored: PublicSponsorshipStats
+
+
+class PublicSponsorshipOut(BaseModel):
+    window_days: int
+    organic: PublicSponsorshipStats
+    sponsored: PublicSponsorshipStats
+    formats: list[PublicFormatSponsorshipStats]
+
+
+class PublicEngagementTrendPoint(BaseModel):
+    date: date
+    avg_engagement_rate: Optional[float] = None
+    post_count: int = 0
+
+
+class PublicPerformanceDecayPoint(BaseModel):
+    bucket_label: str
+    avg_velocity_per_hour: Optional[float] = None
+    sample_size: int = 0
+
+
+class PublicPerformanceDecayOut(BaseModel):
+    window_days: int
+    bucket_labels: list[str]
+    points: list[PublicPerformanceDecayPoint]
+
+
+class PublicPostingTimeDistributionOut(BaseModel):
+    weekday_counts: list[int] = [0] * 7
+    hour_counts: list[int] = [0] * 24
+    hourly_weekday_matrix: list[list[int]] = [[0] * 24 for _ in range(7)]
+    best_weekday: Optional[int] = None
+    best_hour: Optional[int] = None
+    total_posts: int = 0
+
+
+class PublicFollowerRatioPoint(BaseModel):
+    date: date
+    followers: int
+    following: int
+    # followers/following -- None when following is 0 (division undefined,
+    # not "infinite ratio").
+    ratio: Optional[float] = None
