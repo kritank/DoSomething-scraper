@@ -10,7 +10,7 @@ import pytest
 from app.models.post import Post
 from app.queue.base import ScrapeJobMessage
 from app.schemas.instagram import InstagramMediaItem
-from app.workers.instagram_enrich_processor import InstagramEnrichProcessor
+from app.workers.instagram_enrich_processor import InstagramEnrichProcessor, _is_comment_sync_candidate
 
 
 def _processor() -> InstagramEnrichProcessor:
@@ -62,6 +62,61 @@ def test_apply_cookie_only_fields_backfills_original_dimensions():
 
     assert post.original_height == 1920
     assert post.original_width == 1080
+
+
+# ── _is_comment_sync_candidate ────────────────────────────────────────────
+
+def test_never_synced_post_is_always_a_candidate_even_if_count_unchanged():
+    """Regression: prev_reported_count (PostMetricsSnapshot.comments) is
+    kept fresh by the *Graph* scrape's own frequent runs, not evidence a
+    post's comments were ever actually walked. Before this fix, a graph-
+    created post whose reported count happened to match enrich's own read
+    (the overwhelmingly common case, since the Graph snapshot is only
+    minutes old by the time enrich checks) never got synced even once --
+    confirmed in production: 0 comments synced across every Instagram
+    post since switching to the hybrid backend."""
+    assert _is_comment_sync_candidate(
+        comments_synced_count=0, prev_reported_count=42, current_reported_count=42,
+        effective_comment_cap=0,
+    ) is True
+
+
+def test_already_synced_post_skipped_when_count_unchanged():
+    assert _is_comment_sync_candidate(
+        comments_synced_count=42, prev_reported_count=42, current_reported_count=42,
+        effective_comment_cap=0,
+    ) is False
+
+
+def test_already_synced_post_resynced_when_count_changed():
+    assert _is_comment_sync_candidate(
+        comments_synced_count=42, prev_reported_count=42, current_reported_count=50,
+        effective_comment_cap=0,
+    ) is True
+
+
+def test_never_synced_post_still_respects_the_cap():
+    assert _is_comment_sync_candidate(
+        comments_synced_count=0, prev_reported_count=None, current_reported_count=42,
+        effective_comment_cap=5000,
+    ) is True
+    assert _is_comment_sync_candidate(
+        comments_synced_count=5000, prev_reported_count=None, current_reported_count=5010,
+        effective_comment_cap=5000,
+    ) is False
+
+
+def test_no_cap_when_effective_comment_cap_is_zero():
+    """0 == unlimited (settings.COMMENT_SYNC_DEFAULT_MAX_PER_POST's
+    convention) -- never treated as "already at the cap of 0"."""
+    assert _is_comment_sync_candidate(
+        comments_synced_count=999999, prev_reported_count=100, current_reported_count=100,
+        effective_comment_cap=0,
+    ) is False  # unchanged count, already synced -- correctly skipped, not cap-related
+    assert _is_comment_sync_candidate(
+        comments_synced_count=999999, prev_reported_count=100, current_reported_count=200,
+        effective_comment_cap=0,
+    ) is True  # count changed -- still a candidate despite a huge synced count
 
 
 # ── _merge_metrics_snapshot ───────────────────────────────────────────────
@@ -214,13 +269,16 @@ async def test_run_enrich_skips_comment_sync_when_count_unchanged(monkeypatch):
     """Regression: every matched post was re-synced for comments on every
     single enrich run, even when nothing about its comment count had
     changed since last time -- same diffing optimization JobProcessor
-    already has, just never ported here."""
+    already has, just never ported here. Only applies once a post has
+    been synced at least once already (comments_synced_count > 0) -- see
+    _is_comment_sync_candidate's docstring for the never-synced case,
+    which must always be a candidate regardless of this diff."""
     processor = _processor()
     influencer_id = processor.message.influencer_id
     influencer = SimpleNamespace(id=influencer_id, handle="myntra", scrape_posts_since=None, max_comments_per_post=None)
     job = SimpleNamespace(id=uuid4(), comments_processed=0)
 
-    existing_post = Post(id=uuid4(), shortcode="ABC123", media_pk="1")
+    existing_post = Post(id=uuid4(), shortcode="ABC123", media_pk="1", comments_synced_count=5)
     item = _media_item(code="ABC123", comment_count=5)
 
     processor.client = MagicMock()

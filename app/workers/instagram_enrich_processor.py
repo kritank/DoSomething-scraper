@@ -49,6 +49,35 @@ from app.workers.job_common import WORKER_ID, JobCancelledError
 logger = get_logger(__name__)
 
 
+def _is_comment_sync_candidate(
+    comments_synced_count: int, prev_reported_count: int | None, current_reported_count: int,
+    effective_comment_cap: int,
+) -> bool:
+    """Should this matched post get a comment-sync attempt this run?
+
+    A post with zero actually-synced comment rows is always a candidate
+    (subject to the cap) regardless of what the reported-count diff below
+    says -- prev_reported_count comes from PostMetricsSnapshot.comments,
+    which the *Graph* scrape keeps refreshing on every one of its own runs
+    (several per hour), not evidence this post's comments were ever
+    actually walked. Without this, a graph-created post's diff almost
+    always reads "unchanged" (the Graph snapshot is seconds-to-minutes
+    old by the time enrich reads it) and comments never sync even once --
+    confirmed in production after switching to the hybrid backend.
+    JobProcessor's cookie-only equivalent doesn't have this gap: a
+    brand-new post there is unconditionally scheduled for its first sync,
+    with no diff check at all.
+
+    Once a post has at least one synced comment, the diff-based skip
+    (nothing changed since the last check -- don't bother re-walking)
+    applies exactly as before."""
+    if effective_comment_cap > 0 and comments_synced_count >= effective_comment_cap:
+        return False
+    if comments_synced_count == 0:
+        return True
+    return prev_reported_count is None or prev_reported_count != current_reported_count
+
+
 class InstagramEnrichProcessor:
     def __init__(self, message: ScrapeJobMessage):
         self.message = message
@@ -340,17 +369,15 @@ class InstagramEnrichProcessor:
                 await self._merge_metrics_snapshot(session, post, item)
                 matched_shortcodes.add(item.code)
 
-                # Confirmed missing originally: every matched post was
-                # re-synced for comments on every single enrich run, even
-                # when nothing about its comment count had changed since
-                # last time -- same diffing optimization JobProcessor
-                # already uses, just never ported here.
+                # Same diffing optimization JobProcessor already uses (skip
+                # a re-walk when nothing's changed since last time) -- see
+                # _is_comment_sync_candidate's docstring for the production
+                # regression this was missing until now (never synced a
+                # single comment for any graph-created post).
                 prev_count = await last_comment_count(session, post.id)
-                already_capped = (
-                    effective_comment_cap > 0
-                    and (post.comments_synced_count or 0) >= effective_comment_cap
-                )
-                if not already_capped and (prev_count is None or prev_count != item.comment_count):
+                if _is_comment_sync_candidate(
+                    post.comments_synced_count or 0, prev_count, item.comment_count, effective_comment_cap
+                ):
                     sync_candidates[post.id] = post
                     candidate_reported_counts[post.id] = item.comment_count
 
