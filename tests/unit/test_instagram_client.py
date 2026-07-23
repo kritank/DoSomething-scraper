@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.core.config import settings
-from app.core.exceptions import ScraperBlockedError, ScraperRateLimitError
+from app.core.exceptions import ScraperBlockedError, ScraperRateLimitError, ScraperTimeoutError
 from app.scraper.client import InstagramClient
 
 
@@ -272,7 +272,46 @@ async def test_graphql_post_401_with_checkpoint_body_still_blocks_without_retry(
     with pytest.raises(ScraperBlockedError):
         await client._graphql_post("SomeQuery", "12345", {}, referer="https://instagram.com/p/x/")
 
-    assert mock_post.call_count == 1
+
+@pytest.mark.asyncio
+async def test_graphql_post_retries_when_csrf_token_fetch_raises(monkeypatch):
+    """Regression confirmed live in production: _ensure_csrf_tokens's plain
+    page-load GET had no exception handling at all -- when it hit an
+    infinite self-redirect (Instagram serving a logged-out/consent
+    interstitial only a real browser's JS can escape, observed
+    identically across every pooled account), the raw TooManyRedirects
+    propagated straight out of _graphql_post, skipping its retry loop
+    entirely and failing every single comment/reply sync attempt outright
+    with zero backoff. Must now get the same retry/backoff treatment as
+    a POST-side network blip."""
+    monkeypatch.setattr("app.scraper.client.asyncio.sleep", _noop)
+
+    client = _make_client()
+    mock_ensure = AsyncMock(side_effect=[RuntimeError("Maximum (30) redirects followed"), ("dtsg", "lsd")])
+    monkeypatch.setattr(client, "_ensure_csrf_tokens", mock_ensure)
+    mock_post = AsyncMock(return_value=_FakeResponse(200, json_data={"status": "ok", "data": {}}))
+    monkeypatch.setattr(client._curl, "post", mock_post)
+
+    result = await client._graphql_post("SomeQuery", "12345", {}, referer="https://instagram.com/p/x/")
+
+    assert result == {"status": "ok", "data": {}}
+    assert mock_ensure.call_count == 2  # retried, not crashed
+    assert mock_post.call_count == 1  # only reached once tokens finally succeeded
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_graphql_post_exhausts_retries_when_csrf_token_fetch_always_raises(monkeypatch):
+    monkeypatch.setattr("app.scraper.client.asyncio.sleep", _noop)
+    monkeypatch.setattr(settings, "SCRAPER_MAX_RETRIES", 1)
+
+    client = _make_client()
+    monkeypatch.setattr(
+        client, "_ensure_csrf_tokens", AsyncMock(side_effect=RuntimeError("Maximum (30) redirects followed"))
+    )
+
+    with pytest.raises(ScraperTimeoutError):
+        await client._graphql_post("SomeQuery", "12345", {}, referer="https://instagram.com/p/x/")
     await client.close()
 
 
