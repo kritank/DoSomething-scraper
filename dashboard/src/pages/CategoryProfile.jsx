@@ -6,6 +6,7 @@ import {
   getCategories,
   triggerScrape,
   refreshVerified,
+  triggerEnrich,
   updateInfluencerActive,
   updateInfluencerDetails,
   updateInfluencerScrapeSettings,
@@ -48,6 +49,7 @@ export default function CategoryProfile() {
   // is the identical shared component, so it needs the identical props.
   const [triggering, setTriggering] = useState(() => new Set());
   const [verifying, setVerifying] = useState(() => new Set());
+  const [enriching, setEnriching] = useState(() => new Set());
   const [expandedHistory, setExpandedHistory] = useState(() => new Set());
   const [editingInfluencerId, setEditingInfluencerId] = useState(null);
   const [influencerDraft, setInfluencerDraft] = useState(EMPTY_DRAFT);
@@ -139,6 +141,22 @@ export default function CategoryProfile() {
       // apiClient's interceptor already toasts the error detail.
     } finally {
       setVerifying((prev) => {
+        const next = new Set(prev);
+        next.delete(row.influencer_id);
+        return next;
+      });
+    }
+  };
+
+  const handleForceEnrich = async (row) => {
+    setEnriching((prev) => new Set(prev).add(row.influencer_id));
+    try {
+      await triggerEnrich(row.influencer_id);
+      toast.success(`Enrich queued for ${formatHandle(row.handle, row.platform)}`);
+    } catch {
+      // apiClient's interceptor already toasts the error detail.
+    } finally {
+      setEnriching((prev) => {
         const next = new Set(prev);
         next.delete(row.influencer_id);
         return next;
@@ -317,6 +335,8 @@ export default function CategoryProfile() {
                       onScrapeNow={handleScrapeNow}
                       verifying={verifying}
                       onRefreshVerified={handleRefreshVerified}
+                      enriching={enriching}
+                      onForceEnrich={handleForceEnrich}
                       expandedHistory={expandedHistory}
                       onToggleHistory={toggleHistory}
                     />
@@ -333,7 +353,8 @@ export default function CategoryProfile() {
 
 function CategoryAccountGroup({
   group, expanded, onToggleExpanded, rowProps, editingInfluencerId, influencerDraft, setInfluencerDraft,
-  onStartEdit, triggering, onScrapeNow, verifying, onRefreshVerified, expandedHistory, onToggleHistory,
+  onStartEdit, triggering, onScrapeNow, verifying, onRefreshVerified, enriching, onForceEnrich,
+  expandedHistory, onToggleHistory,
 }) {
   // Solo (unlinked) groups are a single row with no header of their own --
   // nothing to collapse, so they always render their row directly.
@@ -380,6 +401,8 @@ function CategoryAccountGroup({
               onScrapeNow={() => onScrapeNow(row)}
               verifyingThis={verifying.has(row.influencer_id)}
               onRefreshVerified={() => onRefreshVerified(row)}
+              enrichingThis={enriching.has(row.influencer_id)}
+              onForceEnrich={() => onForceEnrich(row)}
               historyOpen={expandedHistory.has(row.influencer_id)}
               onToggleHistory={() => onToggleHistory(row.influencer_id)}
               onSave={() => rowProps.onSave(row)}

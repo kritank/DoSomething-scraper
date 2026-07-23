@@ -41,6 +41,11 @@ export async function refreshVerifiedAll(platform) {
   return data;
 }
 
+export async function triggerEnrich(influencerId) {
+  const { data } = await apiClient.post(`/admin/influencers/${influencerId}/enrich`);
+  return data;
+}
+
 export async function updateCategory(categoryId, payload) {
   const { data } = await apiClient.patch(`/admin/categories/${categoryId}`, payload);
   return data;

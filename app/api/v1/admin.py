@@ -38,6 +38,7 @@ from app.schemas.dashboard import (
     DashboardMetricsOut,
     DashboardStatusRow,
     QueueDepthHistoryOut,
+    VerifyJobPlatformSummary,
     VerifyJobStatusRow,
 )
 from app.schemas.bulk_import import BulkImportResult
@@ -288,6 +289,20 @@ async def trigger_verify_all(
     return {"queued": queued, "skipped": skipped}
 
 
+@router.post("/influencers/{influencer_id}/enrich")
+async def trigger_enrich(influencer_id: UUID, db: AsyncSession = Depends(get_db)):
+    # Enrich is the Instagram cookie follow-on for a Graph-scraped
+    # influencer (comment text/replies, view counts) -- InstagramEnrichProcessor
+    # has no YouTube handling at all, so worker_runner would hand a
+    # YouTube message to it and crash rather than a clean no-op. Reject
+    # up front instead.
+    influencer = await InfluencerRepo(db).get_by_id(influencer_id)
+    if influencer.platform != "instagram":
+        raise HTTPException(status_code=400, detail="Enrich is Instagram-only.")
+    job_id = await DispatchService(db).dispatch_enrich_job(influencer_id)
+    return {"status": "queued", "job_id": str(job_id)}
+
+
 @router.get("/jobs", response_model=list[ScrapeJobOut])
 async def list_jobs(db: AsyncSession = Depends(get_db)):
     repo = ScrapeJobRepo(db)
@@ -312,6 +327,17 @@ async def get_recent_verify_jobs(
 ):
     rows = await ScrapeJobRepo(db).get_recent_by_job_type("verify", limit=limit)
     return [VerifyJobStatusRow(**row._mapping) for row in rows]
+
+
+@router.get("/dashboard/verify-jobs/summary", response_model=list[VerifyJobPlatformSummary])
+async def get_verify_jobs_summary(db: AsyncSession = Depends(get_db)):
+    rows = await ScrapeJobRepo(db).get_job_type_status_counts_by_platform("verify")
+    by_platform: dict[str, VerifyJobPlatformSummary] = {}
+    for row in rows:
+        summary = by_platform.setdefault(row.platform, VerifyJobPlatformSummary(platform=row.platform))
+        if hasattr(summary, row.status):
+            setattr(summary, row.status, row.job_count)
+    return list(by_platform.values())
 
 
 @router.get("/dashboard/status", response_model=list[DashboardStatusRow])

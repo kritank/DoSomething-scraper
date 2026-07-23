@@ -47,3 +47,8 @@ export async function getRecentVerifyJobs(limit = 30) {
   const { data } = await apiClient.get('/admin/dashboard/verify-jobs', { params: { limit } });
   return data;
 }
+
+export async function getVerifyJobsSummary() {
+  const { data } = await apiClient.get('/admin/dashboard/verify-jobs/summary');
+  return data;
+}
