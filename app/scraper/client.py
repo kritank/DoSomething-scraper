@@ -56,6 +56,28 @@ def _is_checkpoint_response(payload: dict[str, Any]) -> bool:
     return message in _CHECKPOINT_MESSAGES or "checkpoint" in message
 
 
+def _is_soft_throttle_body(response) -> bool:
+    """True when a 401/403's *body* doesn't actually indicate a checkpoint
+    -- confirmed live in production: Instagram returns HTTP 401 with
+    {"message": "Please wait a few minutes before you try again.",
+    "require_login": true, ...} for an ordinary rate/volume throttle, on a
+    perfectly valid session. The status-code branches below used to treat
+    every single 401/403 as an unconditional, un-retried hard block (see
+    the comment above _is_checkpoint_response describing the identical
+    bug already fixed for 200-status "fail" bodies) -- which parked a
+    healthy account in checkpoint_required on its first soft throttle,
+    forever: account_revalidator's own probe hits the exact same message
+    and never clears it, since nothing about the account was ever
+    actually wrong. Falls back to "yes it's a checkpoint" (False here) for
+    an unparseable/non-JSON body -- a real login-wall page is exactly the
+    unparseable case this can't safely soften."""
+    try:
+        payload = response.json()
+    except Exception:
+        return False
+    return isinstance(payload, dict) and not _is_checkpoint_response(payload)
+
+
 class InstagramClient:
     def __init__(self, cookies: dict[str, str], user_agent: str, proxy: str | None = None):
         self.headers = {
@@ -195,6 +217,17 @@ class InstagramClient:
                     continue
                 raise ScraperRateLimitError(handle=handle, retry_after=last_retry_after)
             elif response.status_code in (401, 403):
+                if _is_soft_throttle_body(response):
+                    logger.warning(
+                        "GraphQL 401/403 with a non-checkpoint body -- treating as a soft throttle",
+                        handle=handle, friendly_name=friendly_name, status=response.status_code,
+                    )
+                    if attempt < settings.SCRAPER_MAX_RETRIES:
+                        wait_s = min(_BACKOFF_BASE_S * (2 ** attempt), _BACKOFF_MAX_S)
+                        wait_s += random.uniform(0, wait_s * 0.2)
+                        await asyncio.sleep(wait_s)
+                        continue
+                    raise ScraperRateLimitError(handle=handle)
                 raise ScraperBlockedError(handle=handle)
             elif response.status_code >= 500:
                 # Transient on Instagram's end, not a blocked/rate-limited
@@ -253,10 +286,12 @@ class InstagramClient:
         """GET with 429/timeout backoff, issued through the Chrome-impersonating
         curl_cffi client so it clears Instagram's TLS-fingerprint gate on these
         web endpoints (see __init__ -- plain httpx passes locally but is 429'd
-        from datacenter IPs). 401/403 surface immediately (never retried
-        in-loop -- a blocked session retrying itself is pointless, and the
-        caller needs it to surface right away so the account pool can mark the
-        account for review)."""
+        from datacenter IPs). A 401/403 whose body actually indicates a
+        checkpoint surfaces immediately (never retried in-loop -- a
+        hijacked session retrying itself is pointless, and the caller needs
+        it to surface right away so the account pool can mark the account
+        for review); one that doesn't (see _is_soft_throttle_body) is
+        retried like a 429 instead."""
         merged_headers = {**self.headers, **(headers or {})}
         last_retry_after: int | None = None
         for attempt in range(settings.SCRAPER_MAX_RETRIES + 1):
@@ -292,6 +327,17 @@ class InstagramClient:
                     continue
                 raise ScraperRateLimitError(handle=handle, retry_after=last_retry_after)
             elif response.status_code in (401, 403):
+                if _is_soft_throttle_body(response):
+                    logger.warning(
+                        "401/403 with a non-checkpoint body -- treating as a soft throttle",
+                        handle=handle, url=url, status=response.status_code,
+                    )
+                    if attempt < settings.SCRAPER_MAX_RETRIES:
+                        wait_s = min(_BACKOFF_BASE_S * (2 ** attempt), _BACKOFF_MAX_S)
+                        wait_s += random.uniform(0, wait_s * 0.2)
+                        await asyncio.sleep(wait_s)
+                        continue
+                    raise ScraperRateLimitError(handle=handle)
                 raise ScraperBlockedError(handle=handle)
             elif response.status_code >= 500:
                 # Transient on Instagram's end -- retry rather than let

@@ -85,6 +85,85 @@ async def test_401_raises_blocked_error_without_retry(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_401_with_please_wait_body_retries_instead_of_blocking(monkeypatch):
+    """Confirmed live in production: Instagram returns HTTP 401 with
+    {"message": "Please wait a few minutes before you try again.",
+    "require_login": true, ...} for an ordinary rate/volume throttle on a
+    perfectly valid, working session -- not a checkpoint. Treating every
+    401/403 as an unconditional hard block (the previous behavior) parked
+    healthy accounts in checkpoint_required permanently: account_revalidator's
+    own probe hits the identical throttle and never clears it, since
+    nothing about the account or session was ever actually wrong."""
+    monkeypatch.setattr("app.scraper.client.asyncio.sleep", _noop)
+
+    client = _make_client()
+    mock_get = AsyncMock(
+        side_effect=[
+            _FakeResponse(
+                401,
+                json_data={
+                    "message": "Please wait a few minutes before you try again.",
+                    "require_login": True,
+                    "status": "fail",
+                },
+            ),
+            _FakeResponse(200, json_data={"status": "ok", "items": []}),
+        ]
+    )
+    monkeypatch.setattr(client._curl, "get", mock_get)
+
+    result = await client._get("https://i.instagram.com/api/v1/some_endpoint", handle="testuser")
+
+    assert result == {"status": "ok", "items": []}
+    assert mock_get.call_count == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_401_with_please_wait_body_exhausts_retries_as_rate_limit(monkeypatch):
+    monkeypatch.setattr("app.scraper.client.asyncio.sleep", _noop)
+    monkeypatch.setattr(settings, "SCRAPER_MAX_RETRIES", 1)
+
+    client = _make_client()
+    monkeypatch.setattr(
+        client._curl,
+        "get",
+        AsyncMock(
+            return_value=_FakeResponse(
+                401,
+                json_data={"message": "Please wait a few minutes before you try again.", "status": "fail"},
+            )
+        ),
+    )
+
+    with pytest.raises(ScraperRateLimitError):
+        await client._get("https://i.instagram.com/api/v1/some_endpoint", handle="testuser")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_401_with_checkpoint_body_still_blocks_without_retry(monkeypatch):
+    """A 401 whose body genuinely indicates a checkpoint/hijacked session
+    must still hard-block immediately, exactly like the 200-status
+    checkpoint case -- only the "please wait" soft-throttle body should be
+    softened."""
+    client = _make_client()
+    mock_get = AsyncMock(
+        return_value=_FakeResponse(
+            401,
+            json_data={"status": "fail", "message": "checkpoint_required", "checkpoint_url": "/challenge/"},
+        )
+    )
+    monkeypatch.setattr(client._curl, "get", mock_get)
+
+    with pytest.raises(ScraperBlockedError):
+        await client._get("https://i.instagram.com/api/v1/some_endpoint", handle="testuser")
+
+    assert mock_get.call_count == 1  # never retried -- not recoverable
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_checkpoint_status_raises_blocked_error(monkeypatch):
     """A real checkpoint/login-required body (200 OK, non-"ok" status,
     checkpoint_url or a checkpoint-flavored message) is the one case that
@@ -147,6 +226,53 @@ async def test_soft_fail_status_exhausts_retries_as_rate_limit(monkeypatch):
 
     with pytest.raises(ScraperRateLimitError):
         await client._get("https://i.instagram.com/api/v1/some_endpoint", handle="testuser")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_graphql_post_401_with_please_wait_body_retries_instead_of_blocking(monkeypatch):
+    """Same soft-throttle fix as _get, applied to the comment/reply
+    GraphQL POST path (_graphql_post) -- the endpoint comment sync
+    actually walks through, so this is the path that was silently
+    stranding accounts the moment enrichment started doing real work."""
+    monkeypatch.setattr("app.scraper.client.asyncio.sleep", _noop)
+
+    client = _make_client()
+    monkeypatch.setattr(client, "_ensure_csrf_tokens", AsyncMock(return_value=("dtsg", "lsd")))
+    mock_post = AsyncMock(
+        side_effect=[
+            _FakeResponse(
+                401,
+                json_data={"message": "Please wait a few minutes before you try again.", "status": "fail"},
+            ),
+            _FakeResponse(200, json_data={"status": "ok", "data": {}}),
+        ]
+    )
+    monkeypatch.setattr(client._curl, "post", mock_post)
+
+    result = await client._graphql_post("SomeQuery", "12345", {}, referer="https://instagram.com/p/x/")
+
+    assert result == {"status": "ok", "data": {}}
+    assert mock_post.call_count == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_graphql_post_401_with_checkpoint_body_still_blocks_without_retry(monkeypatch):
+    client = _make_client()
+    monkeypatch.setattr(client, "_ensure_csrf_tokens", AsyncMock(return_value=("dtsg", "lsd")))
+    mock_post = AsyncMock(
+        return_value=_FakeResponse(
+            401,
+            json_data={"status": "fail", "message": "checkpoint_required", "checkpoint_url": "/challenge/"},
+        )
+    )
+    monkeypatch.setattr(client._curl, "post", mock_post)
+
+    with pytest.raises(ScraperBlockedError):
+        await client._graphql_post("SomeQuery", "12345", {}, referer="https://instagram.com/p/x/")
+
+    assert mock_post.call_count == 1
     await client.close()
 
 
