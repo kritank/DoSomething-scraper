@@ -156,6 +156,36 @@ UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/
 
 ---
 
+## 🧠 Knowledge graph (graphify)
+
+This repo is indexed by [graphify](https://github.com/Graphify-Labs/graphify): a local, deterministic AST parse of the whole codebase into a queryable graph (`graphify-out/graph.json`), used in place of grepping/reading files cold. It costs 0 LLM tokens to build — parsing is pure tree-sitter, no API calls.
+
+**Install** (one-time, matches the setup already used in DoSomething-fe-sandbox):
+```bash
+uv tool install graphifyy      # or: pipx install graphifyy
+```
+
+**What's wired up:**
+- `CLAUDE.md` — a `## graphify` section instructing Claude Code to consult the graph before grepping/reading source
+- `.claude/settings.json` — a `PreToolUse` hook that reminds Claude to run `graphify query`/`explain`/`path` before `Bash`/`Grep`/`Read`/`Glob`
+- `.agents/rules/graphify.md` + `.agents/workflows/graphify.md` — same rules for Antigravity/other `/graphify`-aware assistants
+- `.graphifyignore` — excludes `alembic/versions/`, `scripts/`, `tests/`, `node_modules/`, `.venv/`, lockfiles, etc. from the graph (structural noise, not architecture)
+- `graphify-out/` — the generated graph: `graph.json` (raw), `graph.html` (open in a browser, click/filter/search nodes), `GRAPH_REPORT.md` (god nodes, communities, surprising connections)
+
+**Commands:**
+```bash
+graphify update .                       # re-extract after code changes (AST-only, no API cost)
+graphify query "<question>"             # scoped subgraph answering a plain-language question
+graphify explain "InfluencerRepo"        # a node's source location + every connection
+graphify path "Influencer" "ScrapeJob"   # shortest relationship path between two concepts
+graphify god-nodes --top 10              # most-connected nodes (core abstractions)
+graphify cluster-only .                  # re-run community detection + regenerate GRAPH_REPORT.md
+```
+
+After a large refactor, `graphify update .` may report fewer nodes than expected (deleted code) — pass `--force` to accept the smaller graph instead of keeping stale nodes.
+
+---
+
 ## 📦 Deployment
 
 Deployment is fully automated, matching the DoSomething-be/DoSomething-Meta pattern:
